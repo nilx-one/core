@@ -3,10 +3,11 @@
 
 //! Deterministic semantic kernel for 0x1 Core.
 //!
-//! Phase 0 exposes the versioned representation shell and explicit external ports.
-//! Production interaction registries remain empty; no protocol state machine is
-//! introduced by this change.
+//! Phase 0 exposes versioned representation plus protocol-level invariants that do
+//! not invent a production interaction contract. Synthetic fixture behavior remains
+//! isolated in `ox1-test-support`.
 
+pub mod bond_chain;
 pub mod ports;
 
 use ox1_contracts::{

@@ -19,7 +19,7 @@ pub use envelope::{
     CommandEnvelope, EffectRequestEnvelope, EventEnvelope, ProjectionEnvelope, TransitionOk,
     TransitionOutcome,
 };
-pub use error::{CoreError, ErrorCode, ErrorShapeError};
+pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
 pub use identifier::{BondChainId, BondId, IdentifierError, OperationId, Sha256Digest};
 pub use scalar::{DecimalU64, DecimalU64Error};
 pub use version::{ContractVersion, VersionError};

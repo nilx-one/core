@@ -14,6 +14,12 @@ publish = false
 [dependencies]
 ox1-contracts = { version = "0.1.0", path = "../ox1-contracts" }
 ox1-kernel = { version = "0.1.0", path = "../ox1-kernel" }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+proptest = "1.7"
+serde_json = "1.0"
 
 [lints]
 workspace = true
