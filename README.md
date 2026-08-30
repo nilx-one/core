@@ -6,12 +6,10 @@ This repository owns deterministic product behavior shared across official 0x1 c
 
 ## Workspace
 
-The initial workspace is intentionally semantic-free:
-
 ```text
 crates/
 ├── ox1-contracts        # versioned binding-safe values
-├── ox1-kernel           # deterministic transitions
+├── ox1-kernel           # deterministic transitions and explicit ports
 ├── ox1-bindings-wasm    # WebAssembly translation boundary
 ├── ox1-bindings-uniffi  # Swift/UniFFI translation boundary
 └── ox1-test-support     # deterministic fixtures, test-only
@@ -19,7 +17,7 @@ crates/
 
 Dependency direction is one-way: bindings and test support may depend on the kernel and contracts; the kernel may depend only on contracts. Contracts never depend on the kernel or a platform binding.
 
-C1 contains no product state machine, no production Wasm or UniFFI exports, and no platform integration. Contract-backed semantics land in later atomic changes.
+The current representation shell implements the normative Core contract `0.1.0`: canonical binding-safe identifiers and integer strings, directional version compatibility, closed generic envelopes, deterministic typed failures, explicit external ports, and the native handshake. Production command/event/effect/projection registries remain empty until an owning interaction contract exists.
 
 ## Local verification
 
