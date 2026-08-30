@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt, str::FromStr};
+use core::{fmt, fmt::Write as _, str::FromStr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 /// Failure returned when a binding-safe identifier is not canonical.
@@ -98,7 +98,7 @@ impl Sha256Digest {
         let mut value = String::with_capacity(71);
         value.push_str("sha256_");
         for byte in bytes {
-            value.push_str(&format!("{byte:02x}"));
+            let _ = write!(value, "{byte:02x}");
         }
         Self(value)
     }
