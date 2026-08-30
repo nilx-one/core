@@ -1,0 +1,14 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "ox1-contracts"
+description = "Binding-safe versioned contracts for 0x1 Core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

@@ -2,7 +2,37 @@
 
 The shared Rust core for 0x1.
 
-This repository owns deterministic product behavior shared across official 0x1 clients. Protocol truth remains defined by the canonical `nilx-one/0x1` specification.
+This repository owns deterministic product behavior shared across official 0x1 clients. Protocol truth remains defined by the canonical [`nilx-one/0x1`](https://github.com/nilx-one/0x1) specification; the normative client boundary is `documents/19-core-client-contract.md` there.
+
+## Workspace
+
+The initial workspace is intentionally semantic-free:
+
+```text
+crates/
+├── ox1-contracts        # versioned binding-safe values
+├── ox1-kernel           # deterministic transitions
+├── ox1-bindings-wasm    # WebAssembly translation boundary
+├── ox1-bindings-uniffi  # Swift/UniFFI translation boundary
+└── ox1-test-support     # deterministic fixtures, test-only
+```
+
+Dependency direction is one-way: bindings and test support may depend on the kernel and contracts; the kernel may depend only on contracts. Contracts never depend on the kernel or a platform binding.
+
+C1 contains no product state machine, no production Wasm or UniFFI exports, and no platform integration. Contract-backed semantics land in later atomic changes.
+
+## Local verification
+
+Use the pinned Rust toolchain from `rust-toolchain.toml`:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+python3 scripts/check_architecture.py
+```
+
+Dependency license, source, and advisory policy is enforced with `cargo deny check` in CI.
 
 ## Contributing
 

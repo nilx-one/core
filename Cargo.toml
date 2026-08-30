@@ -1,0 +1,27 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+[workspace]
+members = [
+    "crates/ox1-contracts",
+    "crates/ox1-kernel",
+    "crates/ox1-bindings-wasm",
+    "crates/ox1-bindings-uniffi",
+    "crates/ox1-test-support",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.0"
+license = "MPL-2.0"
+repository = "https://github.com/nilx-one/core"
+authors = ["aiaiaiai"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
