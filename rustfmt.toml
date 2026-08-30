@@ -1,0 +1,6 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+edition = "2024"
+max_width = 100
+use_field_init_shorthand = true

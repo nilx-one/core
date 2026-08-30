@@ -1,0 +1,18 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "ox1-bindings-uniffi"
+description = "UniFFI translation boundary for 0x1 Core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ox1-contracts = { path = "../ox1-contracts" }
+ox1-kernel = { path = "../ox1-kernel" }
+
+[lints]
+workspace = true
