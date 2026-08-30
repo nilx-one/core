@@ -36,7 +36,10 @@ mod tests {
     #[test]
     fn wasm_surface_matches_native_handshake() {
         assert_eq!(contract_version(), ox1_kernel::contract_version());
-        assert_eq!(fixture_corpus_version(), ox1_kernel::fixture_corpus_version());
+        assert_eq!(
+            fixture_corpus_version(),
+            ox1_kernel::fixture_corpus_version()
+        );
         assert_eq!(fixture_corpus_digest(), ox1_kernel::fixture_corpus_digest());
     }
 }
