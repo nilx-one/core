@@ -4,7 +4,7 @@
 //! Thin WebAssembly translation boundary for 0x1 Core.
 //!
 //! These exports report compatibility metadata only. They do not create identity,
-//! authority, a Bond, a BondChain, reciprocity, or any product state.
+//! authority, a Bond, a `BondChain`, reciprocity, or any product state.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 

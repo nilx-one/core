@@ -4,7 +4,7 @@
 //! Thin `UniFFI` translation boundary for 0x1 Core.
 //!
 //! These exports report compatibility metadata only. They do not create identity,
-//! authority, a Bond, a BondChain, reciprocity, or any product state.
+//! authority, a Bond, a `BondChain`, reciprocity, or any product state.
 
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
