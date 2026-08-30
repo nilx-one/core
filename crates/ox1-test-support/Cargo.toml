@@ -12,8 +12,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-ox1-contracts = { path = "../ox1-contracts" }
-ox1-kernel = { path = "../ox1-kernel" }
+ox1-contracts = { version = "0.1.0", path = "../ox1-contracts" }
+ox1-kernel = { version = "0.1.0", path = "../ox1-kernel" }
 
 [lints]
 workspace = true

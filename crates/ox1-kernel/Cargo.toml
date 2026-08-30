@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ox1-contracts = { path = "../ox1-contracts" }
+ox1-contracts = { version = "0.1.0", path = "../ox1-contracts" }
 
 [lints]
 workspace = true
