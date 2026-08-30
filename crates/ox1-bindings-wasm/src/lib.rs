@@ -8,6 +8,16 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
+/// Returns `valid` or a stable canonical `pub_dress` failure code.
+#[must_use]
+#[wasm_bindgen]
+pub fn validate_pub_dress(value: &str) -> String {
+    match value.parse::<ox1_contracts::PubDress>() {
+        Ok(_) => "valid".to_owned(),
+        Err(error) => error.code().to_owned(),
+    }
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[wasm_bindgen]
@@ -31,7 +41,9 @@ pub fn fixture_corpus_digest() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contract_version, fixture_corpus_digest, fixture_corpus_version};
+    use super::{
+        contract_version, fixture_corpus_digest, fixture_corpus_version, validate_pub_dress,
+    };
 
     #[test]
     fn wasm_surface_matches_native_handshake() {
@@ -41,5 +53,12 @@ mod tests {
             ox1_kernel::fixture_corpus_version()
         );
         assert_eq!(fixture_corpus_digest(), ox1_kernel::fixture_corpus_digest());
+    }
+
+    #[test]
+    fn wasm_surface_exposes_canonical_pub_dress_validation() {
+        assert_eq!(validate_pub_dress("0x0sky"), "valid");
+        assert_eq!(validate_pub_dress("0x0Sky"), "valid");
+        assert_eq!(validate_pub_dress("0xgsky"), "invalid_discriminator");
     }
 }

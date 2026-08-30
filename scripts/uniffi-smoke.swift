@@ -6,6 +6,9 @@ import Foundation
 @main
 struct Ox1CoreBindingSmoke {
     static func main() {
+        precondition(validatePubDress(value: "0x0sky") == "valid")
+        precondition(validatePubDress(value: "0x0Sky") == "valid")
+        precondition(validatePubDress(value: "0xgsky") == "invalid_discriminator")
         precondition(contractVersion() == "0.1.0")
         precondition(fixtureCorpusVersion() == "0.1.0")
         precondition(
