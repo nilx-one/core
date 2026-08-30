@@ -62,7 +62,8 @@ pub fn require_compatible_contract(
 #[cfg(test)]
 mod tests {
     use super::{
-        contract_version, fixture_corpus_digest, fixture_corpus_version, require_compatible_contract,
+        contract_version, fixture_corpus_digest, fixture_corpus_version,
+        require_compatible_contract,
     };
     use ox1_contracts::ErrorCode;
 

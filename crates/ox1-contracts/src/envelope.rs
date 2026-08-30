@@ -62,10 +62,6 @@ pub struct TransitionOk<E, F, P> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TransitionOutcome<E, F, P> {
-    Ok {
-        ok: TransitionOk<E, F, P>,
-    },
-    Error {
-        error: CoreError,
-    },
+    Ok { ok: TransitionOk<E, F, P> },
+    Error { error: CoreError },
 }

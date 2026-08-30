@@ -104,7 +104,14 @@ impl Details {
         if code == ErrorCode::UnknownVariant {
             self.require_one_of(
                 "surface",
-                &["command", "event", "effect", "projection", "terminal_outcome", "error"],
+                &[
+                    "command",
+                    "event",
+                    "effect",
+                    "projection",
+                    "terminal_outcome",
+                    "error",
+                ],
             )?;
         }
         if code == ErrorCode::MissingContext {
@@ -141,7 +148,9 @@ impl Details {
         if allowed.contains(&value.as_str()) {
             Ok(())
         } else {
-            Err(ErrorShapeError("error detail contains an unknown closed value"))
+            Err(ErrorShapeError(
+                "error detail contains an unknown closed value",
+            ))
         }
     }
 }
