@@ -33,13 +33,16 @@ pub const fn fixture_corpus_digest() -> &'static str {
 }
 
 /// Validates the directional compatibility rule before a transition is decoded.
+///
+/// # Errors
+///
+/// Returns `unsupported_contract_version` when `requested` is non-canonical or is
+/// outside the compatibility line implemented by this Core build.
 pub fn require_compatible_contract(
     requested: &str,
     operation_id: Option<OperationId>,
 ) -> Result<ContractVersion, CoreError> {
-    let supported: ContractVersion = CONTRACT_VERSION
-        .parse()
-        .expect("static Core contract version must be canonical");
+    let supported = ContractVersion::CURRENT;
     let Ok(required) = requested.parse::<ContractVersion>() else {
         return Err(CoreError::unsupported_contract_version(
             operation_id,

@@ -25,6 +25,13 @@ pub struct ContractVersion {
 }
 
 impl ContractVersion {
+    /// Normative Core contract version represented without parsing or ambient state.
+    pub const CURRENT: Self = Self {
+        major: 0,
+        minor: 1,
+        patch: 0,
+    };
+
     /// Returns whether `provider` is compatible with this consumer-required version.
     #[must_use]
     pub const fn accepts_provider(self, provider: Self) -> bool {
@@ -101,6 +108,11 @@ mod tests {
         let incompatible: ContractVersion = "0.2.0".parse().expect("incompatible version");
         assert!(required.accepts_provider(provider));
         assert!(!required.accepts_provider(incompatible));
+    }
+
+    #[test]
+    fn current_constant_matches_wire_value() {
+        assert_eq!(ContractVersion::CURRENT.to_string(), "0.1.0");
     }
 
     #[test]

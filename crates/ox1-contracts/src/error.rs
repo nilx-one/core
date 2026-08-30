@@ -186,7 +186,7 @@ impl CoreError {
         supported_version: String,
     ) -> Self {
         Self(RawCoreError {
-            contract_version: "0.1.0".parse().expect("static contract version is valid"),
+            contract_version: ContractVersion::CURRENT,
             operation_id,
             code: ErrorCode::UnsupportedContractVersion,
             message: ErrorCode::UnsupportedContractVersion.message().to_owned(),
@@ -198,13 +198,18 @@ impl CoreError {
     }
 
     /// Builds `unknown_variant` with its closed surface and variant details.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorShapeError`] when `surface` is not one of the normative closed
+    /// variant surfaces for contract `0.1.0`.
     pub fn unknown_variant(
         operation_id: Option<OperationId>,
         surface: &str,
         variant: Option<String>,
     ) -> Result<Self, ErrorShapeError> {
         let raw = RawCoreError {
-            contract_version: "0.1.0".parse().expect("static contract version is valid"),
+            contract_version: ContractVersion::CURRENT,
             operation_id,
             code: ErrorCode::UnknownVariant,
             message: ErrorCode::UnknownVariant.message().to_owned(),

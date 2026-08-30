@@ -66,6 +66,11 @@ fn validate(value: &Value) -> Result<(), CanonicalJsonError> {
 /// Contract `0.1.0` forbids JSON numbers and defines only ASCII object member names.
 /// With those constraints, `serde_json`'s ordered map representation yields the same
 /// member ordering required by the contract's RFC 8785 profile.
+///
+/// # Errors
+///
+/// Returns [`CanonicalJsonError`] when serialization fails, a JSON numeric token is
+/// present, a string is not NFC, or a contract object member is not canonical ASCII.
 pub fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalJsonError> {
     let json = serde_json::to_value(value)?;
     validate(&json)?;
