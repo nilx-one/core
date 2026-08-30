@@ -91,9 +91,22 @@ identifier_type!(BondChainId, "bch_", 64);
 identifier_type!(OperationId, "op_", 32);
 identifier_type!(Sha256Digest, "sha256_", 64);
 
+impl Sha256Digest {
+    /// Builds the canonical digest identifier from raw SHA-256 bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        let mut value = String::with_capacity(71);
+        value.push_str("sha256_");
+        for byte in bytes {
+            value.push_str(&format!("{byte:02x}"));
+        }
+        Self(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BondId, IdentifierError};
+    use super::{BondId, IdentifierError, Sha256Digest};
 
     #[test]
     fn accepts_canonical_bond_identifier() {
@@ -106,5 +119,11 @@ mod tests {
     fn rejects_uppercase_hex() {
         let value = format!("bond_{}", "A".repeat(64));
         assert_eq!(value.parse::<BondId>(), Err(IdentifierError));
+    }
+
+    #[test]
+    fn formats_digest_bytes_canonically() {
+        let digest = Sha256Digest::from_bytes([0xab; 32]);
+        assert_eq!(digest.as_str(), format!("sha256_{}", "ab".repeat(32)));
     }
 }

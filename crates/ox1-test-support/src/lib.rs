@@ -3,4 +3,15 @@
 
 //! Test-only deterministic support for native, Wasm, and `UniFFI` parity.
 //!
-//! Nothing in this crate is a production interaction registry or authority source.
+//! The fixture interaction below is synthetic proof machinery. It is not exported
+//! through a production interaction registry and grants no production authority.
+
+mod fixture;
+
+pub use fixture::{
+    EmptyContextValue, Establishment, FixtureAuthorization, FixtureAuthorizationScope,
+    FixtureBondChain, FixtureCommand, FixtureEffect, FixtureEvent, FixtureLifecycle,
+    FixtureProjection, FixtureProjectionBondChain, FixtureRecord, FixtureState,
+    FixtureTerminalOutcome, FixtureTransitionOutcome, FixtureVerifiedContext,
+    run_fixture_transition,
+};

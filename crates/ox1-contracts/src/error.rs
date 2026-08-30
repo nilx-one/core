@@ -68,6 +68,50 @@ impl ErrorCode {
     }
 }
 
+/// Closed fixture-history validation reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidHistoryReason {
+    Sequence,
+    PreviousHash,
+    RecordHash,
+    Participants,
+    CanonicalBytes,
+}
+
+impl InvalidHistoryReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sequence => "sequence",
+            Self::PreviousHash => "previous_hash",
+            Self::RecordHash => "record_hash",
+            Self::Participants => "participants",
+            Self::CanonicalBytes => "canonical_bytes",
+        }
+    }
+}
+
+/// Closed explicit-context port name used by `missing_context`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingContextPort {
+    Clock,
+    Entropy,
+    IdentifierGeneration,
+    CryptographicVerification,
+    Capability,
+}
+
+impl MissingContextPort {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Clock => "clock",
+            Self::Entropy => "entropy",
+            Self::IdentifierGeneration => "identifier_generation",
+            Self::CryptographicVerification => "cryptographic_verification",
+            Self::Capability => "capability",
+        }
+    }
+}
+
 /// Failure returned when a serialized failure envelope violates its closed shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorShapeError(&'static str);
@@ -178,6 +222,26 @@ impl CoreError {
         Ok(Self(raw))
     }
 
+    fn built(
+        operation_id: Option<OperationId>,
+        code: ErrorCode,
+        details: Details,
+    ) -> Self {
+        Self(RawCoreError {
+            contract_version: ContractVersion::CURRENT,
+            operation_id,
+            code,
+            message: code.message().to_owned(),
+            details,
+        })
+    }
+
+    /// Builds `malformed_envelope`.
+    #[must_use]
+    pub fn malformed_envelope(operation_id: Option<OperationId>) -> Self {
+        Self::built(operation_id, ErrorCode::MalformedEnvelope, Details::from_pairs([]))
+    }
+
     /// Builds `unsupported_contract_version` with the normative closed details.
     #[must_use]
     pub fn unsupported_contract_version(
@@ -185,16 +249,14 @@ impl CoreError {
         requested_version: Option<String>,
         supported_version: String,
     ) -> Self {
-        Self(RawCoreError {
-            contract_version: ContractVersion::CURRENT,
+        Self::built(
             operation_id,
-            code: ErrorCode::UnsupportedContractVersion,
-            message: ErrorCode::UnsupportedContractVersion.message().to_owned(),
-            details: Details::from_pairs([
+            ErrorCode::UnsupportedContractVersion,
+            Details::from_pairs([
                 ("requested_version", requested_version),
                 ("supported_version", Some(supported_version)),
             ]),
-        })
+        )
     }
 
     /// Builds `unknown_variant` with its closed surface and variant details.
@@ -219,6 +281,163 @@ impl CoreError {
             ]),
         };
         Self::checked(raw)
+    }
+
+    /// Builds `invalid_participants`.
+    #[must_use]
+    pub fn invalid_participants(
+        operation_id: Option<OperationId>,
+        bond_0_id: Option<String>,
+        bond_1_id: Option<String>,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::InvalidParticipants,
+            Details::from_pairs([("bond_0_id", bond_0_id), ("bond_1_id", bond_1_id)]),
+        )
+    }
+
+    /// Builds `state_revision_mismatch`.
+    #[must_use]
+    pub fn state_revision_mismatch(
+        operation_id: Option<OperationId>,
+        expected_revision: Option<String>,
+        actual_revision: Option<String>,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::StateRevisionMismatch,
+            Details::from_pairs([
+                ("expected_revision", expected_revision),
+                ("actual_revision", actual_revision),
+            ]),
+        )
+    }
+
+    /// Builds `invalid_transition`.
+    #[must_use]
+    pub fn invalid_transition(
+        operation_id: Option<OperationId>,
+        command_kind: Option<String>,
+        state: Option<String>,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::InvalidTransition,
+            Details::from_pairs([("command_kind", command_kind), ("state", state)]),
+        )
+    }
+
+    /// Builds `terminal_bond_chain`.
+    #[must_use]
+    pub fn terminal_bond_chain(
+        operation_id: Option<OperationId>,
+        bch_id: Option<String>,
+        outcome: Option<String>,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::TerminalBondChain,
+            Details::from_pairs([("bch_id", bch_id), ("outcome", outcome)]),
+        )
+    }
+
+    fn history_relation_error(
+        operation_id: Option<OperationId>,
+        code: ErrorCode,
+        bch_id: Option<String>,
+        local_head: Option<String>,
+        candidate_head: Option<String>,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            code,
+            Details::from_pairs([
+                ("bch_id", bch_id),
+                ("local_head", local_head),
+                ("candidate_head", candidate_head),
+            ]),
+        )
+    }
+
+    /// Builds `history_rollback`.
+    #[must_use]
+    pub fn history_rollback(
+        operation_id: Option<OperationId>,
+        bch_id: Option<String>,
+        local_head: Option<String>,
+        candidate_head: Option<String>,
+    ) -> Self {
+        Self::history_relation_error(
+            operation_id,
+            ErrorCode::HistoryRollback,
+            bch_id,
+            local_head,
+            candidate_head,
+        )
+    }
+
+    /// Builds `history_divergence`.
+    #[must_use]
+    pub fn history_divergence(
+        operation_id: Option<OperationId>,
+        bch_id: Option<String>,
+        local_head: Option<String>,
+        candidate_head: Option<String>,
+    ) -> Self {
+        Self::history_relation_error(
+            operation_id,
+            ErrorCode::HistoryDivergence,
+            bch_id,
+            local_head,
+            candidate_head,
+        )
+    }
+
+    /// Builds `invalid_history`.
+    #[must_use]
+    pub fn invalid_history(
+        operation_id: Option<OperationId>,
+        bch_id: Option<String>,
+        record_sequence: Option<String>,
+        reason: InvalidHistoryReason,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::InvalidHistory,
+            Details::from_pairs([
+                ("bch_id", bch_id),
+                ("record_sequence", record_sequence),
+                ("reason", Some(reason.as_str().to_owned())),
+            ]),
+        )
+    }
+
+    /// Builds `unknown_authority`.
+    #[must_use]
+    pub fn unknown_authority(
+        operation_id: Option<OperationId>,
+        bond_id: Option<String>,
+        scope: Option<String>,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::UnknownAuthority,
+            Details::from_pairs([("bond_id", bond_id), ("scope", scope)]),
+        )
+    }
+
+    /// Builds `missing_context`.
+    #[must_use]
+    pub fn missing_context(
+        operation_id: Option<OperationId>,
+        port: MissingContextPort,
+    ) -> Self {
+        Self::built(
+            operation_id,
+            ErrorCode::MissingContext,
+            Details::from_pairs([("port", Some(port.as_str().to_owned()))]),
+        )
     }
 
     /// Returns the stable machine-readable error code.
@@ -255,7 +474,7 @@ impl<'de> Deserialize<'de> for CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreError, ErrorCode};
+    use super::{CoreError, ErrorCode, InvalidHistoryReason, MissingContextPort};
 
     #[test]
     fn rejects_message_code_mismatch() {
@@ -275,8 +494,10 @@ mod tests {
     }
 
     #[test]
-    fn exposes_stable_code() {
-        let error = CoreError::unsupported_contract_version(None, None, "0.1.0".to_owned());
-        assert_eq!(error.code(), ErrorCode::UnsupportedContractVersion);
+    fn typed_factories_keep_closed_detail_values() {
+        let history = CoreError::invalid_history(None, None, None, InvalidHistoryReason::RecordHash);
+        let context = CoreError::missing_context(None, MissingContextPort::IdentifierGeneration);
+        assert_eq!(history.code(), ErrorCode::InvalidHistory);
+        assert_eq!(context.code(), ErrorCode::MissingContext);
     }
 }
