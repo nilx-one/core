@@ -79,6 +79,9 @@ mod tests {
             HistoryRelation::FastForward { first_new_index: 2 }
         );
         assert_eq!(classify_history(&[1, 2], &[1]), HistoryRelation::Rollback);
-        assert_eq!(classify_history(&[1, 2], &[1, 3]), HistoryRelation::Divergence);
+        assert_eq!(
+            classify_history(&[1, 2], &[1, 3]),
+            HistoryRelation::Divergence
+        );
     }
 }
