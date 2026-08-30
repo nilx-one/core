@@ -1251,13 +1251,13 @@ mod tests {
     use ox1_contracts::{ErrorCode, canonical_json};
 
     fn bond(hex: char) -> BondId {
-        format!("bond_{}", hex.to_string().repeat(64))
+        format!("bond_{}{}", "0".repeat(63), hex)
             .parse()
             .expect("fixture Bond id")
     }
 
     fn bch(hex: char) -> BondChainId {
-        format!("bch_{}", hex.to_string().repeat(64))
+        format!("bch_{}{}", "0".repeat(63), hex)
             .parse()
             .expect("fixture BondChain id")
     }
