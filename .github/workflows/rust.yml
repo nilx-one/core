@@ -35,3 +35,93 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  wasm-bindings:
+    name: Wasm bindings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install matching wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - name: Build generated Web package
+        run: ./scripts/build_wasm_package.sh
+      - name: Exercise generated Wasm surface in Node
+        run: |
+          wasm-bindgen \
+            --target nodejs \
+            --out-name index \
+            --out-dir target/core-bindings-wasm-node \
+            target/wasm32-unknown-unknown/release/ox1_bindings_wasm.wasm
+          node scripts/smoke_wasm_node.cjs
+      - name: Verify generated package reproducibility
+        run: |
+          cp -R target/core-bindings-wasm /tmp/core-bindings-wasm-first
+          ./scripts/build_wasm_package.sh
+          diff -ru /tmp/core-bindings-wasm-first target/core-bindings-wasm
+      - name: Preserve generated Web package
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-bindings-wasm-${{ github.sha }}
+          path: target/core-bindings-wasm
+          if-no-files-found: error
+          retention-days: 7
+
+  uniffi-swift:
+    name: UniFFI Swift bindings
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add Apple Rust targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Build native UniFFI library
+        run: cargo build --locked --release -p ox1-bindings-uniffi
+      - name: Generate Swift bindings from library metadata
+        run: |
+          rm -rf target/uniffi-swift
+          mkdir -p target/uniffi-swift
+          cargo run --locked -p ox1-bindings-uniffi --features bindgen --bin uniffi-bindgen -- \
+            generate \
+            --library target/release/libox1_bindings_uniffi.dylib \
+            --language swift \
+            --out-dir target/uniffi-swift
+      - name: Compile and execute Swift handshake smoke
+        run: |
+          modulemap="$(find target/uniffi-swift -name '*.modulemap' -print -quit)"
+          swift_source="$(find target/uniffi-swift -name '*.swift' -print -quit)"
+          test -n "$modulemap"
+          test -n "$swift_source"
+          cp "$modulemap" target/uniffi-swift/module.modulemap
+          swiftc \
+            "$swift_source" scripts/uniffi-smoke.swift \
+            -I target/uniffi-swift \
+            -L target/release \
+            -lox1_bindings_uniffi \
+            -o target/uniffi-smoke
+          DYLD_LIBRARY_PATH=target/release ./target/uniffi-smoke
+      - name: Build iOS static libraries
+        run: |
+          cargo build --locked --release --target aarch64-apple-ios -p ox1-bindings-uniffi
+          cargo build --locked --release --target aarch64-apple-ios-sim -p ox1-bindings-uniffi
+      - name: Assemble XCFramework-ready binary
+        run: |
+          headers=target/uniffi-headers
+          rm -rf "$headers" target/Ox1Core.xcframework
+          mkdir -p "$headers"
+          find target/uniffi-swift -maxdepth 1 -name '*.h' -exec cp {} "$headers"/ \;
+          modulemap="$(find target/uniffi-swift -name '*.modulemap' -print -quit)"
+          cp "$modulemap" "$headers/module.modulemap"
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libox1_bindings_uniffi.a \
+            -headers "$headers" \
+            -library target/aarch64-apple-ios-sim/release/libox1_bindings_uniffi.a \
+            -headers "$headers" \
+            -output target/Ox1Core.xcframework
+      - name: Preserve Apple artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ox1Core-${{ github.sha }}
+          path: |
+            target/Ox1Core.xcframework
+            target/uniffi-swift/*.swift
+          if-no-files-found: error
+          retention-days: 7

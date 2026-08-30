@@ -10,9 +10,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 ox1-contracts = { version = "0.1.0", path = "../ox1-contracts" }
 ox1-kernel = { version = "0.1.0", path = "../ox1-kernel" }
+wasm-bindgen = "=0.2.127"
 
 [lints]
 workspace = true
