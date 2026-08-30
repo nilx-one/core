@@ -215,7 +215,9 @@ pub enum FixtureCommand {
     #[serde(rename = "fixture.cancel")]
     Cancel,
     #[serde(rename = "fixture.synchronize")]
-    Synchronize { candidate_history: Vec<FixtureRecord> },
+    Synchronize {
+        candidate_history: Vec<FixtureRecord>,
+    },
 }
 
 impl FixtureCommand {
@@ -272,11 +274,14 @@ pub struct FixtureProjectionBondChain {
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum FixtureProjection {
     #[serde(rename = "fixture.bond_chain")]
-    BondChain { bond_chain: FixtureProjectionBondChain },
+    BondChain {
+        bond_chain: FixtureProjectionBondChain,
+    },
 }
 
 /// Complete typed outcome of one synthetic fixture transition.
-pub type FixtureTransitionOutcome = TransitionOutcome<FixtureEvent, FixtureEffect, FixtureProjection>;
+pub type FixtureTransitionOutcome =
+    TransitionOutcome<FixtureEvent, FixtureEffect, FixtureProjection>;
 
 type FixtureEnvelope = CommandEnvelope<FixtureCommand, FixtureState, FixtureVerifiedContext>;
 
@@ -302,13 +307,17 @@ fn next_revision(
     revision: DecimalU64,
     command_kind: &str,
 ) -> Result<DecimalU64, CoreError> {
-    revision.get().checked_add(1).map(DecimalU64::new).ok_or_else(|| {
-        CoreError::invalid_transition(
-            Some(operation_id.clone()),
-            Some(command_kind.to_owned()),
-            Some("state_revision_exhausted".to_owned()),
-        )
-    })
+    revision
+        .get()
+        .checked_add(1)
+        .map(DecimalU64::new)
+        .ok_or_else(|| {
+            CoreError::invalid_transition(
+                Some(operation_id.clone()),
+                Some(command_kind.to_owned()),
+                Some("state_revision_exhausted".to_owned()),
+            )
+        })
 }
 
 fn has_authorization(
@@ -358,15 +367,20 @@ fn make_record(
     observed_at_unix_ms: DecimalU64,
     body: FixtureRecordBody,
 ) -> Result<FixtureRecord, CoreError> {
-    let sequence = u64::try_from(chain.history.len()).map(DecimalU64::new).map_err(|_| {
-        CoreError::invalid_history(
-            Some(operation_id.clone()),
-            Some(chain.bch_id.to_string()),
-            None,
-            InvalidHistoryReason::Sequence,
-        )
-    })?;
-    let previous_record_hash = chain.history.last().map(|record| record.record_hash.clone());
+    let sequence = u64::try_from(chain.history.len())
+        .map(DecimalU64::new)
+        .map_err(|_| {
+            CoreError::invalid_history(
+                Some(operation_id.clone()),
+                Some(chain.bch_id.to_string()),
+                None,
+                InvalidHistoryReason::Sequence,
+            )
+        })?;
+    let previous_record_hash = chain
+        .history
+        .last()
+        .map(|record| record.record_hash.clone());
     let hashable = HashableRecord {
         contract_version: ContractVersion::CURRENT,
         record_kind,
@@ -497,7 +511,6 @@ fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Resul
         ));
     }
     validate_record_hash(operation_id, first)?;
-
     let mut establishment = Establishment::Candidate;
     let mut lifecycle = FixtureLifecycle::Active;
     let mut previous_hash = first.record_hash.clone();
@@ -655,7 +668,10 @@ fn terminal_error(operation_id: &OperationId, chain: &FixtureBondChain) -> CoreE
     CoreError::terminal_bond_chain(
         Some(operation_id.clone()),
         Some(chain.bch_id.to_string()),
-        chain.lifecycle.outcome().map(|outcome| outcome.as_str().to_owned()),
+        chain
+            .lifecycle
+            .outcome()
+            .map(|outcome| outcome.as_str().to_owned()),
     )
 }
 
@@ -857,7 +873,9 @@ fn run_existing(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
     let Some(mut state) = envelope.state else {
         return failure(CoreError::state_revision_mismatch(
             Some(operation_id),
-            envelope.expected_state_revision.map(|value| value.to_string()),
+            envelope
+                .expected_state_revision
+                .map(|value| value.to_string()),
             None,
         ));
     };
@@ -1057,14 +1075,11 @@ fn run_synchronize(
             if let Err(error) = validate_chain(&operation_id, &advanced) {
                 return failure(error);
             }
-            let revision = match next_revision(
-                &operation_id,
-                state.state_revision,
-                "fixture.synchronize",
-            ) {
-                Ok(value) => value,
-                Err(error) => return failure(error),
-            };
+            let revision =
+                match next_revision(&operation_id, state.state_revision, "fixture.synchronize") {
+                    Ok(value) => value,
+                    Err(error) => return failure(error),
+                };
             let effects = candidate_history[first_new_index..]
                 .iter()
                 .map(|record| FixtureEffect::PersistRecord {
@@ -1124,7 +1139,10 @@ fn derive_status_from_history(
 /// event, effect, projection, identity, consent, relationship, or authority.
 #[must_use]
 pub fn run_fixture_transition(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
-    if !envelope.contract_version.accepts_provider(ContractVersion::CURRENT) {
+    if !envelope
+        .contract_version
+        .accepts_provider(ContractVersion::CURRENT)
+    {
         return failure(CoreError::unsupported_contract_version(
             Some(envelope.operation_id),
             Some(envelope.contract_version.to_string()),
@@ -1156,10 +1174,16 @@ mod tests {
     }
 
     fn operation(value: u8) -> OperationId {
-        format!("op_{value:032x}").parse().expect("fixture operation id")
+        format!("op_{value:032x}")
+            .parse()
+            .expect("fixture operation id")
     }
 
-    fn context(now: u64, generated: Option<BondChainId>, auth: FixtureAuthorization) -> FixtureVerifiedContext {
+    fn context(
+        now: u64,
+        generated: Option<BondChainId>,
+        auth: FixtureAuthorization,
+    ) -> FixtureVerifiedContext {
         FixtureVerifiedContext {
             now_unix_ms: DecimalU64::new(now),
             generated_bch_id: generated,
@@ -1172,9 +1196,10 @@ mod tests {
     fn open_outcome() -> FixtureTransitionOutcome {
         let bond_0 = bond('1');
         let bond_1 = bond('2');
-        let chain_id: BondChainId = "bch_000000000000000000000000000000000000000000000000000000000000000a"
-            .parse()
-            .expect("canonical corpus id");
+        let chain_id: BondChainId =
+            "bch_000000000000000000000000000000000000000000000000000000000000000a"
+                .parse()
+                .expect("canonical corpus id");
         run_fixture_transition(CommandEnvelope {
             contract_version: ContractVersion::CURRENT,
             operation_id: operation(1),
