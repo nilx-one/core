@@ -222,11 +222,7 @@ impl CoreError {
         Ok(Self(raw))
     }
 
-    fn built(
-        operation_id: Option<OperationId>,
-        code: ErrorCode,
-        details: Details,
-    ) -> Self {
+    fn built(operation_id: Option<OperationId>, code: ErrorCode, details: Details) -> Self {
         Self(RawCoreError {
             contract_version: ContractVersion::CURRENT,
             operation_id,
@@ -239,7 +235,11 @@ impl CoreError {
     /// Builds `malformed_envelope`.
     #[must_use]
     pub fn malformed_envelope(operation_id: Option<OperationId>) -> Self {
-        Self::built(operation_id, ErrorCode::MalformedEnvelope, Details::from_pairs([]))
+        Self::built(
+            operation_id,
+            ErrorCode::MalformedEnvelope,
+            Details::from_pairs([]),
+        )
     }
 
     /// Builds `unsupported_contract_version` with the normative closed details.
@@ -429,10 +429,7 @@ impl CoreError {
 
     /// Builds `missing_context`.
     #[must_use]
-    pub fn missing_context(
-        operation_id: Option<OperationId>,
-        port: MissingContextPort,
-    ) -> Self {
+    pub fn missing_context(operation_id: Option<OperationId>, port: MissingContextPort) -> Self {
         Self::built(
             operation_id,
             ErrorCode::MissingContext,
@@ -495,7 +492,8 @@ mod tests {
 
     #[test]
     fn typed_factories_keep_closed_detail_values() {
-        let history = CoreError::invalid_history(None, None, None, InvalidHistoryReason::RecordHash);
+        let history =
+            CoreError::invalid_history(None, None, None, InvalidHistoryReason::RecordHash);
         let context = CoreError::missing_context(None, MissingContextPort::IdentifierGeneration);
         assert_eq!(history.code(), ErrorCode::InvalidHistory);
         assert_eq!(context.code(), ErrorCode::MissingContext);
