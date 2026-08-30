@@ -42,7 +42,7 @@ pub trait Entropy {
 
 /// Supplies canonical identifiers without granting identity authority.
 pub trait IdentifierGeneration {
-    /// Returns the next caller-supplied canonical BondChain identifier.
+    /// Returns the next caller-supplied canonical `BondChain` identifier.
     ///
     /// # Errors
     ///
