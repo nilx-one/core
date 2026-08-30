@@ -285,6 +285,14 @@ pub type FixtureTransitionOutcome =
 
 type FixtureEnvelope = CommandEnvelope<FixtureCommand, FixtureState, FixtureVerifiedContext>;
 
+#[derive(Debug)]
+struct ExistingTransition {
+    record_kind: FixtureRecordKind,
+    actor: Option<BondId>,
+    establishment: Establishment,
+    lifecycle: FixtureLifecycle,
+}
+
 fn failure(error: CoreError) -> FixtureTransitionOutcome {
     TransitionOutcome::Error { error }
 }
@@ -453,7 +461,10 @@ fn validate_record_hash(
     }
 }
 
-fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Result<(), CoreError> {
+fn validate_opening_record(
+    operation_id: &OperationId,
+    chain: &FixtureBondChain,
+) -> Result<Sha256Digest, CoreError> {
     validate_participants(&chain.bond_0_id, &chain.bond_1_id).map_err(|_| {
         CoreError::invalid_participants(
             Some(operation_id.clone()),
@@ -461,7 +472,6 @@ fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Resul
             Some(chain.bond_1_id.to_string()),
         )
     })?;
-
     let Some(first) = chain.history.first() else {
         return Err(invalid_history(
             operation_id,
@@ -470,7 +480,10 @@ fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Resul
             InvalidHistoryReason::Sequence,
         ));
     };
-    if first.record_kind != FixtureRecordKind::Opened {
+    if first.record_kind != FixtureRecordKind::Opened
+        || first.sequence != DecimalU64::new(0)
+        || first.previous_record_hash.is_some()
+    {
         return Err(invalid_history(
             operation_id,
             Some(&chain.bch_id),
@@ -486,14 +499,6 @@ fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Resul
             InvalidHistoryReason::CanonicalBytes,
         ));
     };
-    if first.sequence != DecimalU64::new(0) || first.previous_record_hash.is_some() {
-        return Err(invalid_history(
-            operation_id,
-            Some(&chain.bch_id),
-            Some(first.sequence),
-            InvalidHistoryReason::Sequence,
-        ));
-    }
     if first.contract_version != ContractVersion::CURRENT
         || first.bch_id != chain.bch_id
         || first.actor_bond_id.as_ref() != Some(&chain.bond_0_id)
@@ -511,10 +516,133 @@ fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Resul
         ));
     }
     validate_record_hash(operation_id, first)?;
+    Ok(first.record_hash.clone())
+}
+
+fn apply_followup_status(
+    operation_id: &OperationId,
+    chain: &FixtureBondChain,
+    record: &FixtureRecord,
+    establishment: &mut Establishment,
+    lifecycle: &mut FixtureLifecycle,
+) -> Result<(), CoreError> {
+    if lifecycle.is_terminal() {
+        return Err(invalid_history(
+            operation_id,
+            Some(&chain.bch_id),
+            Some(record.sequence),
+            InvalidHistoryReason::Sequence,
+        ));
+    }
+    let invalid_participants = || {
+        invalid_history(
+            operation_id,
+            Some(&chain.bch_id),
+            Some(record.sequence),
+            InvalidHistoryReason::Participants,
+        )
+    };
+    match record.record_kind {
+        FixtureRecordKind::Opened => Err(invalid_history(
+            operation_id,
+            Some(&chain.bch_id),
+            Some(record.sequence),
+            InvalidHistoryReason::Sequence,
+        )),
+        FixtureRecordKind::Accepted => {
+            if record.actor_bond_id.as_ref() != Some(&chain.bond_1_id)
+                || record.observed_at_unix_ms >= chain.expires_at_unix_ms
+            {
+                return Err(invalid_participants());
+            }
+            *establishment = Establishment::Established;
+            *lifecycle = FixtureLifecycle::Terminal {
+                outcome: FixtureTerminalOutcome::Completed,
+            };
+            Ok(())
+        }
+        FixtureRecordKind::Rejected => {
+            if record.actor_bond_id.as_ref() != Some(&chain.bond_1_id)
+                || record.observed_at_unix_ms >= chain.expires_at_unix_ms
+            {
+                return Err(invalid_participants());
+            }
+            *lifecycle = FixtureLifecycle::Terminal {
+                outcome: FixtureTerminalOutcome::Rejected,
+            };
+            Ok(())
+        }
+        FixtureRecordKind::Expired => {
+            if record.actor_bond_id.is_some()
+                || record.observed_at_unix_ms < chain.expires_at_unix_ms
+            {
+                return Err(invalid_participants());
+            }
+            *lifecycle = FixtureLifecycle::Terminal {
+                outcome: FixtureTerminalOutcome::Expired,
+            };
+            Ok(())
+        }
+        FixtureRecordKind::Cancelled => {
+            if record.actor_bond_id.as_ref() != Some(&chain.bond_0_id)
+                || record.observed_at_unix_ms >= chain.expires_at_unix_ms
+                || !chain.cancellable
+            {
+                return Err(invalid_participants());
+            }
+            *lifecycle = FixtureLifecycle::Terminal {
+                outcome: FixtureTerminalOutcome::Cancelled,
+            };
+            Ok(())
+        }
+    }
+}
+
+fn validate_followup_record(
+    operation_id: &OperationId,
+    chain: &FixtureBondChain,
+    record: &FixtureRecord,
+    expected_sequence: DecimalU64,
+    previous_hash: &Sha256Digest,
+    establishment: &mut Establishment,
+    lifecycle: &mut FixtureLifecycle,
+) -> Result<Sha256Digest, CoreError> {
+    if record.contract_version != ContractVersion::CURRENT
+        || record.bch_id != chain.bch_id
+        || record.sequence != expected_sequence
+    {
+        return Err(invalid_history(
+            operation_id,
+            Some(&chain.bch_id),
+            Some(record.sequence),
+            InvalidHistoryReason::Sequence,
+        ));
+    }
+    if record.previous_record_hash.as_ref() != Some(previous_hash) {
+        return Err(invalid_history(
+            operation_id,
+            Some(&chain.bch_id),
+            Some(record.sequence),
+            InvalidHistoryReason::PreviousHash,
+        ));
+    }
+    if !matches!(record.body, FixtureRecordBody::Empty(_)) {
+        return Err(invalid_history(
+            operation_id,
+            Some(&chain.bch_id),
+            Some(record.sequence),
+            InvalidHistoryReason::CanonicalBytes,
+        ));
+    }
+    apply_followup_status(operation_id, chain, record, establishment, lifecycle)?;
+    validate_record_hash(operation_id, record)?;
+    Ok(record.record_hash.clone())
+}
+
+fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Result<(), CoreError> {
+    let mut previous_hash = validate_opening_record(operation_id, chain)?;
     let mut establishment = Establishment::Candidate;
     let mut lifecycle = FixtureLifecycle::Active;
-    let mut previous_hash = first.record_hash.clone();
-
     for (index, record) in chain.history.iter().enumerate().skip(1) {
         let sequence = u64::try_from(index).map(DecimalU64::new).map_err(|_| {
             invalid_history(
@@ -524,118 +652,16 @@ fn validate_chain(operation_id: &OperationId, chain: &FixtureBondChain) -> Resul
                 InvalidHistoryReason::Sequence,
             )
         })?;
-        if lifecycle.is_terminal() {
-            return Err(invalid_history(
-                operation_id,
-                Some(&chain.bch_id),
-                Some(record.sequence),
-                InvalidHistoryReason::Sequence,
-            ));
-        }
-        if record.contract_version != ContractVersion::CURRENT
-            || record.bch_id != chain.bch_id
-            || record.sequence != sequence
-        {
-            return Err(invalid_history(
-                operation_id,
-                Some(&chain.bch_id),
-                Some(record.sequence),
-                InvalidHistoryReason::Sequence,
-            ));
-        }
-        if record.previous_record_hash.as_ref() != Some(&previous_hash) {
-            return Err(invalid_history(
-                operation_id,
-                Some(&chain.bch_id),
-                Some(record.sequence),
-                InvalidHistoryReason::PreviousHash,
-            ));
-        }
-        if !matches!(record.body, FixtureRecordBody::Empty(_)) {
-            return Err(invalid_history(
-                operation_id,
-                Some(&chain.bch_id),
-                Some(record.sequence),
-                InvalidHistoryReason::CanonicalBytes,
-            ));
-        }
-
-        match record.record_kind {
-            FixtureRecordKind::Opened => {
-                return Err(invalid_history(
-                    operation_id,
-                    Some(&chain.bch_id),
-                    Some(record.sequence),
-                    InvalidHistoryReason::Sequence,
-                ));
-            }
-            FixtureRecordKind::Accepted => {
-                if record.actor_bond_id.as_ref() != Some(&chain.bond_1_id)
-                    || record.observed_at_unix_ms >= chain.expires_at_unix_ms
-                {
-                    return Err(invalid_history(
-                        operation_id,
-                        Some(&chain.bch_id),
-                        Some(record.sequence),
-                        InvalidHistoryReason::Participants,
-                    ));
-                }
-                establishment = Establishment::Established;
-                lifecycle = FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Completed,
-                };
-            }
-            FixtureRecordKind::Rejected => {
-                if record.actor_bond_id.as_ref() != Some(&chain.bond_1_id)
-                    || record.observed_at_unix_ms >= chain.expires_at_unix_ms
-                {
-                    return Err(invalid_history(
-                        operation_id,
-                        Some(&chain.bch_id),
-                        Some(record.sequence),
-                        InvalidHistoryReason::Participants,
-                    ));
-                }
-                lifecycle = FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Rejected,
-                };
-            }
-            FixtureRecordKind::Expired => {
-                if record.actor_bond_id.is_some()
-                    || record.observed_at_unix_ms < chain.expires_at_unix_ms
-                {
-                    return Err(invalid_history(
-                        operation_id,
-                        Some(&chain.bch_id),
-                        Some(record.sequence),
-                        InvalidHistoryReason::Participants,
-                    ));
-                }
-                lifecycle = FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Expired,
-                };
-            }
-            FixtureRecordKind::Cancelled => {
-                if record.actor_bond_id.as_ref() != Some(&chain.bond_0_id)
-                    || record.observed_at_unix_ms >= chain.expires_at_unix_ms
-                    || !chain.cancellable
-                {
-                    return Err(invalid_history(
-                        operation_id,
-                        Some(&chain.bch_id),
-                        Some(record.sequence),
-                        InvalidHistoryReason::Participants,
-                    ));
-                }
-                lifecycle = FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Cancelled,
-                };
-            }
-        }
-        validate_record_hash(operation_id, record)?;
-        previous_hash = record.record_hash.clone();
+        previous_hash = validate_followup_record(
+            operation_id,
+            chain,
+            record,
+            sequence,
+            &previous_hash,
+            &mut establishment,
+            &mut lifecycle,
+        )?;
     }
-
     if chain.establishment != establishment || chain.lifecycle != lifecycle {
         return Err(invalid_history(
             operation_id,
@@ -677,7 +703,7 @@ fn terminal_error(operation_id: &OperationId, chain: &FixtureBondChain) -> CoreE
 
 fn success(
     operation_id: OperationId,
-    state: FixtureState,
+    state: &FixtureState,
     effects: Vec<FixtureEffect>,
 ) -> FixtureTransitionOutcome {
     let event = EventEnvelope {
@@ -736,7 +762,7 @@ fn semantic_success(
     state.bond_chain.history.push(record);
     success(
         operation_id,
-        state,
+        &state,
         vec![
             FixtureEffect::PersistRecord {
                 bch_id: bch_id.clone(),
@@ -750,7 +776,78 @@ fn semantic_success(
     )
 }
 
+fn validate_open_context(envelope: &FixtureEnvelope) -> Result<BondChainId, CoreError> {
+    let FixtureCommand::Open {
+        bond_0_id,
+        bond_1_id,
+        previous_bch_id,
+        expires_at_unix_ms,
+        ..
+    } = &envelope.command
+    else {
+        return Err(CoreError::invalid_transition(
+            Some(envelope.operation_id.clone()),
+            None,
+            None,
+        ));
+    };
+    require_revision(
+        &envelope.operation_id,
+        envelope.expected_state_revision,
+        envelope.state.as_ref(),
+    )?;
+    if envelope.state.is_some() {
+        return Err(CoreError::invalid_transition(
+            Some(envelope.operation_id.clone()),
+            Some("fixture.open".to_owned()),
+            Some("existing".to_owned()),
+        ));
+    }
+    validate_participants(bond_0_id, bond_1_id).map_err(|_| {
+        CoreError::invalid_participants(
+            Some(envelope.operation_id.clone()),
+            Some(bond_0_id.to_string()),
+            Some(bond_1_id.to_string()),
+        )
+    })?;
+    if *expires_at_unix_ms <= envelope.verified_context.now_unix_ms {
+        return Err(CoreError::invalid_transition(
+            Some(envelope.operation_id.clone()),
+            Some("fixture.open".to_owned()),
+            Some("expired".to_owned()),
+        ));
+    }
+    require_authorization(
+        &envelope.operation_id,
+        &envelope.verified_context,
+        bond_0_id,
+        FixtureAuthorizationScope::Initiate,
+    )?;
+    let bch_id = envelope
+        .verified_context
+        .generated_bch_id
+        .clone()
+        .ok_or_else(|| {
+            CoreError::missing_context(
+                Some(envelope.operation_id.clone()),
+                MissingContextPort::IdentifierGeneration,
+            )
+        })?;
+    if previous_bch_id.as_ref() == Some(&bch_id) {
+        return Err(CoreError::invalid_transition(
+            Some(envelope.operation_id.clone()),
+            Some("fixture.open".to_owned()),
+            Some("self_reference".to_owned()),
+        ));
+    }
+    Ok(bch_id)
+}
+
 fn run_open(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
+    let bch_id = match validate_open_context(&envelope) {
+        Ok(value) => value,
+        Err(error) => return failure(error),
+    };
     let FixtureCommand::Open {
         bond_0_id,
         bond_1_id,
@@ -759,62 +856,8 @@ fn run_open(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
         cancellable,
     } = envelope.command
     else {
-        return failure(CoreError::invalid_transition(
-            Some(envelope.operation_id),
-            None,
-            None,
-        ));
+        unreachable!("open context validation requires an open command");
     };
-    if let Err(error) = require_revision(
-        &envelope.operation_id,
-        envelope.expected_state_revision,
-        envelope.state.as_ref(),
-    ) {
-        return failure(error);
-    }
-    if envelope.state.is_some() {
-        return failure(CoreError::invalid_transition(
-            Some(envelope.operation_id),
-            Some("fixture.open".to_owned()),
-            Some("existing".to_owned()),
-        ));
-    }
-    if let Err(_error) = validate_participants(&bond_0_id, &bond_1_id) {
-        return failure(CoreError::invalid_participants(
-            Some(envelope.operation_id),
-            Some(bond_0_id.to_string()),
-            Some(bond_1_id.to_string()),
-        ));
-    }
-    if expires_at_unix_ms <= envelope.verified_context.now_unix_ms {
-        return failure(CoreError::invalid_transition(
-            Some(envelope.operation_id),
-            Some("fixture.open".to_owned()),
-            Some("expired".to_owned()),
-        ));
-    }
-    if let Err(error) = require_authorization(
-        &envelope.operation_id,
-        &envelope.verified_context,
-        &bond_0_id,
-        FixtureAuthorizationScope::Initiate,
-    ) {
-        return failure(error);
-    }
-    let Some(bch_id) = envelope.verified_context.generated_bch_id.clone() else {
-        return failure(CoreError::missing_context(
-            Some(envelope.operation_id),
-            MissingContextPort::IdentifierGeneration,
-        ));
-    };
-    if previous_bch_id.as_ref() == Some(&bch_id) {
-        return failure(CoreError::invalid_transition(
-            Some(envelope.operation_id),
-            Some("fixture.open".to_owned()),
-            Some("self_reference".to_owned()),
-        ));
-    }
-
     let mut chain = FixtureBondChain {
         bch_id,
         bond_0_id,
@@ -853,7 +896,7 @@ fn run_open(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
     };
     success(
         envelope.operation_id,
-        state,
+        &state,
         vec![
             FixtureEffect::PersistRecord {
                 bch_id: bch_id.clone(),
@@ -867,10 +910,152 @@ fn run_open(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
     )
 }
 
+fn before_expiry(
+    operation_id: &OperationId,
+    command_kind: &str,
+    now: DecimalU64,
+    expires_at: DecimalU64,
+) -> Result<(), CoreError> {
+    if now < expires_at {
+        Ok(())
+    } else {
+        Err(CoreError::invalid_transition(
+            Some(operation_id.clone()),
+            Some(command_kind.to_owned()),
+            Some("expired".to_owned()),
+        ))
+    }
+}
+
+fn accept_transition(
+    operation_id: &OperationId,
+    state: &FixtureState,
+    context: &FixtureVerifiedContext,
+) -> Result<ExistingTransition, CoreError> {
+    before_expiry(
+        operation_id,
+        "fixture.accept",
+        context.now_unix_ms,
+        state.bond_chain.expires_at_unix_ms,
+    )?;
+    require_authorization(
+        operation_id,
+        context,
+        &state.bond_chain.bond_1_id,
+        FixtureAuthorizationScope::Reciprocate,
+    )?;
+    Ok(ExistingTransition {
+        record_kind: FixtureRecordKind::Accepted,
+        actor: Some(state.bond_chain.bond_1_id.clone()),
+        establishment: Establishment::Established,
+        lifecycle: FixtureLifecycle::Terminal {
+            outcome: FixtureTerminalOutcome::Completed,
+        },
+    })
+}
+
+fn reject_transition(
+    operation_id: &OperationId,
+    state: &FixtureState,
+    context: &FixtureVerifiedContext,
+) -> Result<ExistingTransition, CoreError> {
+    before_expiry(
+        operation_id,
+        "fixture.reject",
+        context.now_unix_ms,
+        state.bond_chain.expires_at_unix_ms,
+    )?;
+    require_authorization(
+        operation_id,
+        context,
+        &state.bond_chain.bond_1_id,
+        FixtureAuthorizationScope::Reciprocate,
+    )?;
+    Ok(ExistingTransition {
+        record_kind: FixtureRecordKind::Rejected,
+        actor: Some(state.bond_chain.bond_1_id.clone()),
+        establishment: Establishment::Candidate,
+        lifecycle: FixtureLifecycle::Terminal {
+            outcome: FixtureTerminalOutcome::Rejected,
+        },
+    })
+}
+
+fn expire_transition(
+    operation_id: &OperationId,
+    state: &FixtureState,
+    context: &FixtureVerifiedContext,
+) -> Result<ExistingTransition, CoreError> {
+    if context.now_unix_ms < state.bond_chain.expires_at_unix_ms {
+        return Err(CoreError::invalid_transition(
+            Some(operation_id.clone()),
+            Some("fixture.expire".to_owned()),
+            Some("active".to_owned()),
+        ));
+    }
+    Ok(ExistingTransition {
+        record_kind: FixtureRecordKind::Expired,
+        actor: None,
+        establishment: Establishment::Candidate,
+        lifecycle: FixtureLifecycle::Terminal {
+            outcome: FixtureTerminalOutcome::Expired,
+        },
+    })
+}
+
+fn cancel_transition(
+    operation_id: &OperationId,
+    state: &FixtureState,
+    context: &FixtureVerifiedContext,
+) -> Result<ExistingTransition, CoreError> {
+    if context.now_unix_ms >= state.bond_chain.expires_at_unix_ms || !state.bond_chain.cancellable {
+        return Err(CoreError::invalid_transition(
+            Some(operation_id.clone()),
+            Some("fixture.cancel".to_owned()),
+            Some("not_cancellable".to_owned()),
+        ));
+    }
+    require_authorization(
+        operation_id,
+        context,
+        &state.bond_chain.bond_0_id,
+        FixtureAuthorizationScope::Initiate,
+    )?;
+    Ok(ExistingTransition {
+        record_kind: FixtureRecordKind::Cancelled,
+        actor: Some(state.bond_chain.bond_0_id.clone()),
+        establishment: Establishment::Candidate,
+        lifecycle: FixtureLifecycle::Terminal {
+            outcome: FixtureTerminalOutcome::Cancelled,
+        },
+    })
+}
+
+fn resolve_existing_transition(
+    operation_id: &OperationId,
+    state: &FixtureState,
+    context: &FixtureVerifiedContext,
+    command: &FixtureCommand,
+) -> Result<ExistingTransition, CoreError> {
+    match command {
+        FixtureCommand::Accept => accept_transition(operation_id, state, context),
+        FixtureCommand::Reject => reject_transition(operation_id, state, context),
+        FixtureCommand::Expire => expire_transition(operation_id, state, context),
+        FixtureCommand::Cancel => cancel_transition(operation_id, state, context),
+        FixtureCommand::Open { .. } | FixtureCommand::Synchronize { .. } => {
+            Err(CoreError::invalid_transition(
+                Some(operation_id.clone()),
+                Some(command.kind().to_owned()),
+                Some("existing".to_owned()),
+            ))
+        }
+    }
+}
+
 fn run_existing(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
     let operation_id = envelope.operation_id;
     let command_kind = envelope.command.kind();
-    let Some(mut state) = envelope.state else {
+    let Some(state) = envelope.state else {
         return failure(CoreError::state_revision_mismatch(
             Some(operation_id),
             envelope
@@ -889,123 +1074,27 @@ fn run_existing(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
     if let Err(error) = validate_chain(&operation_id, &state.bond_chain) {
         return failure(error);
     }
-
-    if let FixtureCommand::Synchronize { candidate_history } = envelope.command {
+    if let FixtureCommand::Synchronize { candidate_history } = &envelope.command {
         return run_synchronize(operation_id, state, candidate_history);
     }
     if require_active(state.bond_chain.lifecycle.is_terminal()).is_err() {
         return failure(terminal_error(&operation_id, &state.bond_chain));
     }
-
-    let now = envelope.verified_context.now_unix_ms;
-    let (record_kind, actor, establishment, lifecycle) = match envelope.command {
-        FixtureCommand::Accept => {
-            if now >= state.bond_chain.expires_at_unix_ms {
-                return failure(CoreError::invalid_transition(
-                    Some(operation_id),
-                    Some(command_kind.to_owned()),
-                    Some("expired".to_owned()),
-                ));
-            }
-            if let Err(error) = require_authorization(
-                &operation_id,
-                &envelope.verified_context,
-                &state.bond_chain.bond_1_id,
-                FixtureAuthorizationScope::Reciprocate,
-            ) {
-                return failure(error);
-            }
-            (
-                FixtureRecordKind::Accepted,
-                Some(state.bond_chain.bond_1_id.clone()),
-                Establishment::Established,
-                FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Completed,
-                },
-            )
-        }
-        FixtureCommand::Reject => {
-            if now >= state.bond_chain.expires_at_unix_ms {
-                return failure(CoreError::invalid_transition(
-                    Some(operation_id),
-                    Some(command_kind.to_owned()),
-                    Some("expired".to_owned()),
-                ));
-            }
-            if let Err(error) = require_authorization(
-                &operation_id,
-                &envelope.verified_context,
-                &state.bond_chain.bond_1_id,
-                FixtureAuthorizationScope::Reciprocate,
-            ) {
-                return failure(error);
-            }
-            (
-                FixtureRecordKind::Rejected,
-                Some(state.bond_chain.bond_1_id.clone()),
-                Establishment::Candidate,
-                FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Rejected,
-                },
-            )
-        }
-        FixtureCommand::Expire => {
-            if now < state.bond_chain.expires_at_unix_ms {
-                return failure(CoreError::invalid_transition(
-                    Some(operation_id),
-                    Some(command_kind.to_owned()),
-                    Some("active".to_owned()),
-                ));
-            }
-            (
-                FixtureRecordKind::Expired,
-                None,
-                Establishment::Candidate,
-                FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Expired,
-                },
-            )
-        }
-        FixtureCommand::Cancel => {
-            if now >= state.bond_chain.expires_at_unix_ms || !state.bond_chain.cancellable {
-                return failure(CoreError::invalid_transition(
-                    Some(operation_id),
-                    Some(command_kind.to_owned()),
-                    Some("not_cancellable".to_owned()),
-                ));
-            }
-            if let Err(error) = require_authorization(
-                &operation_id,
-                &envelope.verified_context,
-                &state.bond_chain.bond_0_id,
-                FixtureAuthorizationScope::Initiate,
-            ) {
-                return failure(error);
-            }
-            (
-                FixtureRecordKind::Cancelled,
-                Some(state.bond_chain.bond_0_id.clone()),
-                Establishment::Candidate,
-                FixtureLifecycle::Terminal {
-                    outcome: FixtureTerminalOutcome::Cancelled,
-                },
-            )
-        }
-        FixtureCommand::Open { .. } | FixtureCommand::Synchronize { .. } => {
-            return failure(CoreError::invalid_transition(
-                Some(operation_id),
-                Some(command_kind.to_owned()),
-                Some("existing".to_owned()),
-            ));
-        }
+    let transition = match resolve_existing_transition(
+        &operation_id,
+        &state,
+        &envelope.verified_context,
+        &envelope.command,
+    ) {
+        Ok(value) => value,
+        Err(error) => return failure(error),
     };
-
     let record = match make_record(
         &operation_id,
         &state.bond_chain,
-        record_kind,
-        actor,
-        now,
+        transition.record_kind,
+        transition.actor,
+        envelope.verified_context.now_unix_ms,
         FixtureRecordBody::Empty(FixtureEmptyBody {}),
     ) {
         Ok(value) => value,
@@ -1015,8 +1104,8 @@ fn run_existing(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
         operation_id,
         state,
         record,
-        establishment,
-        lifecycle,
+        transition.establishment,
+        transition.lifecycle,
         command_kind,
     )
 }
@@ -1024,7 +1113,7 @@ fn run_existing(envelope: FixtureEnvelope) -> FixtureTransitionOutcome {
 fn run_synchronize(
     operation_id: OperationId,
     mut state: FixtureState,
-    candidate_history: Vec<FixtureRecord>,
+    candidate_history: &[FixtureRecord],
 ) -> FixtureTransitionOutcome {
     let local_head = state
         .bond_chain
@@ -1034,7 +1123,7 @@ fn run_synchronize(
     let candidate_head = candidate_history
         .last()
         .map(|record| record.record_hash.to_string());
-    match classify_history(&state.bond_chain.history, &candidate_history) {
+    match classify_history(&state.bond_chain.history, candidate_history) {
         HistoryRelation::Equal => TransitionOutcome::Ok {
             ok: TransitionOk {
                 contract_version: ContractVersion::CURRENT,
@@ -1064,7 +1153,8 @@ fn run_synchronize(
         )),
         HistoryRelation::FastForward { first_new_index } => {
             let mut advanced = state.bond_chain.clone();
-            advanced.history = candidate_history.clone();
+            advanced.history.clear();
+            advanced.history.extend_from_slice(candidate_history);
             let derived = derive_status_from_history(&operation_id, &advanced);
             let (establishment, lifecycle) = match derived {
                 Ok(value) => value,
@@ -1089,7 +1179,7 @@ fn run_synchronize(
                 .collect();
             state.state_revision = revision;
             state.bond_chain = advanced;
-            success(operation_id, state, effects)
+            success(operation_id, &state, effects)
         }
     }
 }
@@ -1101,8 +1191,7 @@ fn derive_status_from_history(
     let mut probe = chain.clone();
     probe.establishment = Establishment::Candidate;
     probe.lifecycle = FixtureLifecycle::Active;
-    if probe.history.len() > 1 {
-        let last = probe.history.last().expect("history length checked");
+    if let Some(last) = probe.history.get(1..).and_then(|history| history.last()) {
         match last.record_kind {
             FixtureRecordKind::Accepted => {
                 probe.establishment = Establishment::Established;
