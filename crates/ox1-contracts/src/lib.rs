@@ -11,6 +11,7 @@ mod canonical;
 mod envelope;
 mod error;
 mod identifier;
+mod pub_dress;
 mod scalar;
 mod version;
 
@@ -21,6 +22,7 @@ pub use envelope::{
 };
 pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
 pub use identifier::{BondChainId, BondId, IdentifierError, OperationId, Sha256Digest};
+pub use pub_dress::{PubDress, PubDressError};
 pub use scalar::{DecimalU64, DecimalU64Error};
 pub use version::{ContractVersion, VersionError};
 

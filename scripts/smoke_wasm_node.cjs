@@ -6,6 +6,10 @@
 const assert = require('node:assert/strict');
 const core = require('../target/core-bindings-wasm-node/index.js');
 
+assert.equal(core.validate_pub_dress('0x0sky'), 'valid');
+assert.equal(core.validate_pub_dress('0x0Sky'), 'valid');
+assert.equal(core.validate_pub_dress('0xgsky'), 'invalid_discriminator');
+
 assert.equal(core.contract_version(), '0.1.0');
 assert.equal(core.fixture_corpus_version(), '0.1.0');
 assert.equal(
