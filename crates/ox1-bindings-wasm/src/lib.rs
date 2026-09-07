@@ -3,10 +3,18 @@
 
 //! Thin WebAssembly translation boundary for 0x1 Core.
 //!
-//! These exports report compatibility metadata only. They do not create identity,
-//! authority, a Bond, a `BondChain`, reciprocity, or any product state.
+//! These exports report compatibility metadata and deterministic contract results.
+//! They do not create identity, authority, a Bond, a `BondChain`, reciprocity, or
+//! any product state.
 
 use wasm_bindgen::prelude::wasm_bindgen;
+
+fn label_wire(result: Result<String, ox1_contracts::PubDressLabelError>) -> String {
+    match result {
+        Ok(label) => format!("label:{label}"),
+        Err(error) => format!("error:{}", error.code()),
+    }
+}
 
 /// Returns `valid` or a stable canonical `pub_dress` failure code.
 #[must_use]
@@ -16,6 +24,44 @@ pub fn validate_pub_dress(value: &str) -> String {
         Ok(_) => "valid".to_owned(),
         Err(error) => error.code().to_owned(),
     }
+}
+
+/// Derives the Core-owned DNS A-label for a raw `pub_dress`.
+///
+/// The stable wire form is `label:<a-label>` on success or
+/// `error:<pub_dress_label_error_code>` on failure.
+#[must_use]
+#[wasm_bindgen]
+pub fn derive_pub_dress_label(value: &str) -> String {
+    label_wire(
+        ox1_contracts::PubDressLabel::stem_from_str(value).map(|stem| stem.as_str().to_owned()),
+    )
+}
+
+/// Composes a collision suffix before the Core-owned UTS-46 encoding.
+///
+/// The stable wire form matches [`derive_pub_dress_label`].
+#[must_use]
+#[wasm_bindgen]
+pub fn compose_pub_dress_label(value: &str, suffix: &str) -> String {
+    let result = ox1_contracts::PubDressLabel::stem_from_str(value)
+        .and_then(|stem| ox1_contracts::PubDressLabel::compose(&stem, suffix))
+        .map(|label| label.as_str().to_owned());
+    label_wire(result)
+}
+
+/// Returns the pinned Unicode version used by the `PubDress` scalar policy.
+#[must_use]
+#[wasm_bindgen]
+pub fn pub_dress_unicode_version() -> String {
+    ox1_contracts::PUB_DRESS_UNICODE_VERSION.to_owned()
+}
+
+/// Returns the exact UTS-46 implementation pin owned by Core.
+#[must_use]
+#[wasm_bindgen]
+pub fn pub_dress_uts46_implementation() -> String {
+    ox1_contracts::PUB_DRESS_UTS46_IMPLEMENTATION.to_owned()
 }
 
 /// Returns the normative Core contract version implemented by this build.
@@ -42,7 +88,9 @@ pub fn fixture_corpus_digest() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        contract_version, fixture_corpus_digest, fixture_corpus_version, validate_pub_dress,
+        compose_pub_dress_label, contract_version, derive_pub_dress_label, fixture_corpus_digest,
+        fixture_corpus_version, pub_dress_unicode_version, pub_dress_uts46_implementation,
+        validate_pub_dress,
     };
 
     #[test]
@@ -59,6 +107,20 @@ mod tests {
     fn wasm_surface_exposes_canonical_pub_dress_validation() {
         assert_eq!(validate_pub_dress("0x0sky"), "valid");
         assert_eq!(validate_pub_dress("0x0Sky"), "valid");
+        assert_eq!(validate_pub_dress("0x0небо"), "valid");
         assert_eq!(validate_pub_dress("0xgsky"), "invalid_discriminator");
+    }
+
+    #[test]
+    fn wasm_surface_exposes_core_owned_label_derivation() {
+        assert_eq!(derive_pub_dress_label("0x0небо"), "label:xn--0x0-dddt1cj");
+        assert_eq!(derive_pub_dress_label("0x0Небо"), "label:xn--0x0-dddt1cj");
+        assert_eq!(derive_pub_dress_label("0x0a🌍"), "error:disallowed_scalar");
+        assert!(compose_pub_dress_label("0x0небо", "42").starts_with("label:xn--"));
+        assert_eq!(pub_dress_unicode_version(), "16.0.0");
+        assert_eq!(
+            pub_dress_uts46_implementation(),
+            "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
+        );
     }
 }

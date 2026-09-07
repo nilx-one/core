@@ -13,6 +13,7 @@ mod envelope;
 mod error;
 mod identifier;
 mod pub_dress;
+mod pub_dress_label;
 mod scalar;
 mod version;
 
@@ -25,6 +26,10 @@ pub use envelope::{
 pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
 pub use identifier::{BondChainId, BondId, IdentifierError, OperationId, Sha256Digest};
 pub use pub_dress::{PubDress, PubDressError};
+pub use pub_dress_label::{
+    PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PUB_DRESS_UNICODE_VERSION,
+    PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel, PubDressLabelError, PubDressStem,
+};
 pub use scalar::{DecimalU64, DecimalU64Error};
 pub use version::{ContractVersion, VersionError};
 
