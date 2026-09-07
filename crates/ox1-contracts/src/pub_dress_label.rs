@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn classifies_disallowed_and_bidi_sources() {
         assert_eq!(
-            PubDressLabel::stem_from_str("0x0🌍"),
+            PubDressLabel::stem_from_str("0x0a🌍"),
             Err(PubDressLabelError::DisallowedScalar)
         );
 
@@ -434,7 +434,7 @@ mod tests {
             Err(PubDressLabelError::DisallowedScalar)
         );
 
-        for value in ["0x0א", "0x0ء"] {
+        for value in ["0x0aא", "0x0aء"] {
             assert_eq!(
                 PubDressLabel::stem_from_str(value),
                 Err(PubDressLabelError::BidiRule),
