@@ -76,8 +76,8 @@ pub struct PubDressLabel {
 impl PubDressLabel {
     /// Derives the DNS A-label stem from an exact canonical `PubDress`.
     ///
-    /// Mapping is UTS-46 non-transitional with STD3 ASCII rules, CheckHyphens,
-    /// CheckBidi, CheckJoiners, and VerifyDNSLength enabled. Core never
+    /// Mapping is UTS-46 non-transitional with STD3 ASCII rules, `CheckHyphens`,
+    /// `CheckBidi`, `CheckJoiners`, and `VerifyDNSLength` enabled. Core never
     /// pre-lowercases or normalizes the identity; UTS-46 owns mapping.
     ///
     /// # Errors
