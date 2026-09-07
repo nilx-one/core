@@ -115,7 +115,7 @@ mod tests {
     fn wasm_surface_exposes_core_owned_label_derivation() {
         assert_eq!(derive_pub_dress_label("0x0небо"), "label:xn--0x0-dddt1cj");
         assert_eq!(derive_pub_dress_label("0x0Небо"), "label:xn--0x0-dddt1cj");
-        assert_eq!(derive_pub_dress_label("0x0🌍"), "error:disallowed_scalar");
+        assert_eq!(derive_pub_dress_label("0x0a🌍"), "error:disallowed_scalar");
         assert!(compose_pub_dress_label("0x0небо", "42").starts_with("label:xn--"));
         assert_eq!(pub_dress_unicode_version(), "16.0.0");
         assert_eq!(
