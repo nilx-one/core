@@ -135,7 +135,7 @@ mod tests {
             "label:xn--0x0-dddt1cj"
         );
         assert_eq!(
-            derive_pub_dress_label("0x0🌍".to_owned()),
+            derive_pub_dress_label("0x0a🌍".to_owned()),
             "error:disallowed_scalar"
         );
         assert!(
