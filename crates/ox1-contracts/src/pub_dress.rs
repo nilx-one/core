@@ -119,7 +119,7 @@ fn validate(value: &str) -> Result<(char, &str), PubDressError> {
     Ok((discriminator, slug))
 }
 
-fn is_allowed_slug_scalar(value: char) -> bool {
+pub(crate) fn is_allowed_slug_scalar(value: char) -> bool {
     value.is_ascii_alphabetic()
         || value.is_ascii_digit()
         || matches!(

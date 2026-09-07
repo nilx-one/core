@@ -7,6 +7,7 @@
 //! production interaction registry. Product semantics remain owned by the canonical
 //! `nilx-one/0x1` specification.
 
+mod avaia_pub_dress;
 mod canonical;
 mod envelope;
 mod error;
@@ -15,6 +16,7 @@ mod pub_dress;
 mod scalar;
 mod version;
 
+pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use canonical::{CanonicalJsonError, canonical_json};
 pub use envelope::{
     CommandEnvelope, EffectRequestEnvelope, EventEnvelope, ProjectionEnvelope, TransitionOk,
