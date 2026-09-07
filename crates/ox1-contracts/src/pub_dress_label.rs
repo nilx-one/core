@@ -28,8 +28,7 @@ pub const PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH: usize = 8;
 /// Unicode version used by the canonical `PubDress` scalar-category table.
 pub const PUB_DRESS_UNICODE_VERSION: &str = "16.0.0";
 /// Exact UTS-46 implementation pinned by the Core contract.
-pub const PUB_DRESS_UTS46_IMPLEMENTATION: &str =
-    "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0";
+pub const PUB_DRESS_UTS46_IMPLEMENTATION: &str = "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0";
 
 /// Fixed label stem derived from a canonical `PubDress` before allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -292,10 +291,12 @@ fn encode_source(source: &str) -> Result<String, PubDressLabelError> {
 }
 
 fn classify_uts46_error(source: &str) -> PubDressLabelError {
-    if source
-        .chars()
-        .any(|scalar| matches!(bidi_class(scalar), BidiClass::R | BidiClass::AL | BidiClass::AN))
-    {
+    if source.chars().any(|scalar| {
+        matches!(
+            bidi_class(scalar),
+            BidiClass::R | BidiClass::AL | BidiClass::AN
+        )
+    }) {
         PubDressLabelError::BidiRule
     } else {
         PubDressLabelError::NotEncodable
@@ -343,9 +344,8 @@ fn contains_disallowed_unicode_scalar(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH,
-        PUB_DRESS_UNICODE_VERSION, PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel,
-        PubDressLabelError,
+        PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PUB_DRESS_UNICODE_VERSION,
+        PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel, PubDressLabelError,
     };
     use crate::PubDress;
 
@@ -395,12 +395,20 @@ mod tests {
         assert_ne!(unicode_upper, unicode_lower);
         assert_ne!(ascii_upper, ascii_lower);
         assert_eq!(
-            PubDressLabel::stem(&unicode_upper).expect("representable").as_str(),
-            PubDressLabel::stem(&unicode_lower).expect("representable").as_str()
+            PubDressLabel::stem(&unicode_upper)
+                .expect("representable")
+                .as_str(),
+            PubDressLabel::stem(&unicode_lower)
+                .expect("representable")
+                .as_str()
         );
         assert_eq!(
-            PubDressLabel::stem(&ascii_upper).expect("representable").as_str(),
-            PubDressLabel::stem(&ascii_lower).expect("representable").as_str()
+            PubDressLabel::stem(&ascii_upper)
+                .expect("representable")
+                .as_str(),
+            PubDressLabel::stem(&ascii_lower)
+                .expect("representable")
+                .as_str()
         );
     }
 

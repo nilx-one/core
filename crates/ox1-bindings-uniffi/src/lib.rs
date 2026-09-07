@@ -40,8 +40,7 @@ pub fn validate_pub_dress(value: String) -> String {
 )]
 pub fn derive_pub_dress_label(value: String) -> String {
     label_wire(
-        ox1_contracts::PubDressLabel::stem_from_str(&value)
-            .map(|stem| stem.as_str().to_owned()),
+        ox1_contracts::PubDressLabel::stem_from_str(&value).map(|stem| stem.as_str().to_owned()),
     )
 }
 
