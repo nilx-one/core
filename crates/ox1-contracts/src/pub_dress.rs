@@ -3,11 +3,17 @@
 
 use core::{fmt, str::FromStr};
 
+use unicode_general_category::{GeneralCategory, get_general_category};
+
 const PREFIX: &str = "0x";
 const MIN_SLUG_SCALARS: usize = 2;
 const MAX_SLUG_SCALARS: usize = 32;
 
 /// Canonical human-readable 0x1 public address.
+///
+/// `PubDress` is an identity value, not a DNS label. Accepted input is preserved
+/// exactly: no case folding, transliteration, or Unicode normalization happens
+/// at this boundary.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PubDress {
     value: String,
@@ -119,9 +125,23 @@ fn validate(value: &str) -> Result<(char, &str), PubDressError> {
     Ok((discriminator, slug))
 }
 
+pub(crate) fn is_unicode_name_scalar(value: char) -> bool {
+    matches!(
+        get_general_category(value),
+        GeneralCategory::UppercaseLetter
+            | GeneralCategory::LowercaseLetter
+            | GeneralCategory::TitlecaseLetter
+            | GeneralCategory::ModifierLetter
+            | GeneralCategory::OtherLetter
+            | GeneralCategory::NonspacingMark
+            | GeneralCategory::SpacingMark
+            | GeneralCategory::EnclosingMark
+            | GeneralCategory::DecimalNumber
+    )
+}
+
 pub(crate) fn is_allowed_slug_scalar(value: char) -> bool {
-    value.is_ascii_alphabetic()
-        || value.is_ascii_digit()
+    is_unicode_name_scalar(value)
         || matches!(
             value,
             '-' | '/'
@@ -174,6 +194,13 @@ mod tests {
             "0xfa/b?c#d%20",
             "0x0₴€$£•",
             "0xf-/:;()&@\".,?!'[]{}#%^*+=_\\|~<>",
+            "0x0небо",
+            "0x0Небо",
+            "0xdпривіт",
+            "0x0ΟΔΟΣ",
+            "0x0日本",
+            "0x0café",
+            "0x0a\u{0301}",
         ];
 
         for value in values {
@@ -203,15 +230,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_values_that_would_require_rewriting() {
-        for value in [
-            "0x0привіт",
-            "0x0a🙂",
-            "0x0a\u{0301}",
-            "0x0‘a",
-            " 0xsky",
-            "0x0sky ",
-        ] {
+    fn rejects_values_outside_the_identity_contract_without_rewriting() {
+        for value in ["0x0a🙂", "0x0🌍", "0x0‘a", " 0xsky", "0x0sky "] {
             assert!(value.parse::<PubDress>().is_err(), "accepted {value:?}");
         }
     }
@@ -228,12 +248,15 @@ mod tests {
     }
 
     #[test]
-    fn keeps_discriminator_and_case_sensitive_slug_separate() {
-        let lower: PubDress = "0x0sky".parse().expect("valid pub_dress");
-        let upper: PubDress = "0x0Sky".parse().expect("valid pub_dress");
+    fn keeps_case_sensitive_unicode_identities_distinct() {
+        let lower: PubDress = "0x0небо".parse().expect("valid pub_dress");
+        let upper: PubDress = "0x0Небо".parse().expect("valid pub_dress");
+        let latin_lower: PubDress = "0x0sky".parse().expect("valid pub_dress");
+        let latin_upper: PubDress = "0x0Sky".parse().expect("valid pub_dress");
 
         assert_eq!(lower.discriminator(), '0');
-        assert_eq!(lower.slug(), "sky");
+        assert_eq!(lower.slug(), "небо");
         assert_ne!(lower, upper);
+        assert_ne!(latin_lower, latin_upper);
     }
 }

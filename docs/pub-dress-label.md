@@ -3,76 +3,165 @@
 
 # PubDressLabel contract
 
-Status: v0.1
-Owner: `ox1-contracts`
+Status: v0.1  
+Owner: `ox1-contracts`  
 Companion type: `PubDress`
 
-`PubDressLabel` is the canonical DNS-label form allocated to a Bond public address. It is a protocol contract, not a deployment rule: Core owns folding and validation, while persistence, collision allocation, DNS zones, TLS, HTTP routing, and UI remain outside this crate.
+`PubDress` and `PubDressLabel` are deliberately different contracts.
 
-## Why the label is stored separately
+`PubDress` is the exact, case-sensitive Bond identity chosen by a person. `PubDressLabel` is a deterministic DNS A-label projection of that identity. DNS is one transport surface; it must never redefine the identity itself.
 
-`PubDress` is case-sensitive while DNS label comparison is case-insensitive. The mapping is therefore intentionally non-injective: distinct canonical identities such as `0x0Sky` and `0x0sky` both fold to the stem `0x0sky`.
+Core owns both contracts. Persistence owns atomic label allocation. Web owns presentation. DNS/TLS deployment remains infrastructure.
 
-A label must never be reverse-computed into a `PubDress`. Allocation is authoritative only when a persistence owner atomically claims the unique label. Resolution before that transaction is advisory. The first successful claim owns the label; a later colliding Bond must allocate a distinct suffix.
+## PubDress identity boundary
 
-## v0.1 mapping
+Canonical `PubDress` syntax remains:
 
-The v0.1 rule is deliberately small and deterministic:
+- literal `0x`;
+- one lowercase hexadecimal discriminator (`0`–`f`);
+- a slug of 2–32 Unicode scalar values.
 
-- preserve the literal `0x` prefix;
-- preserve the already-lowercase hexadecimal discriminator;
-- fold ASCII `A-Z` to `a-z` in the slug;
-- fold ASCII `A-Z` to `a-z` in a collision suffix;
-- allow only `[a-z0-9-]` in the resulting label;
-- reject a leading or trailing hyphen;
-- reject a label longer than 63 octets;
-- reject a suffix longer than 8 ASCII characters;
-- keep every resulting Bond label inside the `0x` namespace.
+The existing accepted slug scalars remain valid. In addition, Unicode letters, combining marks, and decimal digits are valid human-name scalars. Examples include:
 
-No general Unicode lowercase operation is part of the contract.
+- `0x0небо`
+- `0x0Небо`
+- `0xdпривіт`
+- `0x0ΟΔΟΣ`
+- `0x0日本`
+- `0x0café`
 
-## Non-ASCII policy
+Accepted input is stored exactly. Core performs no transliteration, case folding, or silent Unicode normalization at the `PubDress` boundary.
 
-v0.1 resolves the non-ASCII decision as **refuse**.
+Therefore `0x0небо` and `0x0Небо` are distinct identities, just as `0x0Sky` and `0x0sky` are distinct identities.
 
-Core does not apply IDNA/UTS-46, Punycode, or transliteration. A canonical `PubDress` containing a non-ASCII scalar that the current `PubDress` grammar permits remains a valid identity, but `PubDressLabel::stem` returns `NonAscii` and no DNS label is derived.
+Emoji remains outside the identity grammar. Leading/trailing whitespace and an uppercase discriminator remain invalid.
 
-This decision is intentionally versioned. A future contract may define a pinned IDNA mapping, but changing the mapping of already allocated labels would break address ownership and therefore requires an explicit protocol revision and migration design.
+A valid `PubDress` is not guaranteed to have a DNS representation. Identity validity and DNS representability are separate decisions.
 
-## Canonical `PubDress` boundary
+## UTS-46 DNS projection
 
-`PubDressLabel` does not broaden the `PubDress` grammar.
+`PubDressLabel` derives one lowercase ASCII DNS A-label from a canonical `PubDress`.
 
-The current `PubDress` contract rejects Cyrillic identities such as `0x0небо`, so a typed call to `PubDressLabel::stem(&PubDress)` can never receive that value. The raw-string convenience boundary classifies it as `NotAPubDress`.
+Core uses the Rust `idna` UTS-46 implementation with these normative parameters:
 
-By contrast, the current `PubDress` grammar does permit some non-ASCII scalars such as `₴`, `€`, `£`, and `•`. A canonical value containing one of those scalars reaches the typed label boundary and is rejected as `NonAscii`.
+- `Transitional_Processing = false`;
+- `UseSTD3ASCIIRules = true`;
+- `CheckHyphens = true`;
+- `CheckBidi = true`;
+- `CheckJoiners = true`;
+- `VerifyDnsLength = true`.
 
-This distinction is normative for v0.1:
+The encoder owns mapping and case handling. Callers must not pre-lowercase Unicode or normalize the identity first. General Unicode lowercase is not an equivalent operation; in particular, case handling around characters such as Greek sigma can otherwise drift from UTS-46.
 
-- invalid identity syntax -> `NotAPubDress` at the raw-string boundary;
-- valid identity with no v0.1 DNS representation -> `NonAscii` at label derivation;
-- `stem(&PubDress)` accepts only an already-canonical identity.
+The implementation is pinned by exact Core dependencies:
 
-## API
+- `idna = 1.1.0`;
+- `idna_adapter = 1.1.0` (the unicode-rs backend);
+- `idna_mapping = 1.1.0`;
+- `unicode-bidi = 0.3.18`;
+- `unicode-joining-type = 1.0.0`;
+- `unicode-normalization = 0.1.25`.
 
-`ox1-contracts` exposes:
+The `PubDress` general-category table is separately pinned to `unicode-general-category = 1.1.0`, generated from Unicode 16.0 data. These pins are part of the contract: dependency upgrades that can alter mapping or accepted scalar categories require explicit compatibility review.
 
-- `PubDressStem`, containing the canonical folded stem and `was_folded()` state;
-- `PubDressLabel`, a validated allocatable label;
-- `PubDressLabelError`, the stable error classification;
-- `PubDressLabel::stem(&PubDress)`;
-- `PubDressLabel::stem_from_str(&str)` for raw boundaries;
-- `PubDressLabel::compose(&PubDressStem, suffix)`;
-- `PubDressLabel::parse(label)` for resolution boundaries;
-- `PubDressLabel::as_str()`;
-- `PUB_DRESS_LABEL_MAX_OCTETS = 63`;
-- `PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH = 8`.
+## Stable failures
 
-Construction is the validation boundary. Consumers should not create or interpret label strings using a parallel rule.
+`PubDressLabelError` exposes:
+
+- `NotAPubDress`
+- `InvalidCharacter`
+- `DisallowedScalar`
+- `BidiRule`
+- `NotEncodable`
+- `BoundaryHyphen`
+- `TooLong`
+- `SuffixTooLong`
+
+The raw convenience boundary may classify a structurally valid-looking value containing a scalar outside the Unicode human-name policy (for example `0x0🌍`) as `DisallowedScalar`, even though the value itself is not a valid `PubDress`. The typed `stem(&PubDress)` boundary can only receive canonical identities.
+
+## Length and collision suffixes
+
+The DNS limit is 63 octets and is measured on the final ASCII A-label after UTS-46 encoding.
+
+A collision suffix:
+
+- is at most 8 characters;
+- contains only lowercase ASCII `[a-z0-9]`;
+- is appended to the exact `PubDress` source before encoding;
+- is never appended to an already encoded `xn--` A-label.
+
+The complete Unicode source is then encoded once.
+
+This matters because distinct identities may map to the same DNS label.
+
+## Non-injective mapping and allocation
+
+DNS projection is not injective:
+
+| Identity A | Identity B | Shared A-label |
+| --- | --- | --- |
+| `0x0Sky` | `0x0sky` | `0x0sky` |
+| `0x0Небо` | `0x0небо` | `xn--0x0-dddt1cj` |
+
+A label must never be reverse-computed to identify a Bond.
+
+The authoritative rule is:
+
+1. derive the candidate A-label in Core;
+2. atomically claim that label in persistence inside the identity-registration transaction;
+3. the first successful claim owns it;
+4. a later collision requires a distinguishing suffix and another atomic claim.
+
+A check-then-insert flow is forbidden because it races.
+
+## Compatibility vectors
+
+Representative normative results:
+
+| Input | Result |
+| --- | --- |
+| `0xda-sha` | `0xda-sha` |
+| `0xdA-Sha` | `0xda-sha` |
+| `0x0Sky` | `0x0sky` |
+| `0x0sky` | `0x0sky` |
+| `0x0небо` | `xn--0x0-dddt1cj` |
+| `0x0Небо` | `xn--0x0-dddt1cj` |
+| `0xdпривіт` | `xn--0xd-hdd3a5bhs3p` |
+| `0x0café` | `xn--0x0caf-gva` |
+| `0x0日本` | `xn--0x0-v08fl0d` |
+| `0x0straße` | `xn--0x0strae-wya` |
+| `0x0🌍` at the raw label boundary | `DisallowedScalar` |
+| `0x0א` | `BidiRule` |
+| `0x0ء` | `BidiRule` |
+
+`0x0straße` must not be transitionally mapped to `0x0strasse`.
+
+## RTL consequence of the 0x prefix
+
+UTS-46 Bidi validation is mandatory. Bond labels begin with the ASCII `0x` namespace, so identities whose DNS label would be governed by the right-to-left Bidi rule can fail even though their Unicode letters are valid `PubDress` scalars.
+
+That is a DNS projection consequence, not a reason to rewrite or silently reject the identity at storage time. `BidiRule` reports this explicitly.
+
+## Confusables are a separate trust policy
+
+UTS-46 mapping is not identity verification and not a confusable-defense policy.
+
+Visually similar identities may remain distinct. DNS label uniqueness prevents address collisions; it does not by itself prevent impersonation. A future UTS-39 restriction, script policy, or display warning belongs in a separate display/trust contract and must not be smuggled into UTS-46 mapping.
+
+## Binding boundary
+
+Wasm and UniFFI remain thin translation layers. They expose canonical `PubDress` validation plus the same Core-owned label derivation/composition.
+
+The label wire result is deliberately small and stable:
+
+- success: `label:<a-label>`;
+- failure: `error:<stable_error_code>`.
+
+Bindings do not implement Unicode or DNS semantics themselves.
 
 ## Ownership boundary
 
-Core owns only deterministic label semantics. It must not depend on:
+Core must not depend on:
 
 - a DNS zone;
 - wildcard DNS or TLS;
@@ -81,24 +170,4 @@ Core owns only deterministic label semantics. It must not depend on:
 - collision retry policy;
 - Web UI or host-specific behavior.
 
-Those concerns consume this contract downstream. In particular, persistence must enforce label uniqueness atomically rather than using a check-then-insert flow.
-
-## Compatibility vectors
-
-The implementation is expected to preserve these representative results:
-
-| Input | Result |
-| --- | --- |
-| `0xda-sha` | stem `0xda-sha`, not folded |
-| `0xdA-Sha` | stem `0xda-sha`, folded |
-| `0x0Sky` | stem `0x0sky`, folded |
-| `0x0sky` | stem `0x0sky`, not folded |
-| `sky` | `NotAPubDress` at raw boundary |
-| `0xgsky` | `NotAPubDress` at raw boundary |
-| `0xDsky` | `NotAPubDress` at raw boundary |
-| `0x0sky_one` | `InvalidCharacter` |
-| `0x0sky-` | `BoundaryHyphen` |
-| `0x0небо` | `NotAPubDress` at raw boundary under the current `PubDress` grammar |
-| canonical non-ASCII `PubDress` such as `0x0₴€` | `NonAscii` |
-
-Composition preserves the same ASCII-only fold. For example, stem `0x0sky` plus suffix `TWO` produces `0x0skytwo`; invalid punctuation, boundary hyphens, overlong suffixes, and labels beyond 63 octets fail closed.
+Persistence, Web, and infrastructure consume the already-decided contract downstream.

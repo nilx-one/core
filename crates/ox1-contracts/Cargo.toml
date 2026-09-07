@@ -11,9 +11,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+idna = "=1.1.0"
+# Pin idna's unicode-rs backend and its data tables explicitly so UTS-46
+# behavior cannot drift when a different runtime resolves dependencies.
+idna_adapter = "=1.1.0"
+idna_mapping = "=1.1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-unicode-normalization = "0.1"
+unicode-bidi = "=0.3.18"
+unicode-general-category = "=1.1.0"
+unicode-joining-type = "=1.0.0"
+unicode-normalization = "=0.1.25"
 
 [lints]
 workspace = true

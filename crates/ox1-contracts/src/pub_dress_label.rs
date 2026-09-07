@@ -1,21 +1,23 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Canonical public DNS-label contract for a Bond `PubDress`.
+//! Canonical public DNS-label projection for a Bond `PubDress`.
 //!
-//! A `PubDress` is case-sensitive while DNS labels are not. The label fold is
-//! therefore intentionally non-injective: distinct identities such as
-//! `0x0Sky` and `0x0sky` can produce the same label and must be disambiguated by
-//! allocation, not by reverse computation.
+//! `PubDress` is the exact, case-sensitive identity selected by the Bond.
+//! `PubDressLabel` is a separate DNS projection. Core owns the projection so
+//! browsers, native clients, and servers cannot drift onto different IDNA rules.
 //!
-//! Version 0.1 refuses non-ASCII label derivation. It does not apply IDNA,
-//! UTS-46, or transliteration. Canonical `PubDress` values that contain an
-//! allowed non-ASCII scalar therefore remain valid identities but have no
-//! `PubDressLabel` until a later protocol version explicitly defines a mapping.
+//! The projection is intentionally non-injective. Distinct identities such as
+//! `0x0Sky` / `0x0sky` and `0x0Небо` / `0x0небо` can derive the same A-label.
+//! Allocation therefore belongs to an atomic storage boundary; a label must
+//! never be reverse-computed to identify a Bond.
 
 use core::{fmt, str::FromStr};
 
-use crate::PubDress;
+use idna::uts46::{AsciiDenyList, DnsLength, Hyphens, Uts46};
+use unicode_bidi::{BidiClass, bidi_class};
+
+use crate::{PubDress, PubDressError, pub_dress::is_unicode_name_scalar};
 
 const PREFIX: &str = "0x";
 
@@ -23,22 +25,37 @@ const PREFIX: &str = "0x";
 pub const PUB_DRESS_LABEL_MAX_OCTETS: usize = 63;
 /// Maximum number of ASCII characters in a collision-disambiguation suffix.
 pub const PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH: usize = 8;
+/// Unicode version used by the canonical `PubDress` scalar-category table.
+pub const PUB_DRESS_UNICODE_VERSION: &str = "16.0.0";
+/// Exact UTS-46 implementation pinned by the Core contract.
+pub const PUB_DRESS_UTS46_IMPLEMENTATION: &str =
+    "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0";
 
 /// Fixed label stem derived from a canonical `PubDress` before allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PubDressStem {
     value: String,
+    source: String,
     folded: bool,
 }
 
 impl PubDressStem {
-    /// Returns the canonical lowercase ASCII stem.
+    /// Returns the canonical lowercase ASCII DNS A-label.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.value
     }
 
-    /// Reports whether ASCII case folding changed the original `PubDress`.
+    /// Returns the exact `PubDress` source used for derivation.
+    ///
+    /// This is retained so a collision suffix is composed before UTS-46 and
+    /// the complete Unicode source is encoded exactly once.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Reports whether UTS-46 mapping changed the identity's textual form.
     #[must_use]
     pub const fn was_folded(&self) -> bool {
         self.folded
@@ -58,106 +75,103 @@ pub struct PubDressLabel {
 }
 
 impl PubDressLabel {
-    /// Derives the fixed DNS-label stem from a canonical `PubDress`.
+    /// Derives the DNS A-label stem from an exact canonical `PubDress`.
     ///
-    /// Only the slug is folded. The discriminator is already constrained by
-    /// `PubDress` to one lowercase hexadecimal digit.
+    /// Mapping is UTS-46 non-transitional with STD3 ASCII rules, CheckHyphens,
+    /// CheckBidi, CheckJoiners, and VerifyDNSLength enabled. Core never
+    /// pre-lowercases or normalizes the identity; UTS-46 owns mapping.
     ///
     /// # Errors
     ///
-    /// Returns [`PubDressLabelError::NonAscii`] when a canonical `PubDress`
-    /// contains any non-ASCII scalar, or another label-shape error when the
-    /// folded value cannot be represented as one DNS label.
+    /// Returns a stable [`PubDressLabelError`] when the identity is not
+    /// representable as a single DNS label.
     pub fn stem(pub_dress: &PubDress) -> Result<PubDressStem, PubDressLabelError> {
-        if !pub_dress.as_str().is_ascii() {
-            return Err(PubDressLabelError::NonAscii);
-        }
-
-        let folded_slug = pub_dress.slug().to_ascii_lowercase();
-        let mut value = String::with_capacity(pub_dress.as_str().len());
-        value.push_str(PREFIX);
-        value.push(pub_dress.discriminator());
-        value.push_str(&folded_slug);
-
-        validate_label_text(&value)?;
-        validate_bond_namespace(&value)?;
+        validate_source_scalars(pub_dress)?;
+        let value = encode_source(pub_dress.as_str())?;
 
         Ok(PubDressStem {
             folded: value != pub_dress.as_str(),
+            source: pub_dress.as_str().to_owned(),
             value,
         })
     }
 
-    /// Raw-string convenience boundary for callers that have not yet parsed a
-    /// canonical `PubDress`.
-    ///
-    /// This boundary exists so invalid identity input remains distinguishable
-    /// from a valid identity that cannot be represented as an ASCII DNS label.
+    /// Raw-string convenience boundary for callers that have not parsed
+    /// `PubDress` yet.
     ///
     /// # Errors
     ///
-    /// Returns [`PubDressLabelError::NotAPubDress`] when `value` is not a
-    /// canonical `PubDress`; otherwise returns the same errors as [`Self::stem`].
+    /// Invalid identity syntax is reported as [`PubDressLabelError::NotAPubDress`].
+    /// A structurally valid identity containing a non-ASCII scalar that is
+    /// explicitly outside the human-name scalar policy is classified as
+    /// [`PubDressLabelError::DisallowedScalar`].
     pub fn stem_from_str(value: &str) -> Result<PubDressStem, PubDressLabelError> {
-        let pub_dress = value
-            .parse::<PubDress>()
-            .map_err(|_| PubDressLabelError::NotAPubDress)?;
-        Self::stem(&pub_dress)
+        match value.parse::<PubDress>() {
+            Ok(pub_dress) => Self::stem(&pub_dress),
+            Err(PubDressError::InvalidCharacter) if contains_disallowed_unicode_scalar(value) => {
+                Err(PubDressLabelError::DisallowedScalar)
+            }
+            Err(_) => Err(PubDressLabelError::NotAPubDress),
+        }
     }
 
-    /// Composes a fixed stem and collision-disambiguation suffix.
+    /// Composes an ASCII collision suffix with the exact identity source and
+    /// then runs UTS-46 once over the complete source.
     ///
-    /// The suffix is ASCII-folded exactly like the stem. Validation applies to
-    /// the complete label so a trailing hyphen is rejected regardless of which
-    /// input contributed it.
+    /// Appending to an already encoded `xn--` A-label is forbidden because the
+    /// result would no longer be the encoding of the intended Unicode label.
     ///
     /// # Errors
     ///
-    /// Returns [`PubDressLabelError::SuffixTooLong`] when `suffix` exceeds the
-    /// suffix budget, [`PubDressLabelError::NonAscii`] for non-ASCII suffixes,
-    /// or another label-shape error when the composition is not allocatable.
+    /// The suffix must be at most eight lowercase ASCII letters or digits.
     pub fn compose(stem: &PubDressStem, suffix: &str) -> Result<Self, PubDressLabelError> {
-        if !suffix.is_ascii() {
-            return Err(PubDressLabelError::NonAscii);
-        }
         if suffix.len() > PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH {
             return Err(PubDressLabelError::SuffixTooLong);
         }
+        if !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        {
+            return Err(PubDressLabelError::InvalidCharacter);
+        }
 
-        let folded_suffix = suffix.to_ascii_lowercase();
-        let mut value = String::with_capacity(stem.value.len() + folded_suffix.len());
-        value.push_str(&stem.value);
-        value.push_str(&folded_suffix);
+        let mut source = String::with_capacity(stem.source.len() + suffix.len());
+        source.push_str(&stem.source);
+        source.push_str(suffix);
 
-        validate_label_text(&value)?;
-        validate_bond_namespace(&value)?;
-
+        let value = encode_source(&source)?;
         Ok(Self { value })
     }
 
-    /// Parses and canonicalizes a label supplied to a resolution boundary.
+    /// Parses and canonicalizes a DNS A-label supplied to a resolution boundary.
     ///
-    /// ASCII uppercase is folded to lowercase because DNS label comparison is
-    /// case-insensitive. The returned value is always in the Bond `0x`
-    /// namespace.
+    /// The label is accepted only if strict UTS-46 decoding yields a canonical
+    /// Bond `PubDress`. The decoded identity is validation evidence only and
+    /// must not be used as reverse identity lookup.
     ///
     /// # Errors
     ///
-    /// Returns a stable [`PubDressLabelError`] when `label` is non-ASCII,
-    /// outside the Bond namespace, or not a valid single DNS label.
+    /// Returns a stable [`PubDressLabelError`] for invalid DNS or Bond namespace
+    /// input.
     pub fn parse(label: &str) -> Result<Self, PubDressLabelError> {
         if !label.is_ascii() {
-            return Err(PubDressLabelError::NonAscii);
+            return Err(PubDressLabelError::InvalidCharacter);
         }
 
         let value = label.to_ascii_lowercase();
-        validate_label_text(&value)?;
-        validate_bond_namespace(&value)?;
+        validate_a_label_text(&value)?;
+
+        let uts46 = Uts46::new();
+        let (unicode, result) =
+            uts46.to_unicode(value.as_bytes(), AsciiDenyList::STD3, Hyphens::Check);
+        if result.is_err() || unicode.parse::<PubDress>().is_err() {
+            return Err(PubDressLabelError::InvalidCharacter);
+        }
 
         Ok(Self { value })
     }
 
-    /// Returns the canonical lowercase ASCII label.
+    /// Returns the canonical lowercase ASCII DNS A-label.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.value
@@ -183,14 +197,17 @@ impl fmt::Display for PubDressLabel {
 pub enum PubDressLabelError {
     /// Raw input was not a canonical `PubDress`.
     NotAPubDress,
-    /// Version 0.1 intentionally has no non-ASCII address mapping.
-    NonAscii,
-    /// The ASCII label contains a character outside `[a-z0-9-]` or is outside
-    /// the Bond `0x` namespace.
+    /// ASCII source contains a scalar forbidden by the DNS projection.
     InvalidCharacter,
-    /// The complete label begins or ends with `-`.
+    /// A non-ASCII scalar is outside the Unicode human-name policy.
+    DisallowedScalar,
+    /// UTS-46 rejected the label under its bidirectional-text rules.
+    BidiRule,
+    /// UTS-46 rejected an otherwise eligible source.
+    NotEncodable,
+    /// The complete source or A-label begins or ends with `-`.
     BoundaryHyphen,
-    /// The complete DNS label exceeds 63 octets.
+    /// The complete DNS A-label exceeds 63 octets.
     TooLong,
     /// A collision suffix exceeds its eight-character budget.
     SuffixTooLong,
@@ -202,8 +219,10 @@ impl PubDressLabelError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::NotAPubDress => "not_a_pub_dress",
-            Self::NonAscii => "non_ascii",
             Self::InvalidCharacter => "invalid_character",
+            Self::DisallowedScalar => "disallowed_scalar",
+            Self::BidiRule => "bidi_rule",
+            Self::NotEncodable => "not_encodable",
             Self::BoundaryHyphen => "boundary_hyphen",
             Self::TooLong => "too_long",
             Self::SuffixTooLong => "suffix_too_long",
@@ -219,7 +238,71 @@ impl fmt::Display for PubDressLabelError {
 
 impl std::error::Error for PubDressLabelError {}
 
-fn validate_label_text(value: &str) -> Result<(), PubDressLabelError> {
+fn validate_source_scalars(pub_dress: &PubDress) -> Result<(), PubDressLabelError> {
+    for scalar in pub_dress.slug().chars() {
+        if scalar.is_ascii() {
+            if scalar.is_ascii_alphanumeric() || scalar == '-' {
+                continue;
+            }
+            return Err(PubDressLabelError::InvalidCharacter);
+        }
+        if !is_unicode_name_scalar(scalar) {
+            return Err(PubDressLabelError::DisallowedScalar);
+        }
+    }
+
+    if pub_dress.as_str().ends_with('-') {
+        return Err(PubDressLabelError::BoundaryHyphen);
+    }
+
+    Ok(())
+}
+
+fn encode_source(source: &str) -> Result<String, PubDressLabelError> {
+    if source.starts_with('-') || source.ends_with('-') {
+        return Err(PubDressLabelError::BoundaryHyphen);
+    }
+
+    let uts46 = Uts46::new();
+    let mapped = uts46
+        .to_ascii(
+            source.as_bytes(),
+            AsciiDenyList::STD3,
+            Hyphens::Check,
+            DnsLength::Ignore,
+        )
+        .map_err(|_| classify_uts46_error(source))?;
+
+    if mapped.len() > PUB_DRESS_LABEL_MAX_OCTETS {
+        return Err(PubDressLabelError::TooLong);
+    }
+
+    uts46
+        .to_ascii(
+            source.as_bytes(),
+            AsciiDenyList::STD3,
+            Hyphens::Check,
+            DnsLength::Verify,
+        )
+        .map_err(|_| classify_uts46_error(source))?;
+
+    let value = mapped.into_owned();
+    validate_a_label_text(&value)?;
+    Ok(value)
+}
+
+fn classify_uts46_error(source: &str) -> PubDressLabelError {
+    if source
+        .chars()
+        .any(|scalar| matches!(bidi_class(scalar), BidiClass::R | BidiClass::AL | BidiClass::AN))
+    {
+        PubDressLabelError::BidiRule
+    } else {
+        PubDressLabelError::NotEncodable
+    }
+}
+
+fn validate_a_label_text(value: &str) -> Result<(), PubDressLabelError> {
     if value.len() > PUB_DRESS_LABEL_MAX_OCTETS {
         return Err(PubDressLabelError::TooLong);
     }
@@ -236,63 +319,125 @@ fn validate_label_text(value: &str) -> Result<(), PubDressLabelError> {
     Ok(())
 }
 
-fn validate_bond_namespace(value: &str) -> Result<(), PubDressLabelError> {
-    let bytes = value.as_bytes();
-    if bytes.len() < 5
-        || !value.starts_with(PREFIX)
-        || !matches!(bytes[2], b'0'..=b'9' | b'a'..=b'f')
-    {
-        return Err(PubDressLabelError::InvalidCharacter);
+fn contains_disallowed_unicode_scalar(value: &str) -> bool {
+    let Some(body) = value.strip_prefix(PREFIX) else {
+        return false;
+    };
+    let mut scalars = body.chars();
+    let Some(discriminator) = scalars.next() else {
+        return false;
+    };
+    if !matches!(discriminator, '0'..='9' | 'a'..='f') {
+        return false;
     }
-    Ok(())
+    let slug = scalars.as_str();
+    let scalar_count = slug.chars().count();
+    if !(2..=32).contains(&scalar_count) {
+        return false;
+    }
+
+    slug.chars()
+        .any(|scalar| !scalar.is_ascii() && !is_unicode_name_scalar(scalar))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PubDressLabel,
+        PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH,
+        PUB_DRESS_UNICODE_VERSION, PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel,
         PubDressLabelError,
     };
     use crate::PubDress;
 
     fn stem(value: &str) -> super::PubDressStem {
         let pub_dress: PubDress = value.parse().expect("test pub_dress must be canonical");
-        PubDressLabel::stem(&pub_dress).expect("test pub_dress must have an ASCII label")
+        PubDressLabel::stem(&pub_dress).expect("test pub_dress must have a DNS label")
     }
 
     #[test]
-    fn derives_the_handoff_stem_vectors() {
-        let cases = [
-            ("0xda-sha", "0xda-sha", false),
-            ("0xdA-Sha", "0xda-sha", true),
-            ("0x0Sky", "0x0sky", true),
-            ("0x0sky", "0x0sky", false),
-        ];
-
-        for (input, expected, folded) in cases {
-            let pub_dress: PubDress = input.parse().expect("canonical test vector");
-            let actual = PubDressLabel::stem(&pub_dress).expect("representable test vector");
-            assert_eq!(actual.as_str(), expected);
-            assert_eq!(actual.was_folded(), folded);
-            assert!(actual.as_str().starts_with("0x"));
-        }
-    }
-
-    #[test]
-    fn keeps_case_distinct_identities_distinct_while_folding_their_labels_together() {
-        let upper: PubDress = "0x0Sky".parse().expect("canonical pub_dress");
-        let lower: PubDress = "0x0sky".parse().expect("canonical pub_dress");
-
-        assert_ne!(upper, lower);
+    fn pins_unicode_and_uts46_contract_versions() {
+        assert_eq!(PUB_DRESS_UNICODE_VERSION, "16.0.0");
         assert_eq!(
-            PubDressLabel::stem(&upper).expect("representable").as_str(),
-            PubDressLabel::stem(&lower).expect("representable").as_str()
+            PUB_DRESS_UTS46_IMPLEMENTATION,
+            "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
         );
     }
 
     #[test]
-    fn raw_boundary_classifies_non_pub_dress_inputs() {
-        for value in ["sky", "0xgsky", "0xDsky", "0x0небо"] {
+    fn derives_ascii_and_unicode_vectors() {
+        let cases = [
+            ("0xda-sha", "0xda-sha"),
+            ("0xdA-Sha", "0xda-sha"),
+            ("0x0Sky", "0x0sky"),
+            ("0x0sky", "0x0sky"),
+            ("0x0небо", "xn--0x0-dddt1cj"),
+            ("0x0Небо", "xn--0x0-dddt1cj"),
+            ("0xdпривіт", "xn--0xd-hdd3a5bhs3p"),
+            ("0x0café", "xn--0x0caf-gva"),
+            ("0x0日本", "xn--0x0-v08fl0d"),
+            ("0x0straße", "xn--0x0strae-wya"),
+        ];
+
+        for (input, expected) in cases {
+            let pub_dress: PubDress = input.parse().expect("canonical test vector");
+            let actual = PubDressLabel::stem(&pub_dress).expect("representable test vector");
+            assert_eq!(actual.as_str(), expected, "wrong label for {input}");
+        }
+    }
+
+    #[test]
+    fn keeps_distinct_identities_while_exposing_dns_collisions() {
+        let unicode_upper: PubDress = "0x0Небо".parse().expect("canonical pub_dress");
+        let unicode_lower: PubDress = "0x0небо".parse().expect("canonical pub_dress");
+        let ascii_upper: PubDress = "0x0Sky".parse().expect("canonical pub_dress");
+        let ascii_lower: PubDress = "0x0sky".parse().expect("canonical pub_dress");
+
+        assert_ne!(unicode_upper, unicode_lower);
+        assert_ne!(ascii_upper, ascii_lower);
+        assert_eq!(
+            PubDressLabel::stem(&unicode_upper).expect("representable").as_str(),
+            PubDressLabel::stem(&unicode_lower).expect("representable").as_str()
+        );
+        assert_eq!(
+            PubDressLabel::stem(&ascii_upper).expect("representable").as_str(),
+            PubDressLabel::stem(&ascii_lower).expect("representable").as_str()
+        );
+    }
+
+    #[test]
+    fn never_rewrites_the_pub_dress_source() {
+        let pub_dress: PubDress = "0x0Небо".parse().expect("canonical pub_dress");
+        let stem = PubDressLabel::stem(&pub_dress).expect("representable");
+        assert_eq!(pub_dress.as_str(), "0x0Небо");
+        assert_eq!(stem.source(), "0x0Небо");
+        assert!(stem.was_folded());
+    }
+
+    #[test]
+    fn classifies_disallowed_and_bidi_sources() {
+        assert_eq!(
+            PubDressLabel::stem_from_str("0x0🌍"),
+            Err(PubDressLabelError::DisallowedScalar)
+        );
+
+        let symbols: PubDress = "0x0₴€".parse().expect("canonical identity symbols");
+        assert_eq!(
+            PubDressLabel::stem(&symbols),
+            Err(PubDressLabelError::DisallowedScalar)
+        );
+
+        for value in ["0x0א", "0x0ء"] {
+            assert_eq!(
+                PubDressLabel::stem_from_str(value),
+                Err(PubDressLabelError::BidiRule),
+                "wrong classification for {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_boundary_keeps_identity_failures_distinct() {
+        for value in ["sky", "0xgsky", "0xDsky", "0x0a b"] {
             assert_eq!(
                 PubDressLabel::stem_from_str(value),
                 Err(PubDressLabelError::NotAPubDress),
@@ -302,16 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_non_ascii_scalars_that_are_valid_in_the_current_pub_dress_contract() {
-        let pub_dress: PubDress = "0x0₴€".parse().expect("canonical non-ASCII pub_dress");
-        assert_eq!(
-            PubDressLabel::stem(&pub_dress),
-            Err(PubDressLabelError::NonAscii)
-        );
-    }
-
-    #[test]
-    fn rejects_unsupported_ascii_and_boundary_hyphen_stems() {
+    fn rejects_ascii_source_that_dns_cannot_carry() {
         let underscore: PubDress = "0x0sky_one".parse().expect("canonical pub_dress");
         let trailing_hyphen: PubDress = "0x0sky-".parse().expect("canonical pub_dress");
 
@@ -326,38 +462,34 @@ mod tests {
     }
 
     #[test]
-    fn composes_the_handoff_suffix_vectors() {
-        let sha = stem("0xda-sha");
-        let sky = stem("0x0sky");
+    fn composes_suffix_before_encoding() {
+        let unicode = stem("0x0небо");
+        let ascii = stem("0xda-sha");
 
         assert_eq!(
-            PubDressLabel::compose(&sha, "")
-                .expect("valid label")
+            PubDressLabel::compose(&unicode, "42")
+                .expect("valid unicode label")
                 .as_str(),
-            "0xda-sha"
+            PubDressLabel::stem_from_str("0x0небо42")
+                .expect("same complete source must encode identically")
+                .as_str()
         );
         assert_eq!(
-            PubDressLabel::compose(&sha, "7412")
+            PubDressLabel::compose(&ascii, "7412")
                 .expect("valid label")
                 .as_str(),
             "0xda-sha7412"
         );
         assert_eq!(
-            PubDressLabel::compose(&sky, "TWO")
-                .expect("valid folded suffix")
-                .as_str(),
-            "0x0skytwo"
-        );
-        assert_eq!(
-            PubDressLabel::compose(&sky, "2-"),
-            Err(PubDressLabelError::BoundaryHyphen)
-        );
-        assert_eq!(
-            PubDressLabel::compose(&sky, "a.b"),
+            PubDressLabel::compose(&ascii, "TWO"),
             Err(PubDressLabelError::InvalidCharacter)
         );
         assert_eq!(
-            PubDressLabel::compose(&sky, "111111111"),
+            PubDressLabel::compose(&ascii, "2-"),
+            Err(PubDressLabelError::InvalidCharacter)
+        );
+        assert_eq!(
+            PubDressLabel::compose(&ascii, "111111111"),
             Err(PubDressLabelError::SuffixTooLong)
         );
     }
@@ -374,9 +506,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_canonicalizes_ascii_case_and_rejects_service_namespace() {
-        let label = PubDressLabel::parse("0x0SKY42").expect("valid Bond label");
-        assert_eq!(label.as_str(), "0x0sky42");
+    fn parses_ascii_and_ace_labels_without_reverse_identity_authority() {
+        let ascii = PubDressLabel::parse("0x0SKY42").expect("valid Bond label");
+        let unicode = PubDressLabel::parse("XN--0X0-DDDT1CJ").expect("valid Bond A-label");
+
+        assert_eq!(ascii.as_str(), "0x0sky42");
+        assert_eq!(unicode.as_str(), "xn--0x0-dddt1cj");
         assert_eq!(
             PubDressLabel::parse("www"),
             Err(PubDressLabelError::InvalidCharacter)
@@ -384,10 +519,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_non_ascii_boundary_and_overlong_labels() {
+    fn rejects_non_ascii_boundary_and_overlong_dns_labels() {
         assert_eq!(
-            PubDressLabel::parse("0x0₴€"),
-            Err(PubDressLabelError::NonAscii)
+            PubDressLabel::parse("0x0небо"),
+            Err(PubDressLabelError::InvalidCharacter)
         );
         assert_eq!(
             PubDressLabel::parse("0x0sky-"),
@@ -405,8 +540,10 @@ mod tests {
     fn exposes_stable_failure_codes() {
         let cases = [
             (PubDressLabelError::NotAPubDress, "not_a_pub_dress"),
-            (PubDressLabelError::NonAscii, "non_ascii"),
             (PubDressLabelError::InvalidCharacter, "invalid_character"),
+            (PubDressLabelError::DisallowedScalar, "disallowed_scalar"),
+            (PubDressLabelError::BidiRule, "bidi_rule"),
+            (PubDressLabelError::NotEncodable, "not_encodable"),
             (PubDressLabelError::BoundaryHyphen, "boundary_hyphen"),
             (PubDressLabelError::TooLong, "too_long"),
             (PubDressLabelError::SuffixTooLong, "suffix_too_long"),
