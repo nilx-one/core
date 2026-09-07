@@ -331,7 +331,9 @@ mod tests {
         let sky = stem("0x0sky");
 
         assert_eq!(
-            PubDressLabel::compose(&sha, "").expect("valid label").as_str(),
+            PubDressLabel::compose(&sha, "")
+                .expect("valid label")
+                .as_str(),
             "0xda-sha"
         );
         assert_eq!(
@@ -365,7 +367,8 @@ mod tests {
         let stem = stem("0xda-sha");
         for length in 0..=PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH {
             let suffix = "7".repeat(length);
-            let label = PubDressLabel::compose(&stem, &suffix).expect("decimal suffix must compose");
+            let label =
+                PubDressLabel::compose(&stem, &suffix).expect("decimal suffix must compose");
             assert!(label.as_str().starts_with("0x"));
         }
     }
