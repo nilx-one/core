@@ -33,9 +33,10 @@ VisitRecord {
 
 ## Deliberately unresolved
 
+- **Core ownership.** Whether Core should ever own this type is unresolved, not merely pending. A record that is never synced carries no cross-device claim, so there is nothing for the kernel to enforce; the ownership rule below states today's arrangement and is not an argument that adoption should follow.
 - **Key binding.** A device-local encryption key has no defined relation to `pk_identity`. Rotation, REKEY behavior, export, recovery, and device transfer are unspecified; the Phase 1 journal does not survive a device change by contract.
 - **Region growth.** A renderer may initially use a fixed lightmap region. Travel outside that region needs a separate tiling or region-growth design and does not change this journal shape.
-- **Avaia records.** `source: "avaia"` is reserved only so a later local implementation can remain schema-compatible. Its semantics are not defined here, and it must never be interpreted as bilateral evidence or BondChain activity.
+- **Avaia records.** `source: "avaia"` is reserved only so a later local implementation can remain schema-compatible. Its semantics are not defined here, and it must never be interpreted as bilateral evidence or BondChain activity. `source` is a closed vocabulary with exactly one usable value in this phase; adding a second is a change to this note, not an implementation detail.
 - **Training-signal egress.** No journal aggregation or training-data route is authorized by this shape. Any future egress requires a separate explicit governance and data-flow contract.
 
 ## Ownership rule
