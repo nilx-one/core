@@ -163,7 +163,7 @@ pub enum BondLocationMode {
 
 /// Single-owner operational location associated with one Bond.
 ///
-/// This value is not an Interaction, BondChain, Relationship, or public map
+/// This value is not an Interaction, `BondChain`, Relationship, or public map
 /// presence. `Manual` is a declared point and must never be interpreted as a
 /// physical observation merely because it is persisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
