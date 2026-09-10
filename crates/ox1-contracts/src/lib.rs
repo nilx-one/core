@@ -11,6 +11,7 @@ mod avaia_pub_dress;
 mod canonical;
 mod envelope;
 mod error;
+mod geography;
 mod identifier;
 mod pub_dress;
 mod pub_dress_label;
@@ -24,6 +25,9 @@ pub use envelope::{
     TransitionOutcome,
 };
 pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
+pub use geography::{
+    BondLocation, BondLocationMode, GEO_COORDINATE_E7_SCALE, GeoCoordinate, GeoCoordinateError,
+};
 pub use identifier::{BondChainId, BondId, IdentifierError, OperationId, Sha256Digest};
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
