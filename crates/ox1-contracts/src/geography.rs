@@ -251,9 +251,7 @@ mod tests {
     #[test]
     fn rejects_noncanonical_wire_components() {
         for longitude in ["0305234000", "-0", "+1"] {
-            let input = format!(
-                r#"{{"longitude_e7":"{longitude}","latitude_e7":"504501000"}}"#
-            );
+            let input = format!(r#"{{"longitude_e7":"{longitude}","latitude_e7":"504501000"}}"#);
             assert!(serde_json::from_str::<GeoCoordinate>(&input).is_err());
         }
     }
