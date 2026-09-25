@@ -10,12 +10,13 @@ const MIN_SLUG_SCALARS: usize = 2;
 // mandatory two-scalar `ai` suffix, so the Avaia grammar must represent 34.
 const MAX_SLUG_SCALARS: usize = 34;
 const AI_SUFFIX: &str = "ai";
+const AVAIA_PREFIX: char = 'x';
 
 /// Canonical public address for an Avaia owned by a human Bond.
 ///
-/// Unlike a human [`PubDress`], this address has no literal `0x` or `x`
-/// prefix. Its first scalar is the owner's immutable hexadecimal
-/// discriminator and its slug always ends in `ai`.
+/// It is the owner's human [`PubDress`] with the leading `0` dropped: a
+/// literal `x`, then the owner's immutable hexadecimal discriminator, then a
+/// slug that always ends in `ai` (`0x0sky` owns `x0skai`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AvaiaPubDress {
     value: String,
@@ -37,7 +38,8 @@ impl AvaiaPubDress {
         slug.push_str(stem);
         slug.push_str(AI_SUFFIX);
 
-        let mut value = String::with_capacity(1 + slug.len());
+        let mut value = String::with_capacity(2 + slug.len());
+        value.push(AVAIA_PREFIX);
         value.push(owner.discriminator());
         value.push_str(&slug);
 
@@ -97,7 +99,8 @@ impl fmt::Display for AvaiaPubDress {
 /// Stable failure classification for canonical owned-Avaia address validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AvaiaPubDressError {
-    /// The first scalar is not one lowercase hexadecimal discriminator.
+    /// The address does not open with the literal `x` followed by one
+    /// lowercase hexadecimal discriminator.
     InvalidDiscriminator,
     /// The Avaia slug is outside the canonical 2–34 scalar range.
     InvalidLength,
@@ -130,6 +133,9 @@ impl std::error::Error for AvaiaPubDressError {}
 
 fn validate(value: &str) -> Result<(char, &str), AvaiaPubDressError> {
     let mut scalars = value.chars();
+    if scalars.next() != Some(AVAIA_PREFIX) {
+        return Err(AvaiaPubDressError::InvalidDiscriminator);
+    }
     let owner_discriminator = scalars
         .next()
         .ok_or(AvaiaPubDressError::InvalidDiscriminator)?;
@@ -175,11 +181,11 @@ mod tests {
     #[test]
     fn derives_normative_default_addresses() {
         let cases = [
-            ("0x0sky", "0skai"),
-            ("0x0mira", "0mirai"),
-            ("0x0ze", "0zai"),
-            ("0x0sk", "0skai"),
-            ("0xda-sha.", "da-sha.ai"),
+            ("0x0sky", "x0skai"),
+            ("0x0mira", "x0mirai"),
+            ("0x0ze", "x0zai"),
+            ("0x0sk", "x0skai"),
+            ("0xda-sha.", "xda-sha.ai"),
         ];
 
         for (owner, expected) in cases {
@@ -198,34 +204,37 @@ mod tests {
 
         assert_eq!(derived.slug().chars().count(), 34);
         assert!(derived.slug().ends_with("ai"));
-        assert_eq!(derived.as_str().chars().count(), 35);
+        assert_eq!(derived.as_str().chars().count(), 36);
         assert_eq!(derived.as_str().parse::<AvaiaPubDress>(), Ok(derived));
     }
 
     #[test]
     fn parses_exact_case_and_punctuation_without_normalization() {
-        for value in ["0Skai", "da-sha.ai", "f-/:;()&@\".,?!'[]{}#%^*+=_\\|~<>ai"] {
+        for value in [
+            "x0Skai",
+            "xda-sha.ai",
+            "xf-/:;()&@\".,?!'[]{}#%^*+=_\\|~<>ai",
+        ] {
             let parsed: AvaiaPubDress = value.parse().expect("canonical Avaia address");
             assert_eq!(parsed.as_str(), value);
         }
     }
 
     #[test]
-    fn rejects_old_prefix_missing_suffix_and_invalid_content() {
+    fn rejects_missing_prefix_missing_suffix_and_invalid_content() {
+        for value in ["0skai", "0x0skai", "xgskai", "x"] {
+            assert_eq!(
+                value.parse::<AvaiaPubDress>(),
+                Err(AvaiaPubDressError::InvalidDiscriminator),
+                "{value}"
+            );
+        }
         assert_eq!(
-            "x0skai".parse::<AvaiaPubDress>(),
-            Err(AvaiaPubDressError::InvalidDiscriminator)
-        );
-        assert_eq!(
-            "gskai".parse::<AvaiaPubDress>(),
-            Err(AvaiaPubDressError::InvalidDiscriminator)
-        );
-        assert_eq!(
-            "0sky".parse::<AvaiaPubDress>(),
+            "x0sky".parse::<AvaiaPubDress>(),
             Err(AvaiaPubDressError::MissingAiSuffix)
         );
         assert_eq!(
-            "0a i".parse::<AvaiaPubDress>(),
+            "x0a i".parse::<AvaiaPubDress>(),
             Err(AvaiaPubDressError::InvalidCharacter)
         );
     }
