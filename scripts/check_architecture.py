@@ -11,12 +11,12 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 FORBIDDEN = {
-    "crates/ox1-contracts/Cargo.toml": {
+    "crates/nilxone-contracts/Cargo.toml": {
         "tokio",
         "wasm-bindgen",
         "uniffi",
     },
-    "crates/ox1-kernel/Cargo.toml": {
+    "crates/nilxone-kernel/Cargo.toml": {
         "tokio",
         "wasm-bindgen",
         "uniffi",
@@ -41,10 +41,10 @@ def main() -> int:
         if present:
             failures.append(f"{relative}: forbidden dependencies: {', '.join(sorted(present))}")
 
-    kernel = dependency_names(ROOT / "crates/ox1-kernel/Cargo.toml")
-    if kernel != {"ox1-contracts"}:
+    kernel = dependency_names(ROOT / "crates/nilxone-kernel/Cargo.toml")
+    if kernel != {"nilxone-contracts"}:
         failures.append(
-            "crates/ox1-kernel/Cargo.toml: kernel dependencies must be exactly ox1-contracts in C1"
+            "crates/nilxone-kernel/Cargo.toml: kernel dependencies must be exactly nilxone-contracts in C1"
         )
 
     if failures:

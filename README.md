@@ -8,11 +8,11 @@ This repository owns deterministic product behavior shared across official 0x1 c
 
 ```text
 crates/
-├── ox1-contracts        # versioned binding-safe values
-├── ox1-kernel           # deterministic transitions and explicit ports
-├── ox1-bindings-wasm    # WebAssembly translation boundary
-├── ox1-bindings-uniffi  # Swift/UniFFI translation boundary
-└── ox1-test-support     # deterministic fixtures, test-only
+├── nilxone-contracts        # versioned binding-safe values
+├── nilxone-kernel           # deterministic transitions and explicit ports
+├── nilxone-bindings-wasm    # WebAssembly translation boundary
+├── nilxone-bindings-uniffi  # Swift/UniFFI translation boundary
+└── nilxone-test-support     # deterministic fixtures, test-only
 ```
 
 Dependency direction is one-way: bindings and test support may depend on the kernel and contracts; the kernel may depend only on contracts. Contracts never depend on the kernel or a platform binding.

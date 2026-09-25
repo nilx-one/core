@@ -5,12 +5,12 @@
 //!
 //! Phase 0 exposes versioned representation plus protocol-level invariants that do
 //! not invent a production interaction contract. Synthetic fixture behavior remains
-//! isolated in `ox1-test-support`.
+//! isolated in `nilxone-test-support`.
 
 pub mod bond_chain;
 pub mod ports;
 
-use ox1_contracts::{
+use nilxone_contracts::{
     CONTRACT_VERSION, ContractVersion, CoreError, FIXTURE_CORPUS_DIGEST, FIXTURE_CORPUS_VERSION,
     OperationId,
 };
@@ -69,7 +69,7 @@ mod tests {
         contract_version, fixture_corpus_digest, fixture_corpus_version,
         require_compatible_contract,
     };
-    use ox1_contracts::ErrorCode;
+    use nilxone_contracts::ErrorCode;
 
     #[test]
     fn handshake_matches_normative_contract() {

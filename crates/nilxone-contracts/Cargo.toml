@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 [package]
-name = "ox1-contracts"
+name = "nilxone-contracts"
 description = "Binding-safe versioned contracts for 0x1 Core."
 version.workspace = true
 edition.workspace = true

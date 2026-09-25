@@ -4,7 +4,7 @@
 import Foundation
 
 @main
-struct Ox1CoreBindingSmoke {
+struct NilxoneCoreBindingSmoke {
     static func main() {
         precondition(validatePubDress(value: "0x0sky") == "valid")
         precondition(validatePubDress(value: "0x0Sky") == "valid")

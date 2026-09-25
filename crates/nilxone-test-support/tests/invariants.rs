@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use ox1_kernel::bond_chain::{HistoryRelation, classify_history};
+use nilxone_kernel::bond_chain::{HistoryRelation, classify_history};
 use proptest::prelude::*;
 
 proptest! {
