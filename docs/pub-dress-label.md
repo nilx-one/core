@@ -4,7 +4,7 @@
 # PubDressLabel contract
 
 Status: v0.1  
-Owner: `ox1-contracts`  
+Owner: `nilxone-contracts`  
 Companion type: `PubDress`
 
 `PubDress` and `PubDressLabel` are deliberately different contracts.

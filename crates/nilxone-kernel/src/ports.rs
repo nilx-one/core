@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use ox1_contracts::{BondChainId, DecimalU64};
+use nilxone_contracts::{BondChainId, DecimalU64};
 
 /// Explicit nondeterministic/external boundary required by Core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

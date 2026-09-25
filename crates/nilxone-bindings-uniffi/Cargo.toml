@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 [package]
-name = "ox1-bindings-uniffi"
+name = "nilxone-bindings-uniffi"
 description = "UniFFI translation boundary for 0x1 Core."
 version.workspace = true
 edition.workspace = true
@@ -23,8 +23,8 @@ default = []
 bindgen = ["uniffi/cli"]
 
 [dependencies]
-ox1-contracts = { version = "0.1.0", path = "../ox1-contracts" }
-ox1-kernel = { version = "0.1.0", path = "../ox1-kernel" }
+nilxone-contracts = { version = "0.1.0", path = "../nilxone-contracts" }
+nilxone-kernel = { version = "0.1.0", path = "../nilxone-kernel" }
 uniffi = { version = "=0.32.0", default-features = false }
 
 [lints]

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 [package]
-name = "ox1-kernel"
+name = "nilxone-kernel"
 description = "Deterministic transition kernel for 0x1 Core."
 version.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-ox1-contracts = { version = "0.1.0", path = "../ox1-contracts" }
+nilxone-contracts = { version = "0.1.0", path = "../nilxone-contracts" }
 
 [lints]
 workspace = true

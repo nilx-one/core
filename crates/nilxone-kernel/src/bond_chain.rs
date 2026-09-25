@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use ox1_contracts::BondId;
+use nilxone_contracts::BondId;
 
 /// Structural participant violation independent of an interaction contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

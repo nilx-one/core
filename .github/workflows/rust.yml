@@ -64,7 +64,7 @@ jobs:
             --target nodejs \
             --out-name index \
             --out-dir target/core-bindings-wasm-node \
-            target/wasm32-unknown-unknown/release/ox1_bindings_wasm.wasm
+            target/wasm32-unknown-unknown/release/nilxone_bindings_wasm.wasm
           node scripts/smoke_wasm_node.cjs
       - name: Verify generated package reproducibility
         run: |
@@ -89,14 +89,14 @@ jobs:
       - name: Add Apple Rust targets
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - name: Build native UniFFI library
-        run: cargo build --locked --release -p ox1-bindings-uniffi
+        run: cargo build --locked --release -p nilxone-bindings-uniffi
       - name: Generate Swift bindings from library metadata
         run: |
           rm -rf target/uniffi-swift
           mkdir -p target/uniffi-swift
-          cargo run --locked -p ox1-bindings-uniffi --features bindgen --bin uniffi-bindgen -- \
+          cargo run --locked -p nilxone-bindings-uniffi --features bindgen --bin uniffi-bindgen -- \
             generate \
-            --library target/release/libox1_bindings_uniffi.dylib \
+            --library target/release/libnilxone_bindings_uniffi.dylib \
             --language swift \
             --out-dir target/uniffi-swift
       - name: Compile and execute Swift handshake smoke
@@ -110,33 +110,33 @@ jobs:
             "$swift_source" scripts/uniffi-smoke.swift \
             -I target/uniffi-swift \
             -L target/release \
-            -lox1_bindings_uniffi \
+            -lnilxone_bindings_uniffi \
             -o target/uniffi-smoke
           DYLD_LIBRARY_PATH=target/release ./target/uniffi-smoke
       - name: Build iOS static libraries
         run: |
-          cargo build --locked --release --target aarch64-apple-ios -p ox1-bindings-uniffi
-          cargo build --locked --release --target aarch64-apple-ios-sim -p ox1-bindings-uniffi
+          cargo build --locked --release --target aarch64-apple-ios -p nilxone-bindings-uniffi
+          cargo build --locked --release --target aarch64-apple-ios-sim -p nilxone-bindings-uniffi
       - name: Assemble XCFramework-ready binary
         run: |
           headers=target/uniffi-headers
-          rm -rf "$headers" target/Ox1Core.xcframework
+          rm -rf "$headers" target/NilxoneCore.xcframework
           mkdir -p "$headers"
           find target/uniffi-swift -maxdepth 1 -name '*.h' -exec cp {} "$headers"/ \;
           modulemap="$(find target/uniffi-swift -name '*.modulemap' -print -quit)"
           cp "$modulemap" "$headers/module.modulemap"
           xcodebuild -create-xcframework \
-            -library target/aarch64-apple-ios/release/libox1_bindings_uniffi.a \
+            -library target/aarch64-apple-ios/release/libnilxone_bindings_uniffi.a \
             -headers "$headers" \
-            -library target/aarch64-apple-ios-sim/release/libox1_bindings_uniffi.a \
+            -library target/aarch64-apple-ios-sim/release/libnilxone_bindings_uniffi.a \
             -headers "$headers" \
-            -output target/Ox1Core.xcframework
+            -output target/NilxoneCore.xcframework
       - name: Preserve Apple artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Ox1Core-${{ github.sha }}
+          name: NilxoneCore-${{ github.sha }}
           path: |
-            target/Ox1Core.xcframework
+            target/NilxoneCore.xcframework
             target/uniffi-swift/*.swift
           if-no-files-found: error
           retention-days: 7

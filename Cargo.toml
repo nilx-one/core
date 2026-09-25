@@ -3,11 +3,11 @@
 
 [workspace]
 members = [
-    "crates/ox1-contracts",
-    "crates/ox1-kernel",
-    "crates/ox1-bindings-wasm",
-    "crates/ox1-bindings-uniffi",
-    "crates/ox1-test-support",
+    "crates/nilxone-contracts",
+    "crates/nilxone-kernel",
+    "crates/nilxone-bindings-wasm",
+    "crates/nilxone-bindings-uniffi",
+    "crates/nilxone-test-support",
 ]
 resolver = "2"
 

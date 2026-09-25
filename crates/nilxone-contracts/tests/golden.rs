@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use ox1_contracts::{CoreError, OperationId, canonical_json};
+use nilxone_contracts::{CoreError, OperationId, canonical_json};
 
 #[test]
 fn unsupported_version_failure_matches_golden_bytes() {

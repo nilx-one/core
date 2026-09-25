@@ -5,9 +5,9 @@
 set -Eeuo pipefail
 
 out_dir="${1:-target/core-bindings-wasm}"
-wasm_path="target/wasm32-unknown-unknown/release/ox1_bindings_wasm.wasm"
+wasm_path="target/wasm32-unknown-unknown/release/nilxone_bindings_wasm.wasm"
 
-cargo build --locked --release --target wasm32-unknown-unknown -p ox1-bindings-wasm
+cargo build --locked --release --target wasm32-unknown-unknown -p nilxone-bindings-wasm
 rm -rf "$out_dir"
 mkdir -p "$out_dir"
 wasm-bindgen \

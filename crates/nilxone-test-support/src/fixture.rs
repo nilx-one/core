@@ -1,12 +1,12 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use ox1_contracts::{
+use nilxone_contracts::{
     BondChainId, BondId, CommandEnvelope, ContractVersion, CoreError, DecimalU64,
     EffectRequestEnvelope, EventEnvelope, InvalidHistoryReason, MissingContextPort, OperationId,
     ProjectionEnvelope, Sha256Digest, TransitionOk, TransitionOutcome, canonical_json,
 };
-use ox1_kernel::bond_chain::{
+use nilxone_kernel::bond_chain::{
     HistoryRelation, classify_history, require_active, validate_participants,
 };
 use serde::{Deserialize, Serialize};
@@ -1248,7 +1248,7 @@ pub fn run_fixture_transition(envelope: FixtureEnvelope) -> FixtureTransitionOut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox1_contracts::{ErrorCode, canonical_json};
+    use nilxone_contracts::{ErrorCode, canonical_json};
 
     fn bond(hex: char) -> BondId {
         format!("bond_{}{}", "0".repeat(63), hex)

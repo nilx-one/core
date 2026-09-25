@@ -7,7 +7,7 @@
 //! They do not create identity, authority, a Bond, a `BondChain`, reciprocity, or
 //! any product state.
 
-fn label_wire(result: Result<String, ox1_contracts::PubDressLabelError>) -> String {
+fn label_wire(result: Result<String, nilxone_contracts::PubDressLabelError>) -> String {
     match result {
         Ok(label) => format!("label:{label}"),
         Err(error) => format!("error:{}", error.code()),
@@ -22,7 +22,7 @@ fn label_wire(result: Result<String, ox1_contracts::PubDressLabelError>) -> Stri
     reason = "UniFFI string inputs are owned"
 )]
 pub fn validate_pub_dress(value: String) -> String {
-    match value.parse::<ox1_contracts::PubDress>() {
+    match value.parse::<nilxone_contracts::PubDress>() {
         Ok(_) => "valid".to_owned(),
         Err(error) => error.code().to_owned(),
     }
@@ -40,7 +40,8 @@ pub fn validate_pub_dress(value: String) -> String {
 )]
 pub fn derive_pub_dress_label(value: String) -> String {
     label_wire(
-        ox1_contracts::PubDressLabel::stem_from_str(&value).map(|stem| stem.as_str().to_owned()),
+        nilxone_contracts::PubDressLabel::stem_from_str(&value)
+            .map(|stem| stem.as_str().to_owned()),
     )
 }
 
@@ -52,8 +53,8 @@ pub fn derive_pub_dress_label(value: String) -> String {
     reason = "UniFFI string inputs are owned"
 )]
 pub fn compose_pub_dress_label(value: String, suffix: String) -> String {
-    let result = ox1_contracts::PubDressLabel::stem_from_str(&value)
-        .and_then(|stem| ox1_contracts::PubDressLabel::compose(&stem, &suffix))
+    let result = nilxone_contracts::PubDressLabel::stem_from_str(&value)
+        .and_then(|stem| nilxone_contracts::PubDressLabel::compose(&stem, &suffix))
         .map(|label| label.as_str().to_owned());
     label_wire(result)
 }
@@ -62,35 +63,35 @@ pub fn compose_pub_dress_label(value: String, suffix: String) -> String {
 #[must_use]
 #[uniffi::export]
 pub fn pub_dress_unicode_version() -> String {
-    ox1_contracts::PUB_DRESS_UNICODE_VERSION.to_owned()
+    nilxone_contracts::PUB_DRESS_UNICODE_VERSION.to_owned()
 }
 
 /// Returns the exact UTS-46 implementation pin owned by Core.
 #[must_use]
 #[uniffi::export]
 pub fn pub_dress_uts46_implementation() -> String {
-    ox1_contracts::PUB_DRESS_UTS46_IMPLEMENTATION.to_owned()
+    nilxone_contracts::PUB_DRESS_UTS46_IMPLEMENTATION.to_owned()
 }
 
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[uniffi::export]
 pub fn contract_version() -> String {
-    ox1_kernel::contract_version().to_owned()
+    nilxone_kernel::contract_version().to_owned()
 }
 
 /// Returns the version of the canonical synthetic parity corpus.
 #[must_use]
 #[uniffi::export]
 pub fn fixture_corpus_version() -> String {
-    ox1_kernel::fixture_corpus_version().to_owned()
+    nilxone_kernel::fixture_corpus_version().to_owned()
 }
 
 /// Returns the validated digest of the canonical synthetic parity corpus.
 #[must_use]
 #[uniffi::export]
 pub fn fixture_corpus_digest() -> String {
-    ox1_kernel::fixture_corpus_digest().to_owned()
+    nilxone_kernel::fixture_corpus_digest().to_owned()
 }
 
 uniffi::setup_scaffolding!();
@@ -105,12 +106,15 @@ mod tests {
 
     #[test]
     fn uniffi_surface_matches_native_handshake() {
-        assert_eq!(contract_version(), ox1_kernel::contract_version());
+        assert_eq!(contract_version(), nilxone_kernel::contract_version());
         assert_eq!(
             fixture_corpus_version(),
-            ox1_kernel::fixture_corpus_version()
+            nilxone_kernel::fixture_corpus_version()
         );
-        assert_eq!(fixture_corpus_digest(), ox1_kernel::fixture_corpus_digest());
+        assert_eq!(
+            fixture_corpus_digest(),
+            nilxone_kernel::fixture_corpus_digest()
+        );
     }
 
     #[test]
