@@ -89,6 +89,7 @@ macro_rules! identifier_type {
 identifier_type!(BondId, "bond_", 64);
 identifier_type!(BondChainId, "bch_", 64);
 identifier_type!(OperationId, "op_", 32);
+identifier_type!(SpokenLineId, "line_", 64);
 identifier_type!(Sha256Digest, "sha256_", 64);
 
 impl Sha256Digest {
