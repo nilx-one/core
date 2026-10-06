@@ -16,7 +16,7 @@ use crate::find_item::{CATALOG, FindItem, find_item};
 
 /// Version of the prices and recipes. Any change to a price, a recipe or a
 /// crafted item raises it.
-pub const ECONOMY_VERSION: u32 = 1;
+pub const ECONOMY_VERSION: u32 = 2;
 
 /// The in-game money's binding-safe code. One currency everywhere.
 pub const SEED_CODE: &str = "seed";
@@ -281,6 +281,12 @@ pub enum EconomyError {
     NotReady,
     /// Only a legendary craft can be finished at once.
     NotLegendary,
+    /// The holder does not own that carry.
+    NotOwned,
+    /// The holder owns that carry already.
+    AlreadyOwned,
+    /// The backpack gift is not due, or was given.
+    NotDue,
 }
 
 impl EconomyError {
@@ -299,6 +305,9 @@ impl EconomyError {
             Self::NoJob => "no_job",
             Self::NotReady => "not_ready",
             Self::NotLegendary => "not_legendary",
+            Self::NotOwned => "not_owned",
+            Self::AlreadyOwned => "already_owned",
+            Self::NotDue => "not_due",
         }
     }
 }

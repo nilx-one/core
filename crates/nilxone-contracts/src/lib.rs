@@ -25,7 +25,7 @@ mod spoken_line;
 mod version;
 
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
-pub use backpack::{Backpack, Carry, Placed, Size, size_of};
+pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
 pub use canonical::{CanonicalJsonError, canonical_json};
 pub use economy::{
     CRAFTED, ECONOMY_VERSION, EconomyError, ItemKind, Place, RECIPES, Recipe, SEED_CODE,
@@ -46,9 +46,10 @@ pub use geography::{
 pub use identifier::{
     BondChainId, BondId, IdentifierError, OperationId, Sha256Digest, SpokenLineId,
 };
-pub use inventory::{CraftJob, Holder, Inventory, Outcome};
+pub use inventory::{CraftJob, GIFT_LEVEL, GIFT_POCKET_CELLS, Holder, Inventory, Outcome};
 pub use inventory_wire::{
-    apply_inventory_command, economy_catalog_json, find_item_wire, picks_up_wire,
+    apply_inventory_command, backpack_gift_due_wire, economy_catalog_json, find_item_wire,
+    picks_up_wire,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
