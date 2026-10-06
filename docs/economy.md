@@ -106,7 +106,7 @@ Commands (`op`): `pick_up` (`holder`, `artifact_id`, `tier`: Core decides which 
 
 - **Storing the inventory** (both grids, the Seeds and the running craft). It lives on the device, in the encrypted finds journal, like the finds themselves.
 - **The authoritative total.** The service holds the Seed balance, the experience and the craft's times against a commitment (an HMAC), as with committed experience. It does not store which things the Bond holds or where it sold them.
-- **The real-money payment** for a legendary craft, and its confirmation.
+- **The real-money payment** for a legendary craft, and its confirmation. Decided: it goes through **0xda-market**, later. The market confirms the payment to the service, the service lets the host call `finish_paid`, and Core's rule stays as it is.
 - **The confirmation prompt** before a craft, and its notice when the craft is done.
 - **Item and recipe names** in each language, by `id`.
 - **Deciding whether the Bond is at a workshop**, and whether the Bond and the Avaia have met.
