@@ -17,6 +17,7 @@ mod find_item;
 mod geography;
 mod identifier;
 mod inventory;
+mod inventory_wire;
 mod pub_dress;
 mod pub_dress_label;
 mod scalar;
@@ -46,6 +47,9 @@ pub use identifier::{
     BondChainId, BondId, IdentifierError, OperationId, Sha256Digest, SpokenLineId,
 };
 pub use inventory::{CraftJob, Holder, Inventory, Outcome};
+pub use inventory_wire::{
+    apply_inventory_command, economy_catalog_json, find_item_wire, picks_up_wire,
+};
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
     PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PUB_DRESS_UNICODE_VERSION,
