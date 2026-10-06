@@ -89,6 +89,18 @@ impl Inventory {
         }
     }
 
+    /// An inventory as stored: two grids already checked and the Seeds. A
+    /// running craft is restored with [`Self::resume_craft`].
+    #[must_use]
+    pub const fn restore(bond: Backpack, avaia: Backpack, seeds: u64) -> Self {
+        Self {
+            bond,
+            avaia,
+            seeds,
+            job: None,
+        }
+    }
+
     /// One holder's grid.
     #[must_use]
     pub const fn backpack(&self, holder: Holder) -> &Backpack {

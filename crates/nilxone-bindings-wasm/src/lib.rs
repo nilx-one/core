@@ -64,6 +64,39 @@ pub fn pub_dress_uts46_implementation() -> String {
     nilxone_contracts::PUB_DRESS_UTS46_IMPLEMENTATION.to_owned()
 }
 
+/// Which item a rolled find is: `item:<id>` or `error:<code>`.
+#[must_use]
+#[wasm_bindgen]
+pub fn find_item(artifact_id: &str, tier: u8) -> String {
+    nilxone_contracts::find_item_wire(artifact_id, tier)
+}
+
+/// Whether the stored pick-up setting picks up a find of `tier`: `yes`, `no`
+/// or `error:<code>`.
+#[must_use]
+#[wasm_bindgen]
+pub fn picks_up(rarities: &str, tier: u8) -> String {
+    nilxone_contracts::picks_up_wire(rarities, tier)
+}
+
+/// Things, recipes, grids and the currency, as canonical JSON.
+#[must_use]
+#[wasm_bindgen]
+pub fn economy_catalog() -> String {
+    nilxone_contracts::economy_catalog_json()
+}
+
+/// Applies one inventory command to a stored inventory. `now_ms` is a
+/// decimal string; a malformed one answers `{"ok":false,"error":"invalid"}`.
+#[must_use]
+#[wasm_bindgen]
+pub fn apply_inventory_command(state: &str, command: &str, now_ms: &str) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::apply_inventory_command(state, command, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[wasm_bindgen]
@@ -92,6 +125,23 @@ mod tests {
         fixture_corpus_version, pub_dress_unicode_version, pub_dress_uts46_implementation,
         validate_pub_dress,
     };
+
+    #[test]
+    fn wasm_surface_exposes_the_economy() {
+        assert_eq!(
+            super::find_item("art:seg:312346:298243:e2908:1:0", 1),
+            "item:bottle_cap"
+        );
+        assert_eq!(super::picks_up("common", 2), "yes");
+        assert!(super::economy_catalog().contains("\"emblem\":\"₴€£\""));
+        assert!(
+            super::apply_inventory_command("", r#"{"op":"finish_craft"}"#, "0").contains("no_job")
+        );
+        assert_eq!(
+            super::apply_inventory_command("", r#"{"op":"finish_craft"}"#, "01"),
+            r#"{"error":"invalid","ok":false}"#
+        );
+    }
 
     #[test]
     fn wasm_surface_matches_native_handshake() {

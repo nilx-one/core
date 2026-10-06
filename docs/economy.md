@@ -91,6 +91,17 @@ By default, both carry a backpack. Sizes: most small things are 1×1. A bottle a
 - **Changing the carry** keeps everything where it lies if it fits. Otherwise it repacks the largest things first, or refuses.
 - **Selling and crafting** use only the Bond's grid. What the Avaia found is handed over first.
 
+## The wire
+
+The bindings expose the economy as strings, so the web and other hosts run exactly these rules:
+
+- `find_item(artifact_id, tier)` returns `item:<id>` or `error:<code>`.
+- `picks_up(rarities, tier)` returns `yes`, `no` or `error:<code>`, for the pick-up setting.
+- `economy_catalog()` returns things, recipes, grids and the currency as JSON. Hosts draw the UI from it and name things by `id`.
+- `apply_inventory_command(state, command, now_ms)` takes the stored inventory JSON (the empty string means a new one), one command, and the time as a decimal string. It answers `{"ok":true,"state":…,"outcome":…}` with the next state to store, or `{"ok":false,"error":"<code>"}`. A refused command means the host keeps the old state.
+
+Commands (`op`): `pick_up` (`holder`, `artifact_id`, `tier`: Core decides which item it is), `rearrange` (`holder`, `from`, `to`), `hand_over` (`from`, `x`, `y`), `switch_carry` (`holder`, `carry`), `sell` (`id`, `count`), `start_craft` (`recipe`, `place`), `finish_craft`, `finish_paid`. Every u64 is a decimal string. Unknown members are refused, and so is a stored state with overlapping things or things outside their grid: it is never repaired.
+
 ## What the host still owns
 
 - **Storing the inventory** (both grids, the Seeds and the running craft). It lives on the device, in the encrypted finds journal, like the finds themselves.
