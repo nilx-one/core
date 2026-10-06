@@ -17,18 +17,18 @@ Status: Core-owned catalog. The web client rolls a chance find and its tier (`ro
 
 `CATALOG`, version `FIND_CATALOG_VERSION` = 1. Music connects the items: cassettes of local bands, broken and working players, and the things that later repairs and crafting are built from. The bands are invented, like the rest of the pack: no real artist or brand.
 
-An item's experience is its own, not its tier's. A boombox is a rare find (tier 5) and pays 25 on its own, because what it plays is the point. `coins` is in-game money the item is worth on the spot (small change). For every other item it is `0`.
+An item's experience is its own, not its tier's. A CD radio is a rare find (tier 5) and pays 25 on its own, because what it plays is the point. `seeds` is money the item is worth on the spot (small change): picking it up credits that many Seeds ₴€£ instead of keeping a thing. For every other item it is `0`. Selling, repairs and crafting are in [economy.md](economy.md).
 
 | Tier | Item                                                  | Experience | Notes                          |
 | ---- | ----------------------------------------------------- | ---------: | ------------------------------ |
-| 1    | bottle ×3, can ×3, bottle cap ×2, flyer, small change |         10 | small change is worth 5 coins  |
+| 1    | bottle ×3, can ×3, bottle cap ×2, flyer, small change |         10 | small change is worth 15 Seeds |
 | 1    | metro token                                           |         10 | Kyiv                           |
 | 2    | scratched CD ×2, blank cassette, broken headphones    |         25 |                                |
 | 2    | cassettes: Podil at Dawn, Left Bank Echo, Trukhaniv Summer |         25 | Kyiv, invented local bands     |
 | 3    | broken cassette player, broken CD player, broken dictaphone |         60 | broken: a repair starts here   |
 | 4    | dictaphone, microphone, cassette player               |        150 |                                |
 | 5    | CD player                                             |        400 |                                |
-| 5    | CD boombox                                            |         25 | rare to find, worth little     |
+| 5    | CD radio                                              |         25 | rare to find, worth little     |
 | 6    | reel-to-reel                                          |       1000 |                                |
 | 6    | test pressing                                         |       1000 | Kyiv                           |
 
@@ -48,8 +48,6 @@ The pick is integer arithmetic over bytes, so every runtime gets the same item. 
 ## Not here yet
 
 - Experience by item on the server (the service still prices a pick-up by tier).
-- The inventory, in-game money and its balance.
-- Repairs at a real workshop and crafting.
 - Item names: hosts name items in their own languages by `id`.
 
 ---

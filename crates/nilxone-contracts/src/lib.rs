@@ -9,6 +9,7 @@
 
 mod avaia_pub_dress;
 mod canonical;
+mod economy;
 mod envelope;
 mod error;
 mod find_item;
@@ -22,6 +23,10 @@ mod version;
 
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use canonical::{CanonicalJsonError, canonical_json};
+pub use economy::{
+    CRAFTED, ECONOMY_VERSION, EconomyError, Inventory, ItemKind, Outcome, Place, RECIPES, Recipe,
+    SEED_CODE, SEED_EMBLEM, found_things, item_kind, recipe,
+};
 pub use envelope::{
     CommandEnvelope, EffectRequestEnvelope, EventEnvelope, ProjectionEnvelope, TransitionOk,
     TransitionOutcome,
