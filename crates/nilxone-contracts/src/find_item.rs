@@ -275,8 +275,10 @@ pub struct FindItem {
     /// What picking it up pays. Deliberately not the tier's: a rare thing can
     /// be worth little on its own.
     pub experience: u32,
-    /// In-game money it is worth on the spot, `0` for most items.
-    pub coins: u32,
+    /// Seeds (the in-game money, see `economy`) it is worth on the spot:
+    /// picking it up credits them instead of keeping a thing. `0` for every
+    /// item that is a thing.
+    pub seeds: u64,
     /// Whether it works as found.
     pub condition: Condition,
     /// The one city it turns up in, or `None` for every city.
@@ -296,7 +298,7 @@ const fn item(
         id,
         tier: FindTier(tier),
         experience,
-        coins: 0,
+        seeds: 0,
         condition,
         city,
         weight: 1,
@@ -308,8 +310,8 @@ const fn weighted(mut found: FindItem, weight: u32) -> FindItem {
     found
 }
 
-const fn worth(mut found: FindItem, coins: u32) -> FindItem {
-    found.coins = coins;
+const fn worth(mut found: FindItem, seeds: u64) -> FindItem {
+    found.seeds = seeds;
     found
 }
 
@@ -327,7 +329,7 @@ pub const CATALOG: &[FindItem] = &[
     weighted(item("can", 1, 10, Intact, None), 3),
     weighted(item("bottle_cap", 1, 10, Intact, None), 2),
     item("flyer", 1, 10, Intact, None),
-    worth(item("small_change", 1, 10, Intact, None), 5),
+    worth(item("small_change", 1, 10, Intact, None), 15),
     item("metro_token", 1, 10, Intact, Some(Kyiv)),
     // Tier 2, common.
     weighted(item("scratched_cd", 2, 25, Intact, None), 2),
