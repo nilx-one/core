@@ -8,6 +8,7 @@
 //! `nilx-one/0x1` specification.
 
 mod avaia_pub_dress;
+mod backpack;
 mod canonical;
 mod economy;
 mod envelope;
@@ -15,6 +16,7 @@ mod error;
 mod find_item;
 mod geography;
 mod identifier;
+mod inventory;
 mod pub_dress;
 mod pub_dress_label;
 mod scalar;
@@ -22,10 +24,11 @@ mod spoken_line;
 mod version;
 
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
+pub use backpack::{Backpack, Carry, Placed, Size, size_of};
 pub use canonical::{CanonicalJsonError, canonical_json};
 pub use economy::{
-    CRAFTED, ECONOMY_VERSION, EconomyError, Inventory, ItemKind, Outcome, Place, RECIPES, Recipe,
-    SEED_CODE, SEED_EMBLEM, found_things, item_kind, recipe,
+    CRAFTED, ECONOMY_VERSION, EconomyError, ItemKind, Place, RECIPES, Recipe, SEED_CODE,
+    SEED_EMBLEM, found_things, item_kind, recipe,
 };
 pub use envelope::{
     CommandEnvelope, EffectRequestEnvelope, EventEnvelope, ProjectionEnvelope, TransitionOk,
@@ -42,6 +45,7 @@ pub use geography::{
 pub use identifier::{
     BondChainId, BondId, IdentifierError, OperationId, Sha256Digest, SpokenLineId,
 };
+pub use inventory::{CraftJob, Holder, Inventory, Outcome};
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
     PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PUB_DRESS_UNICODE_VERSION,
