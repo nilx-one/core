@@ -83,7 +83,12 @@ The Bond and its Avaia each have their own grid (`Holder::Bond`, `Holder::Avaia`
 | a backpack | 8 × 5   |    40 |
 | a whole bag| 12 × 10 |   120 |
 
-By default, both carry a backpack. Sizes: most small things are 1×1. A bottle and a microphone are 1×2, headphones and a CD player are 2×1, a cassette player and a test pressing are 2×2, a CD radio is 3×2, a reel-to-reel is 3×3. A bottle does not fit in a pocket, and a reel-to-reel does not fit in a pocket either.
+Both **start with pockets**. Pockets are always owned; anything else has to be owned before it can be worn (`switch_carry` refuses otherwise):
+
+- **xSasha's gift.** Once, xSasha gives the Bond and the Avaia a backpack each, and both move into them. It is due when the Bond's pockets have 4 of their 5 cells taken, or at the latest when the Bond reaches **level 3**, whichever comes first (`backpack_gift_due`, `gift_backpacks`). The level is the host's to say, and the scene is the host's to play.
+- **Buying.** A backpack costs **1,500** Seeds ₴€£ and a bag **5,000**, from the Bond's Seeds, for either holder (`buy_carry`). A bigger carry is worn at once; a smaller one bought later is only owned. Real money for them comes later, through 0xda-market.
+
+A state stored before carries were owned keeps what it carries: each holder owns its current carry, and one that already carries a backpack counts as gifted. Sizes: most small things are 1×1. A bottle and a microphone are 1×2, headphones and a CD player are 2×1, a cassette player and a test pressing are 2×2, a CD radio is 3×2, a reel-to-reel is 3×3. A bottle does not fit in a pocket, and a reel-to-reel does not fit in a pocket either.
 
 - **A pick-up** goes to the first free place, row by row from the top left. If it fits nowhere, the find stays where it lay. Money (small change) is credited to the Bond, whoever picked it up. The Avaia has no Seeds.
 - **Rearranging** moves a thing to a chosen cell, all or nothing.
@@ -97,10 +102,11 @@ The bindings expose the economy as strings, so the web and other hosts run exact
 
 - `find_item(artifact_id, tier)` returns `item:<id>` or `error:<code>`.
 - `picks_up(rarities, tier)` returns `yes`, `no` or `error:<code>`, for the pick-up setting.
-- `economy_catalog()` returns things, recipes, grids and the currency as JSON. Hosts draw the UI from it and name things by `id`.
+- `economy_catalog()` returns things, recipes, grids (with their prices) and the currency as JSON. Hosts draw the UI from it and name things by `id`.
+- `backpack_gift_due(state, bond_level)` returns `yes`, `no` or `error:invalid`.
 - `apply_inventory_command(state, command, now_ms)` takes the stored inventory JSON (the empty string means a new one), one command, and the time as a decimal string. It answers `{"ok":true,"state":…,"outcome":…}` with the next state to store, or `{"ok":false,"error":"<code>"}`. A refused command means the host keeps the old state.
 
-Commands (`op`): `pick_up` (`holder`, `artifact_id`, `tier`: Core decides which item it is), `rearrange` (`holder`, `from`, `to`), `hand_over` (`from`, `x`, `y`), `switch_carry` (`holder`, `carry`), `sell` (`id`, `count`), `start_craft` (`recipe`, `place`), `finish_craft`, `finish_paid`. Every u64 is a decimal string. Unknown members are refused, and so is a stored state with overlapping things or things outside their grid: it is never repaired.
+Commands (`op`): `buy_carry` (`holder`, `carry`), `gift_backpacks` (`bond_level`), `pick_up` (`holder`, `artifact_id`, `tier`: Core decides which item it is), `rearrange` (`holder`, `from`, `to`), `hand_over` (`from`, `x`, `y`), `switch_carry` (`holder`, `carry`), `sell` (`id`, `count`), `start_craft` (`recipe`, `place`), `finish_craft`, `finish_paid`. Every u64 is a decimal string. Unknown members are refused, and so is a stored state with overlapping things or things outside their grid: it is never repaired.
 
 ## What the host still owns
 

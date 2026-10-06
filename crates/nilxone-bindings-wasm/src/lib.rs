@@ -86,6 +86,14 @@ pub fn economy_catalog() -> String {
     nilxone_contracts::economy_catalog_json()
 }
 
+/// Whether xSasha's backpack gift is due for a stored inventory at the Bond's
+/// level: `yes`, `no` or `error:invalid`.
+#[must_use]
+#[wasm_bindgen]
+pub fn backpack_gift_due(state: &str, bond_level: u32) -> String {
+    nilxone_contracts::backpack_gift_due_wire(state, bond_level)
+}
+
 /// Applies one inventory command to a stored inventory. `now_ms` is a
 /// decimal string; a malformed one answers `{"ok":false,"error":"invalid"}`.
 #[must_use]
@@ -133,6 +141,7 @@ mod tests {
             "item:bottle_cap"
         );
         assert_eq!(super::picks_up("common", 2), "yes");
+        assert_eq!(super::backpack_gift_due("", 3), "yes");
         assert!(super::economy_catalog().contains("\"emblem\":\"₴€£\""));
         assert!(
             super::apply_inventory_command("", r#"{"op":"finish_craft"}"#, "0").contains("no_job")

@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::backpack::{Backpack, Carry, size_of};
+use crate::backpack::{Backpack, Carries, Carry, size_of};
 use crate::economy::{CRAFTED, EconomyError, Place, RECIPES, item_kind, recipe};
 use crate::find_item::{CATALOG, FindTier, PickupRarities, item_for_find};
 use crate::inventory::{Holder, Inventory, Outcome};
@@ -48,6 +48,21 @@ struct InventoryWire {
     avaia: BackpackWire,
     seeds: DecimalU64,
     craft: Option<CraftWire>,
+    /// What each owns to carry things in. Absent in a state stored before
+    /// carries were owned: each then owns what it carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owned: Option<OwnedWire>,
+    /// Whether the backpack gift was given. Absent in a state stored before
+    /// the gift: one that already carries a backpack had it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gifted: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnedWire {
+    bond: Vec<String>,
+    avaia: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,6 +97,13 @@ enum Command {
     },
     FinishCraft,
     FinishPaid,
+    BuyCarry {
+        holder: String,
+        carry: String,
+    },
+    GiftBackpacks {
+        bond_level: u32,
+    },
 }
 
 /// Failure reading the wire, on top of [`EconomyError`].
@@ -133,17 +155,32 @@ fn read_state(state: &str) -> Result<Inventory, &'static str> {
         return Ok(Inventory::default());
     }
     let wire: InventoryWire = serde_json::from_str(state).map_err(|_| INVALID)?;
-    let mut inventory = Inventory::restore(
-        backpack_from_wire(&wire.bond)?,
-        backpack_from_wire(&wire.avaia)?,
-        wire.seeds.get(),
-    );
+    let bond = backpack_from_wire(&wire.bond)?;
+    let avaia = backpack_from_wire(&wire.avaia)?;
+    let owned = match &wire.owned {
+        Some(owned) => [carries(&owned.bond)?, carries(&owned.avaia)?],
+        None => [Carries::POCKETS, Carries::POCKETS],
+    };
+    let gifted = wire.gifted.unwrap_or(bond.carry() != Carry::Pocket);
+    let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted);
     if let Some(craft) = wire.craft {
         inventory
             .resume_craft(&craft.recipe, craft.started_ms.get(), craft.ready_ms.get())
             .map_err(|_| INVALID)?;
     }
     Ok(inventory)
+}
+
+fn carries(codes: &[String]) -> Result<Carries, &'static str> {
+    codes.iter().try_fold(Carries::POCKETS, |owned, code| {
+        Carry::from_code(code)
+            .map(|carry| owned.with(carry))
+            .ok_or(INVALID)
+    })
+}
+
+fn carry_codes(owned: Carries) -> Vec<String> {
+    owned.iter().map(|carry| carry.code().to_owned()).collect()
 }
 
 fn write_state(inventory: &Inventory) -> Value {
@@ -156,6 +193,11 @@ fn write_state(inventory: &Inventory) -> Value {
             started_ms: DecimalU64::new(job.started_ms),
             ready_ms: DecimalU64::new(job.ready_ms),
         }),
+        owned: Some(OwnedWire {
+            bond: carry_codes(inventory.owned(Holder::Bond)),
+            avaia: carry_codes(inventory.owned(Holder::Avaia)),
+        }),
+        gifted: Some(inventory.gifted()),
     };
     serde_json::to_value(wire).unwrap_or(Value::Null)
 }
@@ -234,6 +276,16 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> Strin
         }
         Command::FinishCraft => inventory.finish_craft(now_ms).map_err(Ok),
         Command::FinishPaid => inventory.finish_paid().map_err(Ok),
+        Command::BuyCarry { holder: who, carry } => inventory
+            .buy_carry(
+                holder(&who).map_err(Err)?,
+                Carry::from_code(&carry).ok_or(Err(INVALID))?,
+            )
+            .map_err(Ok),
+        Command::GiftBackpacks { bond_level } => inventory
+            .gift_backpacks(bond_level)
+            .map(|()| Outcome::default())
+            .map_err(Ok),
     })();
     match result {
         Ok(outcome) => {
@@ -249,6 +301,17 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> Strin
         }
         Err(Ok(error)) => failure(error.code()),
         Err(Err(code)) => failure(code),
+    }
+}
+
+/// Whether xSasha's backpack gift is due for a stored inventory at the Bond's
+/// level: `yes`, `no`, or `error:invalid` for a malformed state.
+#[must_use]
+pub fn backpack_gift_due_wire(state: &str, bond_level: u32) -> String {
+    match read_state(state) {
+        Ok(inventory) if inventory.backpack_gift_due(bond_level) => "yes".to_owned(),
+        Ok(_) => "no".to_owned(),
+        Err(code) => format!("error:{code}"),
     }
 }
 
@@ -335,7 +398,12 @@ pub fn economy_catalog_json() -> String {
         .iter()
         .map(|carry| {
             let grid = carry.grid();
-            json!({ "id": carry.code(), "width": grid.width, "height": grid.height })
+            json!({
+                "id": carry.code(),
+                "width": grid.width,
+                "height": grid.height,
+                "price": carry.price().map(DecimalU64::new),
+            })
         })
         .collect();
     json!({
@@ -383,7 +451,7 @@ mod tests {
         let state = picked["state"].to_string();
         assert_eq!(
             state,
-            r#"{"avaia":{"carry":"backpack","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"backpack","things":[]},"craft":null,"seeds":"0"}"#
+            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0"}"#
         );
         let handed = apply(
             &state,
@@ -472,5 +540,50 @@ mod tests {
                 .iter()
                 .any(|recipe| recipe["legendary"] == true)
         );
+    }
+
+    #[test]
+    fn a_state_stored_before_carries_were_owned_keeps_its_backpacks() {
+        let old = r#"{"bond":{"carry":"backpack","things":[]},"avaia":{"carry":"backpack","things":[]},"seeds":"0","craft":null}"#;
+        let read = apply(
+            old,
+            r#"{"op":"switch_carry","holder":"bond","carry":"backpack"}"#,
+            0,
+        );
+        assert_eq!(read["ok"], true);
+        assert_eq!(read["state"]["gifted"], true);
+        assert_eq!(
+            read["state"]["owned"]["bond"],
+            serde_json::json!(["pocket", "backpack"])
+        );
+        assert_eq!(super::backpack_gift_due_wire(old, 9), "no");
+    }
+
+    #[test]
+    fn the_gift_and_a_purchase_run_through_the_wire() {
+        assert_eq!(super::backpack_gift_due_wire("", 2), "no");
+        assert_eq!(super::backpack_gift_due_wire("", 3), "yes");
+        assert_eq!(super::backpack_gift_due_wire("{", 3), "error:invalid");
+        let gifted = apply("", r#"{"op":"gift_backpacks","bond_level":3}"#, 0);
+        assert_eq!(gifted["state"]["bond"]["carry"], "backpack");
+        assert_eq!(gifted["state"]["avaia"]["carry"], "backpack");
+        let again = apply(
+            &gifted["state"].to_string(),
+            r#"{"op":"gift_backpacks","bond_level":3}"#,
+            0,
+        );
+        assert_eq!(again["error"], "not_due");
+
+        let rich = r#"{"bond":{"carry":"pocket","things":[]},"avaia":{"carry":"pocket","things":[]},"seeds":"5000","craft":null,"owned":{"bond":[],"avaia":[]},"gifted":false}"#;
+        let bought = apply(
+            rich,
+            r#"{"op":"buy_carry","holder":"bond","carry":"bag"}"#,
+            0,
+        );
+        assert_eq!(bought["outcome"]["seeds_spent"], "5000");
+        assert_eq!(bought["state"]["bond"]["carry"], "bag");
+        let catalog: Value = serde_json::from_str(&economy_catalog_json()).unwrap();
+        assert_eq!(catalog["carries"][1]["price"], "1500");
+        assert_eq!(catalog["carries"][0]["price"], Value::Null);
     }
 }

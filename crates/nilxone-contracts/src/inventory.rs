@@ -14,7 +14,7 @@
 //! is finished. Time is milliseconds since the Unix epoch, given by the
 //! caller; the service is the clock that counts.
 
-use crate::backpack::{Backpack, Carry, Placed};
+use crate::backpack::{Backpack, Carries, Carry, Placed};
 use crate::economy::{EconomyError, Place, Recipe, item_kind, recipe};
 use crate::find_item::FindItem;
 
@@ -68,17 +68,26 @@ pub struct Inventory {
     avaia: Backpack,
     seeds: u64,
     job: Option<CraftJob>,
+    owned: [Carries; 2],
+    gifted: bool,
 }
 
+/// How many of the pockets' five cells, taken, make a backpack a gift due.
+pub const GIFT_POCKET_CELLS: u32 = 4;
+
+/// The Bond level by which the backpack gift is due however full the
+/// pockets are.
+pub const GIFT_LEVEL: u32 = 3;
+
 impl Default for Inventory {
-    /// Two backpacks, no Seeds, nothing crafting.
+    /// Pockets for both, no Seeds, nothing crafting, no gift yet.
     fn default() -> Self {
-        Self::new(Carry::Backpack, Carry::Backpack)
+        Self::new(Carry::Pocket, Carry::Pocket)
     }
 }
 
 impl Inventory {
-    /// Empty grids of the given kinds.
+    /// Empty grids of the given kinds, each owned.
     #[must_use]
     pub const fn new(bond: Carry, avaia: Carry) -> Self {
         Self {
@@ -86,19 +95,113 @@ impl Inventory {
             avaia: Backpack::new(avaia),
             seeds: 0,
             job: None,
+            owned: [Carries::POCKETS.with(bond), Carries::POCKETS.with(avaia)],
+            gifted: false,
         }
     }
 
-    /// An inventory as stored: two grids already checked and the Seeds. A
-    /// running craft is restored with [`Self::resume_craft`].
+    /// An inventory as stored: two grids already checked, the Seeds, what
+    /// each owns and whether the gift was given. Each owns at least what it
+    /// carries in. A running craft is restored with [`Self::resume_craft`].
     #[must_use]
-    pub const fn restore(bond: Backpack, avaia: Backpack, seeds: u64) -> Self {
+    pub const fn restore(
+        bond: Backpack,
+        avaia: Backpack,
+        seeds: u64,
+        owned: [Carries; 2],
+        gifted: bool,
+    ) -> Self {
+        let owned = [owned[0].with(bond.carry()), owned[1].with(avaia.carry())];
         Self {
             bond,
             avaia,
             seeds,
             job: None,
+            owned,
+            gifted,
         }
+    }
+
+    /// What `holder` owns to carry things in.
+    #[must_use]
+    pub const fn owned(&self, holder: Holder) -> Carries {
+        match holder {
+            Holder::Bond => self.owned[0],
+            Holder::Avaia => self.owned[1],
+        }
+    }
+
+    fn own(&mut self, holder: Holder, carry: Carry) {
+        let index = match holder {
+            Holder::Bond => 0,
+            Holder::Avaia => 1,
+        };
+        self.owned[index] = self.owned[index].with(carry);
+    }
+
+    /// Whether the backpack gift was given.
+    #[must_use]
+    pub const fn gifted(&self) -> bool {
+        self.gifted
+    }
+
+    /// Whether xSasha's backpack gift is due: not given yet, and the Bond's
+    /// pockets are four cells of five full, or the Bond is level 3. The level
+    /// is the host's to say.
+    #[must_use]
+    pub fn backpack_gift_due(&self, bond_level: u32) -> bool {
+        !self.gifted
+            && (bond_level >= GIFT_LEVEL
+                || (self.bond.carry() == Carry::Pocket
+                    && self.bond.used_cells() >= GIFT_POCKET_CELLS))
+    }
+
+    /// Gives both the Bond and the Avaia a backpack, once, when it is due:
+    /// each moves into it from pockets.
+    ///
+    /// # Errors
+    ///
+    /// [`EconomyError::NotDue`] when it is not due, or already given.
+    pub fn gift_backpacks(&mut self, bond_level: u32) -> Result<(), EconomyError> {
+        if !self.backpack_gift_due(bond_level) {
+            return Err(EconomyError::NotDue);
+        }
+        for holder in [Holder::Bond, Holder::Avaia] {
+            self.own(holder, Carry::Backpack);
+            if self.backpack(holder).carry() == Carry::Pocket {
+                // A backpack holds whatever pockets hold.
+                self.backpack_mut(holder).switch_to(Carry::Backpack)?;
+            }
+        }
+        self.gifted = true;
+        Ok(())
+    }
+
+    /// Buys `carry` for `holder` with the Bond's Seeds and moves into it when
+    /// it is bigger than what `holder` carries now.
+    ///
+    /// # Errors
+    ///
+    /// [`EconomyError::NotForSale`] for pockets, [`EconomyError::AlreadyOwned`],
+    /// or [`EconomyError::NotEnoughSeeds`].
+    pub fn buy_carry(&mut self, holder: Holder, carry: Carry) -> Result<Outcome, EconomyError> {
+        let price = carry.price().ok_or(EconomyError::NotForSale)?;
+        if self.owned(holder).has(carry) {
+            return Err(EconomyError::AlreadyOwned);
+        }
+        if self.seeds < price {
+            return Err(EconomyError::NotEnoughSeeds);
+        }
+        let current = self.backpack(holder).carry();
+        if carry.cells() > current.cells() {
+            self.backpack_mut(holder).switch_to(carry)?;
+        }
+        self.seeds -= price;
+        self.own(holder, carry);
+        Ok(Outcome {
+            seeds_spent: price,
+            ..Outcome::default()
+        })
     }
 
     /// One holder's grid.
@@ -193,12 +296,16 @@ impl Inventory {
         Ok(placed)
     }
 
-    /// Changes what `holder` carries things in.
+    /// Changes what `holder` carries things in, to something it owns.
     ///
     /// # Errors
     ///
-    /// [`EconomyError::NoRoom`] when the things do not fit the new grid.
+    /// [`EconomyError::NotOwned`], or [`EconomyError::NoRoom`] when the
+    /// things do not fit the new grid.
     pub fn switch_carry(&mut self, holder: Holder, carry: Carry) -> Result<(), EconomyError> {
+        if !self.owned(holder).has(carry) {
+            return Err(EconomyError::NotOwned);
+        }
         self.backpack_mut(holder).switch_to(carry)
     }
 
@@ -385,7 +492,7 @@ mod tests {
 
     #[test]
     fn the_avaia_hands_over_and_the_bond_sells() {
-        let mut inventory = Inventory::default();
+        let mut inventory = Inventory::new(Carry::Backpack, Carry::Backpack);
         inventory
             .pick_up(Holder::Avaia, find_item("bottle").unwrap())
             .unwrap();
@@ -398,7 +505,7 @@ mod tests {
 
     #[test]
     fn rearranging_is_all_or_nothing() {
-        let mut inventory = Inventory::default();
+        let mut inventory = Inventory::new(Carry::Backpack, Carry::Backpack);
         inventory
             .pick_up(Holder::Bond, find_item("can").unwrap())
             .unwrap();
@@ -540,5 +647,83 @@ mod tests {
             Inventory::default().resume_craft("nothing", 0, 1),
             Err(EconomyError::UnknownItem)
         );
+    }
+
+    #[test]
+    fn both_start_in_pockets_and_own_nothing_else() {
+        let mut inventory = Inventory::default();
+        for holder in [Holder::Bond, Holder::Avaia] {
+            assert_eq!(inventory.backpack(holder).carry(), Carry::Pocket);
+            assert!(!inventory.owned(holder).has(Carry::Backpack));
+        }
+        assert_eq!(
+            inventory.switch_carry(Holder::Bond, Carry::Bag),
+            Err(EconomyError::NotOwned)
+        );
+    }
+
+    #[test]
+    fn the_gift_comes_when_pockets_are_four_fifths_full() {
+        let mut inventory = Inventory::default();
+        for _ in 0..3 {
+            inventory
+                .pick_up(Holder::Bond, find_item("can").unwrap())
+                .unwrap();
+        }
+        assert!(!inventory.backpack_gift_due(1));
+        assert_eq!(inventory.gift_backpacks(1), Err(EconomyError::NotDue));
+        inventory
+            .pick_up(Holder::Bond, find_item("can").unwrap())
+            .unwrap();
+        assert!(inventory.backpack_gift_due(1));
+
+        inventory.gift_backpacks(1).unwrap();
+        for holder in [Holder::Bond, Holder::Avaia] {
+            assert_eq!(inventory.backpack(holder).carry(), Carry::Backpack);
+            assert!(inventory.owned(holder).has(Carry::Backpack));
+        }
+        assert_eq!(inventory.backpack(Holder::Bond).count("can"), 4);
+        assert!(inventory.gifted());
+        assert_eq!(inventory.gift_backpacks(5), Err(EconomyError::NotDue));
+    }
+
+    #[test]
+    fn the_gift_comes_by_level_three_however_empty() {
+        let inventory = Inventory::default();
+        assert!(!inventory.backpack_gift_due(2));
+        assert!(inventory.backpack_gift_due(3));
+    }
+
+    #[test]
+    fn carries_are_bought_with_the_bonds_seeds() {
+        let mut inventory = Inventory {
+            seeds: 6_000,
+            ..Inventory::default()
+        };
+        assert_eq!(
+            inventory.buy_carry(Holder::Bond, Carry::Pocket),
+            Err(EconomyError::NotForSale)
+        );
+        let bag = inventory.buy_carry(Holder::Avaia, Carry::Bag).unwrap();
+        assert_eq!(bag.seeds_spent, 5_000);
+        assert_eq!(inventory.backpack(Holder::Avaia).carry(), Carry::Bag);
+        assert_eq!(inventory.seeds(), 1_000);
+        assert_eq!(
+            inventory.buy_carry(Holder::Bond, Carry::Backpack),
+            Err(EconomyError::NotEnoughSeeds)
+        );
+        assert_eq!(
+            inventory.buy_carry(Holder::Avaia, Carry::Bag),
+            Err(EconomyError::AlreadyOwned)
+        );
+
+        // A smaller carry bought later is owned, not worn.
+        inventory.seeds = 1_500;
+        inventory.buy_carry(Holder::Avaia, Carry::Backpack).unwrap();
+        assert_eq!(inventory.backpack(Holder::Avaia).carry(), Carry::Bag);
+        inventory
+            .switch_carry(Holder::Avaia, Carry::Backpack)
+            .unwrap();
+        assert_eq!(inventory.backpack(Holder::Avaia).carry(), Carry::Backpack);
     }
 }

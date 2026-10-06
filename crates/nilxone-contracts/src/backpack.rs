@@ -38,6 +38,25 @@ impl Carry {
         Self::ALL.into_iter().find(|carry| carry.code() == code)
     }
 
+    /// What it costs in Seeds, or `None` for pockets, which everyone has.
+    /// Real money for it comes later, through 0xda-market.
+    #[must_use]
+    pub const fn price(self) -> Option<u64> {
+        match self {
+            Self::Pocket => None,
+            Self::Backpack => Some(1_500),
+            Self::Bag => Some(5_000),
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Pocket => 1,
+            Self::Backpack => 2,
+            Self::Bag => 4,
+        }
+    }
+
     /// Columns and rows of the grid.
     #[must_use]
     pub const fn grid(self) -> Size {
@@ -62,6 +81,32 @@ impl Carry {
     pub const fn cells(self) -> u32 {
         let grid = self.grid();
         grid.width as u32 * grid.height as u32
+    }
+}
+
+/// What a holder owns to carry things in. Pockets, always.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Carries(u8);
+
+impl Carries {
+    /// Pockets only.
+    pub const POCKETS: Self = Self(1);
+
+    /// Whether `carry` is owned.
+    #[must_use]
+    pub const fn has(self, carry: Carry) -> bool {
+        self.0 & carry.bit() != 0
+    }
+
+    /// These, with `carry` too.
+    #[must_use]
+    pub const fn with(self, carry: Carry) -> Self {
+        Self(self.0 | carry.bit())
+    }
+
+    /// Every carry owned, smallest first.
+    pub fn iter(self) -> impl Iterator<Item = Carry> {
+        Carry::ALL.into_iter().filter(move |carry| self.has(*carry))
     }
 }
 
