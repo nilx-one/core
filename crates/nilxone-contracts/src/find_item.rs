@@ -344,10 +344,10 @@ pub const CATALOG: &[FindItem] = &[
     item("dictaphone", 4, 150, Intact, None),
     item("microphone", 4, 150, Intact, None),
     item("cassette_player", 4, 150, Intact, None),
-    // Tier 5, rare. A boombox is rare to come across and worth little by
+    // Tier 5, rare. A CD radio is rare to come across and worth little by
     // itself: what it plays is the point.
     item("cd_player", 5, 400, Intact, None),
-    item("cd_boombox", 5, 25, Intact, None),
+    item("cd_radio", 5, 25, Intact, None),
     // Tier 6, legendary.
     item("reel_to_reel", 6, 1000, Intact, None),
     item("test_pressing", 6, 1000, Intact, Some(Kyiv)),
@@ -512,7 +512,7 @@ mod tests {
             assert!(found.experience > 0, "{}", found.id);
         }
         assert_eq!(
-            find_item("cd_boombox").map(|found| found.experience),
+            find_item("cd_radio").map(|found| found.experience),
             Some(25)
         );
         assert_eq!(find_item("nothing"), None);
@@ -626,8 +626,8 @@ mod tests {
         "broken_cassette_player",
         "dictaphone",
         "dictaphone",
-        "cd_boombox",
-        "cd_boombox",
+        "cd_radio",
+        "cd_radio",
         "test_pressing",
         "reel_to_reel",
     ];

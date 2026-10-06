@@ -17,7 +17,7 @@ Status: Core-owned catalog. The web client rolls a chance find and its tier (`ro
 
 `CATALOG`, version `FIND_CATALOG_VERSION` = 1. Music connects the items: cassettes of local bands, broken and working players, and the things that later repairs and crafting are built from. The bands are invented, like the rest of the pack: no real artist or brand.
 
-An item's experience is its own, not its tier's. A boombox is a rare find (tier 5) and pays 25 on its own, because what it plays is the point. `coins` is in-game money the item is worth on the spot (small change). For every other item it is `0`.
+An item's experience is its own, not its tier's. A CD radio is a rare find (tier 5) and pays 25 on its own, because what it plays is the point. `coins` is in-game money the item is worth on the spot (small change). For every other item it is `0`.
 
 | Tier | Item                                                  | Experience | Notes                          |
 | ---- | ----------------------------------------------------- | ---------: | ------------------------------ |
@@ -28,7 +28,7 @@ An item's experience is its own, not its tier's. A boombox is a rare find (tier 
 | 3    | broken cassette player, broken CD player, broken dictaphone |         60 | broken: a repair starts here   |
 | 4    | dictaphone, microphone, cassette player               |        150 |                                |
 | 5    | CD player                                             |        400 |                                |
-| 5    | CD boombox                                            |         25 | rare to find, worth little     |
+| 5    | CD radio                                              |         25 | rare to find, worth little     |
 | 6    | reel-to-reel                                          |       1000 |                                |
 | 6    | test pressing                                         |       1000 | Kyiv                           |
 
