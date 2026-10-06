@@ -11,6 +11,7 @@ mod avaia_pub_dress;
 mod canonical;
 mod envelope;
 mod error;
+mod find_item;
 mod geography;
 mod identifier;
 mod pub_dress;
@@ -26,6 +27,10 @@ pub use envelope::{
     TransitionOutcome,
 };
 pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
+pub use find_item::{
+    CATALOG as FIND_CATALOG, City, Condition, FIND_CATALOG_VERSION, FindItem, FindItemError,
+    FindTier, PickupRarities, Rarity, find_item, item_for_find,
+};
 pub use geography::{
     BondLocation, BondLocationMode, GEO_COORDINATE_E7_SCALE, GeoCoordinate, GeoCoordinateError,
 };
