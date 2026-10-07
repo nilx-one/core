@@ -8,6 +8,7 @@
 //! `nilx-one/0x1` specification.
 
 mod avaia_drive;
+mod avaia_life;
 mod avaia_pub_dress;
 mod backpack;
 mod canonical;
@@ -31,6 +32,7 @@ pub use avaia_drive::{
     Obstacle, Passing, Pending, Purpose, Reach, Resolve, Resume, Stand, Target, WalkMemory,
     avaia_drive_step_wire, next_due, outing_budget_meters, restlessness, step as step_drive,
 };
+pub use avaia_life::{AvaiaLife, LifeActivity, LifeIntent, apply_avaia_life};
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
 pub use canonical::{CanonicalJsonError, canonical_json};

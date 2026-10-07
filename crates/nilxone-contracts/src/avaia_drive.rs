@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::DecimalU64;
+use crate::{DecimalU64, LifeIntent};
 
 /// Version of the stored drive state. A newer one is refused, never rewritten.
 pub const AVAIA_DRIVE_VERSION: u16 = 1;
@@ -90,12 +90,17 @@ pub const REVISIT_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 /// No walk is interrupted more often than this.
 pub const DISTRACTIONS_PER_WALK: u8 = 2;
 
-/// Full energy, in thousandths.
-pub const FULL_ENERGY: u16 = 1_000;
-/// Below this an Avaia away from home goes home, and does not stroll.
-pub const LOW_ENERGY: u16 = 300;
-/// Energy spent per kilometre, in thousandths: a full charge is 5 km.
-pub const ENERGY_PER_KM: u16 = 200;
+/// Full energy, as [`crate::AvaiaLife`] keeps it.
+pub const FULL_ENERGY: u64 = 10_000;
+/// Below this, as [`crate::AvaiaLife`] reports it, the Avaia is tired: it does
+/// not stroll, and a sight on the way no longer draws it aside on its own.
+pub const TIRED_ENERGY: u64 = 4_000;
+/// The furthest out an outing on full energy plans: a there-and-back of
+/// 5 km. Less energy plans proportionally less, never past
+/// [`MAX_OUTING_METERS`].
+pub const FULL_OUTING_METERS: u64 = 2_500;
+/// How long a way home the host found blocked waits before it is tried again.
+pub const HOME_RETRY_MS: u64 = 30_000;
 
 /// The most refs a walk remembers having passed.
 const SEEN_PER_WALK: usize = 32;
@@ -433,8 +438,22 @@ pub struct DriveState {
     pub anchor: Option<DriveRef>,
     /// Strolls since it last settled; each makes the next wait longer.
     pub strolls: u32,
-    /// 0 to [`FULL_ENERGY`].
-    pub energy: u16,
+    /// What its needs ask of it, as [`crate::AvaiaLife`] last reported.
+    /// Needs outrank everything it chooses on its own.
+    pub life: LifeIntent,
+    /// Energy, 0 to [`FULL_ENERGY`], as [`crate::AvaiaLife`] last reported.
+    pub energy: DecimalU64,
+    /// Home, as the host last named it with a life report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<DriveRef>,
+    /// Whether it walked home and has not walked anywhere since: its needs
+    /// that sent it are met as far as the drive can tell, and only a new
+    /// life report moves it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub home_reached: bool,
+    /// When the way home may be tried again after the host found it blocked.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_ms")]
+    pub home_retry_ms: Option<u64>,
     #[serde(with = "opt_ms")]
     pub last_outing_ms: Option<u64>,
     /// Target to when it was last visited.
@@ -459,7 +478,11 @@ impl DriveState {
             settled_ms: now_ms,
             anchor: None,
             strolls: 0,
-            energy: FULL_ENERGY,
+            life: LifeIntent::Explore,
+            energy: DecimalU64::new(FULL_ENERGY),
+            home: None,
+            home_reached: false,
+            home_retry_ms: None,
             last_outing_ms: None,
             visited: BTreeMap::new(),
             acted: false,
@@ -542,8 +565,8 @@ pub enum Obstacle {
 pub enum DriveInput {
     /// The owner set a point B. Always wins.
     Tap { to: DriveRef },
-    /// The walk under way arrived, `meters` after it set off.
-    Arrived { meters: u32 },
+    /// The walk under way got where it was going.
+    Arrived {},
     /// The host found no way for the walk it was told to make.
     Blocked {
         #[serde(default)]
@@ -567,6 +590,14 @@ pub enum DriveInput {
         wander: Vec<DriveRef>,
         #[serde(default)]
         home: Option<Home>,
+    },
+    /// What its needs ask of it now, from [`crate::AvaiaLife`]: sent whenever
+    /// the life state changes. `home` names home for the way back.
+    Life {
+        intent: LifeIntent,
+        energy: DecimalU64,
+        #[serde(default)]
+        home: Option<DriveRef>,
     },
     /// A model's pick from the menu, or `None` when none answered.
     Chosen {
@@ -718,6 +749,7 @@ pub fn next_due(state: &DriveState, hour: u8) -> Option<u64> {
     };
     let activity = match &state.activity {
         Activity::Standing { until_ms, .. } => Some(*until_ms),
+        Activity::Idle { .. } if state.life == LifeIntent::ReturnHome => state.home_retry_ms,
         Activity::Idle { .. } if state.pending.is_none() => {
             idle_due(state, is_evening(hour)).map(|(_, at)| at)
         }
@@ -743,8 +775,15 @@ pub fn restlessness(state: &DriveState, now_ms: u64) -> u16 {
 /// How far out an outing may plan: a there-and-back on what energy is left.
 #[must_use]
 pub fn outing_budget_meters(state: &DriveState) -> u32 {
-    let there_and_back = u32::from(state.energy) * 1_000 / u32::from(ENERGY_PER_KM) / 2;
-    there_and_back.min(MAX_OUTING_METERS)
+    let energy = state.energy.get().min(FULL_ENERGY);
+    u32::try_from(energy * FULL_OUTING_METERS / FULL_ENERGY)
+        .unwrap_or(MAX_OUTING_METERS)
+        .min(MAX_OUTING_METERS)
+}
+
+/// Whether its energy is low enough to keep it from pottering and sights.
+fn tired(state: &DriveState) -> bool {
+    state.energy.get() < TIRED_ENERGY
 }
 
 /// The idle deadline that comes first, with what it is for. Ties go to
@@ -753,6 +792,10 @@ fn idle_due(state: &DriveState, evening: bool) -> Option<(Resolve, u64)> {
     let Activity::Idle { since_ms } = state.activity else {
         return None;
     };
+    // Its needs come first: nothing of its own while it goes home or rests.
+    if state.life != LifeIntent::Explore {
+        return None;
+    }
     let mut due: Option<(Resolve, u64)> = None;
     let mut consider = |what: Resolve, at: u64| {
         if due.is_none_or(|(_, first)| at < first) {
@@ -769,7 +812,7 @@ fn idle_due(state: &DriveState, evening: bool) -> Option<(Resolve, u64)> {
     }
     let outing = outing_due(state);
     consider(Resolve::Outing, outing);
-    if state.energy >= LOW_ENERGY {
+    if !tired(state) {
         let doubled = STROLL_IDLE_MS.saturating_mul(1 << state.strolls.min(16));
         let wait = doubled.min(STROLL_MAX_IDLE_MS) * if evening { 2 } else { 1 };
         let at = since_ms + wait;
@@ -823,7 +866,7 @@ impl Step<'_> {
                 self.walk(Purpose::Tap, to);
                 self.say(Line::Walk, None);
             }
-            DriveInput::Arrived { meters } => self.arrived(meters),
+            DriveInput::Arrived {} => self.arrived(),
             DriveInput::Blocked { by } => self.blocked(by),
             DriveInput::Stopped {} => {
                 self.state.pending = None;
@@ -852,7 +895,43 @@ impl Step<'_> {
                     self.offer_outing(targets, &wander, home);
                 }
             }
+            DriveInput::Life {
+                intent,
+                energy,
+                home,
+            } => self.life(intent, energy, home),
             DriveInput::Chosen { index } => self.chosen(index),
+        }
+    }
+
+    /// Its needs changed. Going home outranks everything it does on its own,
+    /// though not a point B its owner set: that walk and stand finish first.
+    fn life(&mut self, intent: LifeIntent, energy: DecimalU64, home: Option<DriveRef>) {
+        self.state.life = intent;
+        self.state.energy = DecimalU64::new(energy.get().min(FULL_ENERGY));
+        if home.is_some() {
+            self.state.home = home;
+        }
+        if intent != LifeIntent::ReturnHome {
+            self.state.home_retry_ms = None;
+            return;
+        }
+        let owners = matches!(
+            self.state.activity,
+            Activity::Walking {
+                purpose: Purpose::Tap | Purpose::Home,
+                ..
+            } | Activity::Standing {
+                reason: Stand::PointB,
+                ..
+            }
+        );
+        if !owners && !matches!(self.state.activity, Activity::Idle { .. }) {
+            self.state.walk = None;
+            self.idle();
+        }
+        if !owners {
+            self.state.pending = None;
         }
     }
 
@@ -871,6 +950,7 @@ impl Step<'_> {
 
     fn walk(&mut self, purpose: Purpose, to: DriveRef) {
         self.state.acted = true;
+        self.state.home_reached = false;
         self.state.activity = Activity::Walking {
             purpose,
             to: to.clone(),
@@ -911,7 +991,7 @@ impl Step<'_> {
         self.state.strolls = 0;
     }
 
-    fn arrived(&mut self, meters: u32) {
+    fn arrived(&mut self) {
         let Activity::Walking { purpose, to, .. } = self.state.activity.clone() else {
             return;
         };
@@ -924,11 +1004,6 @@ impl Step<'_> {
         ) {
             self.state.pending = None;
         }
-        let spent = u64::from(meters) * u64::from(ENERGY_PER_KM) / 1_000;
-        self.state.energy = self
-            .state
-            .energy
-            .saturating_sub(u16::try_from(spent).unwrap_or(u16::MAX));
         match purpose {
             Purpose::Tap => {
                 self.stand(Stand::PointB, to, POINT_B_STAND_MS);
@@ -956,9 +1031,9 @@ impl Step<'_> {
                 self.out.push(DriveCommand::Study { at: to });
             }
             Purpose::Home => {
-                self.state.energy = FULL_ENERGY;
                 self.state.walk = None;
                 self.settle(Some(to));
+                self.state.home_reached = true;
             }
             Purpose::Wander => {
                 self.state.walk = None;
@@ -1039,6 +1114,12 @@ impl Step<'_> {
                 self.idle();
                 self.state.strolls = self.state.strolls.saturating_add(1);
             }
+            Purpose::Home if self.state.life == LifeIntent::ReturnHome => {
+                // Its needs still ask for home: it stays put and tries again.
+                self.state.walk = None;
+                self.state.home_retry_ms = Some(self.now + HOME_RETRY_MS);
+                self.idle();
+            }
             Purpose::Outing | Purpose::Wander | Purpose::Home => {
                 self.state.walk = None;
                 self.state.last_outing_ms = Some(self.now);
@@ -1099,9 +1180,25 @@ impl Step<'_> {
         }
     }
 
-    /// An idle Avaia whose deadline came asks the world layer what is around.
+    /// An idle Avaia whose needs ask for home goes home; one whose deadline
+    /// came asks the world layer what is around.
     fn act_when_due(&mut self) {
         if self.state.pending.is_some() {
+            return;
+        }
+        if self.state.life == LifeIntent::ReturnHome {
+            let retry = self.state.home_retry_ms.unwrap_or(0);
+            if let (Activity::Idle { .. }, Some(home), true, false) = (
+                &self.state.activity,
+                self.state.home.clone(),
+                self.now >= retry,
+                self.state.home_reached,
+            ) {
+                self.state.home_retry_ms = None;
+                self.state.walk = Some(WalkMemory::default());
+                self.walk(Purpose::Home, home);
+                self.say(Line::Walk, None);
+            }
             return;
         }
         let Some((what, at)) = idle_due(self.state, self.evening) else {
@@ -1207,42 +1304,31 @@ impl Step<'_> {
             });
             entries.len() - 1
         });
-        let home = home
-            .filter(|home| home.meters > HOME_RADIUS_METERS)
-            .map(|home| {
-                entries.push(Entry {
-                    to: Some(home.thing),
-                    reach: Some(reach(home.meters)),
-                    ..Entry::bare(Action::Home)
-                });
-                entries.len() - 1
+        if let Some(home) = home.filter(|home| home.meters > HOME_RADIUS_METERS) {
+            entries.push(Entry {
+                to: Some(home.thing),
+                reach: Some(reach(home.meters)),
+                ..Entry::bare(Action::Home)
             });
+        }
         if entries.len() == 1 {
             self.stayed();
             return;
         }
-        let default = self.rule_outing(&ranks, wander, home);
+        let default = self.rule_outing(&ranks, wander);
         self.ask(Choice::Outing, entries, default);
     }
 
     /// The drive's own pick for an outing, as an index on the menu built by
     /// [`Self::offer_outing`] (stay, the targets, a wander, home):
     ///
-    /// - tired and away from home: home;
     /// - in the evening and at night (20:00 to 07:00): only a near target;
     /// - the target that appeals most when the host says, else the nearest;
     /// - with no target, a wander, else stay.
-    fn rule_outing(
-        &self,
-        targets: &[(u32, Option<u16>)],
-        wander: Option<usize>,
-        home: Option<usize>,
-    ) -> usize {
-        if self.state.energy < LOW_ENERGY
-            && let Some(home) = home
-        {
-            return home;
-        }
+    ///
+    /// Home is on the menu for a model to take, never the drive's own pick:
+    /// when its needs ask for home, [`crate::AvaiaLife`] says so.
+    fn rule_outing(&self, targets: &[(u32, Option<u16>)], wander: Option<usize>) -> usize {
         targets
             .iter()
             .enumerate()
@@ -1296,7 +1382,8 @@ impl Step<'_> {
         let Activity::Walking { purpose, .. } = self.state.activity else {
             return;
         };
-        let distractible = !matches!(purpose, Purpose::Detour | Purpose::Home);
+        let distractible = !matches!(purpose, Purpose::Detour | Purpose::Home)
+            && self.state.life == LifeIntent::Explore;
         let Some(walk) = self.state.walk.as_mut() else {
             return;
         };
@@ -1333,7 +1420,7 @@ impl Step<'_> {
             Action::Glance
         };
         // Tired, it still bends for a find but no longer steps aside to look.
-        let default = usize::from(action == Action::PickUp || self.state.energy >= LOW_ENERGY);
+        let default = usize::from(action == Action::PickUp || !tired(self.state));
         let entries = vec![
             Entry::bare(Action::CarryOn),
             Entry {
@@ -1581,7 +1668,7 @@ mod tests {
     /// Sent to `b`, arrived there and stood the stand out: settled at B.
     fn settled_at_b() -> (DriveState, u64) {
         let (state, _) = run(&fresh(), DriveInput::Tap { to: r("b") }, T0);
-        let (state, _) = run(&state, DriveInput::Arrived { meters: 300 }, T0 + 200_000);
+        let (state, _) = run(&state, DriveInput::Arrived {}, T0 + 200_000);
         let at = T0 + 200_000 + POINT_B_STAND_MS;
         let (state, _) = run(&state, DriveInput::Tick {}, at);
         (state, at)
@@ -1609,7 +1696,7 @@ mod tests {
             vec![walk("b", Purpose::Tap), say(Line::Walk, None)]
         );
 
-        let (state, commands) = run(&state, DriveInput::Arrived { meters: 300 }, T0 + 1);
+        let (state, commands) = run(&state, DriveInput::Arrived {}, T0 + 1);
         assert_eq!(
             state.activity,
             Activity::Standing {
@@ -1687,7 +1774,7 @@ mod tests {
         assert_eq!(commands[1], say(Line::Stroll, None));
         assert_eq!(state.last_outing_ms, None, "a stroll is not an outing");
 
-        let (state, commands) = run(&state, DriveInput::Arrived { meters: 80 }, at + 60_000);
+        let (state, commands) = run(&state, DriveInput::Arrived {}, at + 60_000);
         assert_eq!(commands[0], DriveCommand::Look { ms: STROLL_LOOK_MS });
         let back = at + 60_000 + STROLL_LOOK_MS;
         let (state, _) = run(&state, DriveInput::Tick {}, back);
@@ -1752,7 +1839,7 @@ mod tests {
     fn a_tired_avaia_does_not_stroll() {
         let (state, settled) = settled_at_b();
         let state = DriveState {
-            energy: 100,
+            energy: crate::DecimalU64::new(1_000),
             curiosity_asked: true,
             ..state
         };
@@ -1781,7 +1868,7 @@ mod tests {
             DriveCommand::Resolve {
                 what: Resolve::Outing,
                 min_m: 0,
-                max_m: 2_350,
+                max_m: 2_500,
                 leash_m: None,
                 anchor: None,
                 wander_m: Some([150, 400]),
@@ -1891,7 +1978,7 @@ mod tests {
         );
         assert_eq!(state.last_outing_ms, Some(at + 10));
 
-        let (state, commands) = run(&state, DriveInput::Arrived { meters: 800 }, at + 600_000);
+        let (state, commands) = run(&state, DriveInput::Arrived {}, at + 600_000);
         assert_eq!(commands[0], DriveCommand::Look { ms: VISIT_MS });
         let over = at + 600_000 + VISIT_MS;
         let (state, commands) = run(&state, DriveInput::Tick {}, over);
@@ -1930,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rule_keeps_near_at_night_goes_home_tired_and_follows_appeal() {
+    fn the_rule_keeps_near_at_night_leaves_home_to_needs_and_follows_appeal() {
         let at = T0 + 1_000_000;
         let targets = || {
             vec![
@@ -1946,17 +2033,24 @@ mod tests {
             (vec![Action::Stay, Action::Go, Action::Wander], 2)
         );
 
-        let tired = asked_out(
-            DriveState {
-                energy: 200,
-                ..fresh()
-            },
-            at,
+        // Home is on the menu for a model, never the drive's own pick: its
+        // needs send it home through `life`.
+        let (_, commands) = offer(&state, targets(), Some(900), at, NOON);
+        assert_eq!(
+            default_of(&commands),
+            (
+                vec![
+                    Action::Stay,
+                    Action::Go,
+                    Action::Go,
+                    Action::Wander,
+                    Action::Home
+                ],
+                2
+            )
         );
-        let (_, commands) = offer(&tired, targets(), Some(900), at, NOON);
-        assert_eq!(default_of(&commands).1, 4);
-        // Tired but already home: no home entry at all.
-        let (_, commands) = offer(&tired, targets(), Some(20), at, NOON);
+        // Already home: no home entry at all.
+        let (_, commands) = offer(&state, targets(), Some(20), at, NOON);
         assert_eq!(
             default_of(&commands).0,
             vec![Action::Stay, Action::Go, Action::Go, Action::Wander]
@@ -2068,7 +2162,7 @@ mod tests {
                 say(Line::LandmarkSpotted, Some("statue")),
             ]
         );
-        let (state, commands) = run(&state, DriveInput::Arrived { meters: 12 }, T0 + 70_000);
+        let (state, commands) = run(&state, DriveInput::Arrived {}, T0 + 70_000);
         assert_eq!(commands[0], DriveCommand::Glance { at: r("statue") });
         assert_eq!(wake(&commands), Some(T0 + 70_000 + GLANCE_MS));
 
@@ -2078,7 +2172,7 @@ mod tests {
             vec![walk("b", Purpose::Tap)],
             "back on the way to B, saying nothing"
         );
-        let (state, _) = run(&state, DriveInput::Arrived { meters: 250 }, T0 + 300_000);
+        let (state, _) = run(&state, DriveInput::Arrived {}, T0 + 300_000);
         assert!(matches!(
             state.activity,
             Activity::Standing {
@@ -2103,7 +2197,7 @@ mod tests {
         );
         let (state, commands) = run(&state, DriveInput::Chosen { index: Some(1) }, T0 + 2);
         assert_eq!(without_wake(commands), vec![walk("art:1", Purpose::Detour)]);
-        let (state, commands) = run(&state, DriveInput::Arrived { meters: 8 }, T0 + 3);
+        let (state, commands) = run(&state, DriveInput::Arrived {}, T0 + 3);
         assert_eq!(commands[0], DriveCommand::PickUp { at: r("art:1") });
         let (state, _) = run(&state, DriveInput::Tick {}, T0 + 3 + super::PICK_UP_MS);
 
@@ -2117,7 +2211,7 @@ mod tests {
             T0 + 10_000,
         );
         let (state, _) = run(&state, DriveInput::Chosen { index: None }, T0 + 10_001);
-        let (_, commands) = run(&state, DriveInput::Arrived { meters: 10 }, T0 + 10_002);
+        let (_, commands) = run(&state, DriveInput::Arrived {}, T0 + 10_002);
         assert_eq!(commands[0], DriveCommand::Study { at: r("statue") });
     }
 
@@ -2165,7 +2259,7 @@ mod tests {
             );
             if index < 2 {
                 let (next, _) = run(&next, DriveInput::Chosen { index: None }, at);
-                let (next, _) = run(&next, DriveInput::Arrived { meters: 5 }, at);
+                let (next, _) = run(&next, DriveInput::Arrived {}, at);
                 state = run(&next, DriveInput::Tick {}, at + GLANCE_MS).0;
             } else {
                 assert_eq!(without_wake(commands), Vec::new(), "two per walk");
@@ -2207,7 +2301,7 @@ mod tests {
     #[test]
     fn tired_it_carries_on_past_a_sight_but_still_bends_for_a_find() {
         let state = DriveState {
-            energy: 100,
+            energy: crate::DecimalU64::new(1_000),
             ..walking_to_b()
         };
         let (_, commands) = run(
@@ -2238,7 +2332,7 @@ mod tests {
             },
             T0,
         );
-        let (state, _) = run(&state, DriveInput::Arrived { meters: 100 }, T0 + 1);
+        let (state, _) = run(&state, DriveInput::Arrived {}, T0 + 1);
         assert!(state.pending.is_none());
         let (_, commands) = run(&state, DriveInput::Chosen { index: Some(1) }, T0 + 2);
         assert_eq!(without_wake(commands).len(), 0);
@@ -2313,7 +2407,7 @@ mod tests {
                 say(Line::LandmarkSpotted, Some("statue")),
             ]
         );
-        let (_, commands) = run(&state, DriveInput::Arrived { meters: 40 }, T0 + 60_000);
+        let (_, commands) = run(&state, DriveInput::Arrived {}, T0 + 60_000);
         assert_eq!(commands[0], DriveCommand::Study { at: r("statue") });
     }
 
@@ -2381,13 +2475,12 @@ mod tests {
         let stored = answer["state"].to_string();
         let again: serde_json::Value = serde_json::from_str(&avaia_drive_step_wire(
             &stored,
-            r#"{"type":"arrived","meters":120}"#,
+            r#"{"type":"arrived"}"#,
             T0 + 90_000,
             NOON,
         ))
         .expect("json");
         assert_eq!(again["state"]["activity"]["kind"], "standing");
-        assert_eq!(again["state"]["energy"], 976);
 
         let invalid = r#"{"error":"invalid","ok":false}"#;
         for (state, input, hour) in [
@@ -2439,6 +2532,107 @@ mod tests {
             serde_json::json!({"do":"say","line":"landmark.longing","about":"poi:2"})
         );
         assert_eq!(chosen["state"]["walk"]["stay_ms"], "90000");
+    }
+
+    fn life(intent: crate::LifeIntent, energy: u64) -> DriveInput {
+        DriveInput::Life {
+            intent,
+            energy: crate::DecimalU64::new(energy),
+            home: Some(r("home")),
+        }
+    }
+
+    #[test]
+    fn its_needs_take_it_home_from_whatever_it_does_on_its_own() {
+        let (state, settled) = settled_at_b();
+        let state = DriveState {
+            curiosity_asked: true,
+            ..state
+        };
+        let at = settled + STROLL_IDLE_MS;
+        let (state, _) = run(&state, DriveInput::Tick {}, at);
+        let (strolling, _) = run(&state, DriveInput::StrollOptions { to: vec![r("n")] }, at);
+
+        let (state, commands) = run(
+            &strolling,
+            life(crate::LifeIntent::ReturnHome, 2_500),
+            at + 5_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![walk("home", Purpose::Home), say(Line::Walk, None)]
+        );
+        // Nothing on the way draws it aside while it goes home.
+        let (_, commands) = run(
+            &state,
+            DriveInput::Passing {
+                things: vec![passing("art", Group::Find, 2)],
+            },
+            at + 6_000,
+        );
+        assert_eq!(without_wake(commands), Vec::new());
+
+        // At home it rests: no curiosity, strolls or outings until it is done.
+        let (state, commands) = run(&state, DriveInput::Arrived {}, at + 60_000);
+        assert_eq!(
+            without_wake(commands),
+            Vec::new(),
+            "home: it waits for its needs to say so, not set off home again"
+        );
+        let (state, commands) = run(&state, life(crate::LifeIntent::Recover, 2_600), at + 61_000);
+        assert_eq!(state.anchor, Some(r("home")));
+        assert_eq!(wake(&commands), None);
+        let (state, commands) = run(&state, DriveInput::Tick {}, at + RESTLESS_MS * 3);
+        assert_eq!(without_wake(commands), Vec::new());
+
+        // Rested, it is its own again straight away.
+        let (_, commands) = run(
+            &state,
+            life(crate::LifeIntent::Explore, 9_000),
+            at + RESTLESS_MS * 3,
+        );
+        assert!(matches!(
+            commands[0],
+            DriveCommand::Resolve {
+                what: Resolve::Curiosity,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_point_b_its_owner_set_finishes_before_its_needs_take_it_home() {
+        let state = walking_to_b();
+        let (state, commands) = run(&state, life(crate::LifeIntent::ReturnHome, 2_000), T0 + 1);
+        assert_eq!(without_wake(commands), Vec::new());
+        let (state, _) = run(&state, DriveInput::Arrived {}, T0 + 2);
+        let (_, commands) = run(&state, DriveInput::Tick {}, T0 + 2 + POINT_B_STAND_MS);
+        assert_eq!(commands[0], walk("home", Purpose::Home));
+    }
+
+    #[test]
+    fn a_blocked_way_home_is_tried_again_and_not_in_a_loop() {
+        let (state, commands) = run(&fresh(), life(crate::LifeIntent::ReturnHome, 2_000), T0);
+        assert_eq!(commands[0], walk("home", Purpose::Home));
+        let (state, commands) = run(&state, DriveInput::Blocked { by: None }, T0 + 1);
+        assert_eq!(without_wake(commands.clone()), Vec::new());
+        assert_eq!(wake(&commands), Some(T0 + 1 + super::HOME_RETRY_MS));
+        assert_eq!(
+            state.last_outing_ms, None,
+            "going home for its needs is no outing"
+        );
+        let (_, commands) = run(&state, DriveInput::Tick {}, T0 + 1 + super::HOME_RETRY_MS);
+        assert_eq!(commands[0], walk("home", Purpose::Home));
+    }
+
+    #[test]
+    fn an_outing_plans_as_far_as_its_energy_allows() {
+        let mut state = fresh();
+        assert_eq!(super::outing_budget_meters(&state), 2_500);
+        state.energy = crate::DecimalU64::new(4_000);
+        assert_eq!(super::outing_budget_meters(&state), 1_000);
+        state.energy = crate::DecimalU64::new(0);
+        assert_eq!(super::outing_budget_meters(&state), 0);
     }
 
     #[test]
