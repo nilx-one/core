@@ -105,6 +105,19 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: &str) -> Stri
     }
 }
 
+/// One transition of the Avaia's drive: the stored state (or the empty
+/// string for a fresh one), one input, the wall clock as a decimal string and
+/// the local hour. Answers `{"ok":true,"state":…,"commands":[…]}` or
+/// `{"ok":false,"error":"invalid"}`; see `docs/avaia-drive.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn avaia_drive_step(state: &str, input: &str, now_ms: &str, hour: u8) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::avaia_drive_step_wire(state, input, now.get(), hour),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[wasm_bindgen]
@@ -148,6 +161,19 @@ mod tests {
         );
         assert_eq!(
             super::apply_inventory_command("", r#"{"op":"finish_craft"}"#, "01"),
+            r#"{"error":"invalid","ok":false}"#
+        );
+    }
+
+    #[test]
+    fn wasm_surface_exposes_the_avaia_drive() {
+        let answer = super::avaia_drive_step("", r#"{"type":"tap","to":"b"}"#, "1000", 13);
+        assert!(
+            answer.starts_with(r#"{"commands":[{"do":"walk""#),
+            "{answer}"
+        );
+        assert_eq!(
+            super::avaia_drive_step("", r#"{"type":"tick"}"#, "01", 13),
             r#"{"error":"invalid","ok":false}"#
         );
     }
