@@ -17,6 +17,13 @@ assert.equal(
   'sha256_d8524ee7a22aa07164362afb4098cf37404f61ab45fcfd48aab2de2fe9016009',
 );
 
+const drive = JSON.parse(core.avaia_drive_step('', '{"type":"tap","to":"b"}', '1000', 13));
+assert.equal(drive.ok, true);
+assert.deepEqual(drive.commands[0], { do: 'walk', to: 'b', purpose: 'tap', grass: true });
+assert.equal(
+  core.avaia_drive_step('', '{"type":"tick"}', '1000', 24),
+  '{"error":"invalid","ok":false}',
+);
 const coordinate = { longitude_e7: '305234000', latitude_e7: '504501000' };
 const life = JSON.parse(core.apply_avaia_life('', '0x0sky', 'x0skai',
   JSON.stringify({ op: 'initialize', home: coordinate, position: coordinate })));

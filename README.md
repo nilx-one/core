@@ -40,6 +40,8 @@ The boundary is intentional:
 
 Core may expose typed contracts needed to transport or project derived state, but the learning algorithm and model-specific latent representation belong to `nilx-one/ai`.
 
+What an Avaia does next while it is at the wheel — strolling about after a point B, going out, stepping aside for something on the way — is the deterministic [Avaia drive](docs/avaia-drive.md): the host's world layer reports what happened and carries out the commands, and a local model may only pick from the closed menus the drive offers.
+
 ## Local verification
 
 Use the pinned Rust toolchain from `rust-toolchain.toml`:

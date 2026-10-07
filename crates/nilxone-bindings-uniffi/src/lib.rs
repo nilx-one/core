@@ -107,6 +107,22 @@ pub fn apply_avaia_life(state: String, owner: String, subject: String, command: 
     nilxone_contracts::apply_avaia_life(&state, &owner, &subject, &command)
 }
 
+/// One transition of the Avaia's drive, the same as the Wasm export: the
+/// stored state (or the empty string), one input, the wall clock as a decimal
+/// string and the local hour. See `docs/avaia-drive.md`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn avaia_drive_step(state: String, input: String, now_ms: String, hour: u8) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::avaia_drive_step_wire(&state, &input, now.get(), hour),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -114,6 +130,17 @@ mod tests {
         fixture_corpus_version, pub_dress_unicode_version, pub_dress_uts46_implementation,
         validate_pub_dress,
     };
+
+    #[test]
+    fn uniffi_surface_exposes_the_avaia_drive() {
+        let answer = super::avaia_drive_step(
+            String::new(),
+            r#"{"type":"tap","to":"b"}"#.to_owned(),
+            "1000".to_owned(),
+            13,
+        );
+        assert!(answer.contains(r#""purpose":"tap""#), "{answer}");
+    }
 
     #[test]
     fn uniffi_surface_matches_native_handshake() {
