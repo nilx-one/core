@@ -96,6 +96,17 @@ pub fn fixture_corpus_digest() -> String {
 
 uniffi::setup_scaffolding!();
 
+/// Applies one observation to local AI Bond needs and spatial state.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn apply_avaia_life(state: String, owner: String, subject: String, command: String) -> String {
+    nilxone_contracts::apply_avaia_life(&state, &owner, &subject, &command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -152,15 +163,4 @@ mod tests {
             "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
         );
     }
-}
-
-/// Applies one observation to local AI Bond needs and spatial state.
-#[must_use]
-#[uniffi::export]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "UniFFI string inputs are owned"
-)]
-pub fn apply_avaia_life(state: String, owner: String, subject: String, command: String) -> String {
-    nilxone_contracts::apply_avaia_life(&state, &owner, &subject, &command)
 }

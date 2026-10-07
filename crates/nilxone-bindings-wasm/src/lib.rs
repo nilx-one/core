@@ -126,6 +126,13 @@ pub fn fixture_corpus_digest() -> String {
     nilxone_kernel::fixture_corpus_digest().to_owned()
 }
 
+/// Applies one observation to local AI Bond needs and spatial state.
+#[must_use]
+#[wasm_bindgen]
+pub fn apply_avaia_life(state: &str, owner: &str, subject: &str, command: &str) -> String {
+    nilxone_contracts::apply_avaia_life(state, owner, subject, command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -185,11 +192,4 @@ mod tests {
             "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
         );
     }
-}
-
-/// Applies one observation to local AI Bond needs and spatial state.
-#[must_use]
-#[wasm_bindgen]
-pub fn apply_avaia_life(state: &str, owner: &str, subject: &str, command: &str) -> String {
-    nilxone_contracts::apply_avaia_life(state, owner, subject, command)
 }
