@@ -7,6 +7,7 @@
 //! production interaction registry. Product semantics remain owned by the canonical
 //! `nilx-one/0x1` specification.
 
+mod avaia_life;
 mod avaia_pub_dress;
 mod backpack;
 mod canonical;
@@ -24,6 +25,7 @@ mod scalar;
 mod spoken_line;
 mod version;
 
+pub use avaia_life::{AvaiaLife, LifeActivity, LifeIntent, apply_avaia_life};
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
 pub use canonical::{CanonicalJsonError, canonical_json};

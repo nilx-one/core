@@ -186,3 +186,10 @@ mod tests {
         );
     }
 }
+
+/// Applies one observation to local AI Bond needs and spatial state.
+#[must_use]
+#[wasm_bindgen]
+pub fn apply_avaia_life(state: &str, owner: &str, subject: &str, command: &str) -> String {
+    nilxone_contracts::apply_avaia_life(state, owner, subject, command)
+}

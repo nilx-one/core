@@ -16,3 +16,14 @@ assert.equal(
   core.fixture_corpus_digest(),
   'sha256_d8524ee7a22aa07164362afb4098cf37404f61ab45fcfd48aab2de2fe9016009',
 );
+
+const coordinate = { longitude_e7: '305234000', latitude_e7: '504501000' };
+const life = JSON.parse(core.apply_avaia_life('', '0x0sky', 'x0skai',
+  JSON.stringify({ op: 'initialize', home: coordinate, position: coordinate })));
+assert.equal(life.ok, true);
+assert.equal(life.state.activity, 'at_home');
+const tick = JSON.parse(core.apply_avaia_life(JSON.stringify(life.state), '0x0sky', 'x0skai',
+  JSON.stringify({ op: 'observe', elapsed_ms: '60000', position: coordinate, motion: 'idle' })));
+assert.equal(tick.state.energy, '9940');
+assert.equal(tick.state.hunger, '60');
+assert.deepEqual(tick.state.home, coordinate);
