@@ -102,8 +102,7 @@ mod tests {
         assert!(distant < MAX_REVEAL_MS);
         assert!(avaia_proximity(4_499, 99).duration_ms.unwrap() <= MAX_REVEAL_MS);
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&avaia_proximity_wire(15, 7))
-                .unwrap()["duration_ms"],
+            serde_json::from_str::<serde_json::Value>(&avaia_proximity_wire(15, 7)).unwrap()["duration_ms"],
             60_000
         );
     }
