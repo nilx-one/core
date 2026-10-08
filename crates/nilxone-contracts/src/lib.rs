@@ -9,8 +9,8 @@
 
 mod avaia_drive;
 mod avaia_life;
-mod avaia_pub_dress;
 mod avaia_proximity;
+mod avaia_pub_dress;
 mod backpack;
 mod canonical;
 mod economy;
@@ -35,7 +35,10 @@ pub use avaia_drive::{
     step as step_drive,
 };
 pub use avaia_life::{AvaiaLife, LifeActivity, LifeIntent, apply_avaia_life};
-pub use avaia_proximity::{AvaiaProximity, RED_DISTANCE_METERS, REVEAL_DISTANCE_METERS, NEAR_DISTANCE_METERS, avaia_proximity, avaia_proximity_wire};
+pub use avaia_proximity::{
+    AvaiaProximity, NEAR_DISTANCE_METERS, RED_DISTANCE_METERS, REVEAL_DISTANCE_METERS,
+    avaia_proximity, avaia_proximity_wire,
+};
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
 pub use canonical::{CanonicalJsonError, canonical_json};
