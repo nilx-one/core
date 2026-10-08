@@ -118,7 +118,10 @@ impl AvaiaLife {
         let was_home = distance_meters(self.position, self.home) <= HOME_RADIUS_M;
         // No instant refill on arrival. Only time actually spent recovering
         // at home can reduce hunger or replenish energy.
-        let recovering = was_home && self.intent == LifeIntent::Recover;
+        let recovering = was_home
+            && self.intent == LifeIntent::Recover
+            && !matches!(motion, Motion::Walking)
+            && distance_meters(position, self.home) <= HOME_RADIUS_M;
         let hunger = if recovering {
             self.hunger.get().saturating_sub(seconds * 20)
         } else {
@@ -260,6 +263,17 @@ mod tests {
         assert_eq!(s.energy.get(), remaining);
         s.observe(10_000, fifty_meters, Motion::Idle);
         assert_eq!(s.energy.get(), remaining - 10);
+    }
+
+    #[test]
+    fn a_walk_out_of_recovery_spends_distance_energy() {
+        let mut s = initial();
+        s.intent = LifeIntent::Recover;
+        s.energy = DecimalU64::new(5_000);
+        let next = GeoCoordinate::from_degrees(30.5234, 50.45055).unwrap();
+        let meters = distance_meters(s.position, next);
+        s.observe(1_000, next, Motion::Walking);
+        assert_eq!(s.energy.get(), 5_000 - u64::from(meters) * 2);
     }
 
     #[test]
