@@ -345,6 +345,8 @@ pub enum Action {
     Wander,
     /// Go home.
     Home,
+    /// Go and study a landmark from the notebook.
+    Study,
 }
 
 /// How the Avaia feels about a place, as the host's record of places says.
@@ -406,6 +408,8 @@ pub enum Choice {
     Distraction,
     /// Where to go out to.
     Outing,
+    /// Which landmark from the notebook to go and study, if any.
+    Curiosity,
 }
 
 /// What the drive is waiting on.
@@ -523,6 +527,14 @@ pub struct Curious {
     /// A place it misses rather than a new one.
     #[serde(default)]
     pub longing: bool,
+    /// What it is, when the host says: a model reads it, the drive does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<DriveKind>,
+    /// How far it is along the way there, when the host says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meters: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feeling: Option<Feeling>,
 }
 
 /// A target an outing may go to, with what the host's record of places says
@@ -1260,18 +1272,51 @@ impl Step<'_> {
         });
     }
 
+    /// Puts the notebook's landmarks to a model: stay, or go and study one.
+    /// The drive's own pick is the first, the one the host wants most. A
+    /// place it longs for reads as at least `fond`, so a model hears that it
+    /// misses it.
     fn curious(&mut self, to: Vec<Curious>) {
-        let Some(first) = to.into_iter().next() else {
+        let mut entries = vec![Entry::bare(Action::Stay)];
+        for landmark in to.into_iter().take(MENU_TARGETS) {
+            let feeling = if landmark.longing {
+                Some(match landmark.feeling {
+                    Some(Feeling::Loved) => Feeling::Loved,
+                    _ => Feeling::Fond,
+                })
+            } else {
+                landmark.feeling
+            };
+            entries.push(Entry {
+                to: Some(landmark.thing),
+                kind: landmark.kind,
+                reach: landmark.meters.map(reach),
+                feeling,
+                ..Entry::bare(Action::Study)
+            });
+        }
+        if entries.len() == 1 {
+            return;
+        }
+        self.ask(Choice::Curiosity, entries, 1);
+    }
+
+    fn study_curious(&mut self, entry: Entry) {
+        if !matches!(self.state.activity, Activity::Idle { .. }) {
+            return;
+        }
+        // Staying leaves it idle, curiosity asked: strolls come next.
+        let (Action::Study, Some(to)) = (entry.action, entry.to) else {
             return;
         };
-        let line = if first.longing {
+        let line = if matches!(entry.feeling, Some(Feeling::Fond | Feeling::Loved)) {
             Line::LandmarkLonging
         } else {
             Line::LandmarkSpotted
         };
         self.state.walk = Some(WalkMemory::default());
-        self.walk(Purpose::Curiosity, first.thing.clone());
-        self.say(line, Some(first.thing));
+        self.walk(Purpose::Curiosity, to.clone());
+        self.say(line, Some(to));
     }
 
     fn stroll(&mut self, to: &[DriveRef]) {
@@ -1470,6 +1515,7 @@ impl Step<'_> {
         match what {
             Choice::Distraction => self.step_aside(entry),
             Choice::Outing => self.go_out(entry),
+            Choice::Curiosity => self.study_curious(entry),
         }
     }
 
@@ -2444,19 +2490,59 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn taking_the_wheel_looks_around_first_then_curiosity_goes() {
+    fn curious(thing: &str, longing: bool) -> super::Curious {
+        super::Curious {
+            thing: r(thing),
+            longing,
+            kind: None,
+            meters: None,
+            feeling: None,
+        }
+    }
+
+    /// Took the wheel, looked around, and was asked about `to`.
+    fn curiosity_offered(to: Vec<super::Curious>) -> (DriveState, Vec<DriveCommand>) {
         let (state, commands) = run(&fresh(), DriveInput::Stopped {}, T0);
         assert_eq!(wake(&commands), Some(T0 + FIRST_LOOK_MS));
         let (state, _) = run(&state, DriveInput::Tick {}, T0 + FIRST_LOOK_MS);
+        run(
+            &state,
+            DriveInput::CuriosityOptions { to },
+            T0 + FIRST_LOOK_MS,
+        )
+    }
+
+    #[test]
+    fn taking_the_wheel_looks_around_first_then_curiosity_goes() {
+        let (state, commands) = curiosity_offered(vec![curious("statue", false)]);
+        assert_eq!(
+            without_wake(commands),
+            vec![DriveCommand::Choose {
+                what: Choice::Curiosity,
+                heading: None,
+                menu: vec![
+                    super::MenuOption {
+                        index: 0,
+                        action: Action::Stay,
+                        kind: None,
+                        reach: None,
+                        feeling: None,
+                    },
+                    super::MenuOption {
+                        index: 1,
+                        action: Action::Study,
+                        kind: None,
+                        reach: None,
+                        feeling: None,
+                    },
+                ],
+                default: 1,
+            }]
+        );
+        // No model: the drive's own pick, the landmark the host wants most.
         let (state, commands) = run(
             &state,
-            DriveInput::CuriosityOptions {
-                to: vec![super::Curious {
-                    thing: r("statue"),
-                    longing: false,
-                }],
-            },
+            DriveInput::Chosen { index: None },
             T0 + FIRST_LOOK_MS,
         );
         assert_eq!(
@@ -2468,6 +2554,88 @@ mod tests {
         );
         let (_, commands) = run(&state, DriveInput::Arrived {}, T0 + 60_000);
         assert_eq!(commands[0], DriveCommand::Study { at: r("statue") });
+    }
+
+    #[test]
+    fn a_model_picks_which_landmark_curiosity_studies_from_what_a_model_may_read() {
+        let (state, commands) = curiosity_offered(vec![
+            super::Curious {
+                kind: Some(kind("monument")),
+                meters: Some(400),
+                ..curious("statue", false)
+            },
+            super::Curious {
+                kind: Some(kind("park")),
+                meters: Some(1_800),
+                feeling: Some(super::Feeling::Known),
+                ..curious("garden", true)
+            },
+        ]);
+        let Some(DriveCommand::Choose { menu, default, .. }) = commands.first() else {
+            panic!("a curiosity menu: {commands:?}");
+        };
+        assert_eq!(*default, 1);
+        assert_eq!(menu[1].kind, Some(kind("monument")));
+        assert_eq!(menu[1].reach, Some(Reach::Near));
+        // Longing reads as at least fond, whatever the record says.
+        assert_eq!(menu[2].feeling, Some(super::Feeling::Fond));
+        assert_eq!(menu[2].reach, Some(Reach::Far));
+
+        let (_, commands) = run(
+            &state,
+            DriveInput::Chosen { index: Some(2) },
+            T0 + FIRST_LOOK_MS + 1_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![
+                walk("garden", Purpose::Curiosity),
+                say(Line::LandmarkLonging, Some("garden")),
+            ]
+        );
+    }
+
+    #[test]
+    fn curiosity_may_stay_and_leaves_the_strolls_to_come() {
+        let (state, _) = curiosity_offered(vec![curious("statue", false)]);
+        let (state, commands) = run(
+            &state,
+            DriveInput::Chosen { index: Some(0) },
+            T0 + FIRST_LOOK_MS + 1_000,
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, DriveCommand::Walk { .. }))
+        );
+        assert!(matches!(state.activity, Activity::Idle { .. }));
+        assert!(state.curiosity_asked);
+        assert!(state.pending.is_none());
+    }
+
+    #[test]
+    fn curiosity_unanswered_or_off_the_menu_keeps_the_drives_own_pick() {
+        let (state, _) = curiosity_offered(vec![curious("statue", false), curious("well", false)]);
+        let (_, commands) = run(
+            &state,
+            DriveInput::Chosen { index: Some(7) },
+            T0 + FIRST_LOOK_MS + 1_000,
+        );
+        assert_eq!(commands[0], walk("statue", Purpose::Curiosity));
+
+        let (_, commands) = run(&state, DriveInput::Tick {}, T0 + FIRST_LOOK_MS + CHOOSE_MS);
+        assert_eq!(commands[0], walk("statue", Purpose::Curiosity));
+    }
+
+    #[test]
+    fn curiosity_with_nothing_in_the_notebook_asks_no_model() {
+        let (state, commands) = curiosity_offered(Vec::new());
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, DriveCommand::Choose { .. }))
+        );
+        assert!(state.pending.is_none());
     }
 
     #[test]
