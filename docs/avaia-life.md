@@ -18,7 +18,10 @@ an unfinished route.
 
 Responses are `{ok:true,state}` or `{ok:false,error}`; retain stored state on
 failure. Needs are decimal strings from 0 to 10000. Per active second hunger
-increases by 1 and energy decreases by 1 (3 when walking). Hunger >=7000 or
+increases by 1. Idle or studying energy decreases by 1 per active second.
+Walking instead consumes 100 energy units (1%) per 50 actual metres,
+charged from the previous observed position. No simulated offline motion is
+charged; zero-duration reports do not claim travel. Hunger >=7000 or
 energy <=3000 triggers return_home. Within 50 m of home recovery removes 20
 hunger and adds 10 energy per second until hunger <=1000 and energy >=9000.
 Arrival never instantly restores needs. Subsecond remainders are persisted.
@@ -27,5 +30,7 @@ These are simulated product needs, not biological claims.
 Core projects activity and intent. Hosts route and render; return_home/recover
 outrank optional outing choices. A blocked route keeps position unchanged and
 retains return_home intent. Wasm and UniFFI use the identical implementation.
+
+See also `docs/avaia-proximity.md` for distance-bound reveal capability.
 
 © 2026 aiaiaiai · aiaiaiai.org
