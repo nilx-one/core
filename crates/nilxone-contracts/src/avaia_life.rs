@@ -14,6 +14,9 @@ const MAX: u64 = 10_000;
 const HOME_RADIUS_M: u32 = 50;
 // One percent of full energy for every 50 metres actually walked.
 const WALK_ENERGY_PER_METER: u64 = 2;
+/// Fastest ground an Avaia is charged for: a faster report is clamped, never
+/// rejected, so one GPS jump cannot drain her and cannot wedge the stored state.
+const MAX_WALK_SPEED_MPS: u64 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +67,10 @@ enum Command {
         elapsed_ms: DecimalU64,
         position: GeoCoordinate,
         motion: Motion,
+        /// Route distance the host actually followed since the last report.
+        /// Absent means the straight line between the two positions.
+        #[serde(default)]
+        walked_m: Option<DecimalU64>,
     },
 }
 
@@ -112,7 +119,7 @@ impl AvaiaLife {
         }
     }
 
-    fn observe(&mut self, elapsed: u64, position: GeoCoordinate, motion: Motion) {
+    fn observe(&mut self, elapsed: u64, position: GeoCoordinate, motion: Motion, walked_m: u64) {
         let seconds = (elapsed + self.remainder_ms.get()) / 1_000;
         self.remainder_ms = DecimalU64::new((elapsed + self.remainder_ms.get()) % 1_000);
         let was_home = distance_meters(self.position, self.home) <= HOME_RADIUS_M;
@@ -131,10 +138,14 @@ impl AvaiaLife {
             (self.energy.get() + seconds * 10).min(MAX)
         } else {
             // Charge walked distance, not camera movement or imagined offline
-            // time. A zero-duration observation cannot claim travel.
+            // time. A zero-duration observation cannot claim travel, and a
+            // walking Avaia never spends less than an idle one: the time rate
+            // is the floor under the distance rate.
             let cost = if matches!(motion, Motion::Walking) && elapsed > 0 {
-                u64::from(distance_meters(self.position, position))
-                    .saturating_mul(WALK_ENERGY_PER_METER)
+                let straight = u64::from(distance_meters(self.position, position));
+                let plausible = (elapsed * MAX_WALK_SPEED_MPS).div_ceil(1_000);
+                let charged = straight.max(walked_m).min(plausible);
+                charged.saturating_mul(WALK_ENERGY_PER_METER).max(seconds)
             } else {
                 seconds
             };
@@ -195,6 +206,7 @@ fn apply(
             elapsed_ms,
             position,
             motion,
+            walked_m,
         } => {
             let mut state: AvaiaLife = serde_json::from_str(state).map_err(|_| "invalid_state")?;
             if !state.valid(owner, subject) {
@@ -203,7 +215,12 @@ fn apply(
             if elapsed_ms.get() > 60_000 {
                 return Err("invalid_elapsed");
             }
-            state.observe(elapsed_ms.get(), position, motion);
+            state.observe(
+                elapsed_ms.get(),
+                position,
+                motion,
+                walked_m.map_or(0, DecimalU64::get),
+            );
             Ok(state)
         }
     }
@@ -224,13 +241,13 @@ mod tests {
         let away = GeoCoordinate::from_degrees(30.54, 50.45).unwrap();
         s.hunger = DecimalU64::new(7_000);
         s.energy = DecimalU64::new(2_000);
-        s.observe(0, away, Motion::Walking);
+        s.observe(0, away, Motion::Walking, 0);
         assert_eq!(s.intent, LifeIntent::ReturnHome);
-        s.observe(0, home, Motion::Idle);
+        s.observe(0, home, Motion::Idle, 0);
         assert_eq!(s.energy.get(), 2_000);
         assert_eq!(s.activity, LifeActivity::Eating);
         for _ in 0..12 {
-            s.observe(60_000, home, Motion::Idle);
+            s.observe(60_000, home, Motion::Idle, 0);
         }
         assert_eq!(s.intent, LifeIntent::Explore);
         assert_eq!(s.home, home);
@@ -249,20 +266,29 @@ mod tests {
         assert!(apply(&json, "0x0sky", "x0skai", r#"{"op":"initialize","home":{"longitude_e7":"0","latitude_e7":"0"},"position":{"longitude_e7":"0","latitude_e7":"0"}}"#).is_err());
     }
 
+    fn fifty_meters_away() -> GeoCoordinate {
+        GeoCoordinate::from_degrees(30.5234, 50.45055).unwrap()
+    }
+
     #[test]
-    fn walking_energy_is_distance_based_and_stationary_time_is_not_travel() {
+    fn walking_energy_is_distance_based_and_never_cheaper_than_idling() {
         let mut s = initial();
-        let at = s.position;
-        let fifty_meters = GeoCoordinate::from_degrees(30.5234, 50.45055).unwrap();
-        let walked = distance_meters(at, fifty_meters);
+        let fifty_meters = fifty_meters_away();
+        let walked = distance_meters(s.position, fifty_meters);
         assert!((49..=51).contains(&walked));
-        s.observe(40_000, fifty_meters, Motion::Walking);
+        s.observe(40_000, fifty_meters, Motion::Walking, 0);
         assert_eq!(s.energy.get(), MAX - u64::from(walked) * 2);
         let remaining = s.energy.get();
-        s.observe(40_000, fifty_meters, Motion::Walking);
-        assert_eq!(s.energy.get(), remaining);
-        s.observe(10_000, fifty_meters, Motion::Idle);
+        // Walking in place (a blocked route, a crossing) pays the idle rate.
+        s.observe(40_000, fifty_meters, Motion::Walking, 0);
+        assert_eq!(s.energy.get(), remaining - 40);
+        let remaining = s.energy.get();
+        s.observe(10_000, fifty_meters, Motion::Idle, 0);
         assert_eq!(s.energy.get(), remaining - 10);
+        // A zero-duration report cannot claim travel.
+        let remaining = s.energy.get();
+        s.observe(0, s.position, Motion::Walking, 500);
+        assert_eq!(s.energy.get(), remaining);
     }
 
     #[test]
@@ -270,17 +296,61 @@ mod tests {
         let mut s = initial();
         s.intent = LifeIntent::Recover;
         s.energy = DecimalU64::new(5_000);
-        let next = GeoCoordinate::from_degrees(30.5234, 50.45055).unwrap();
+        let next = fifty_meters_away();
         let meters = distance_meters(s.position, next);
-        s.observe(1_000, next, Motion::Walking);
+        s.observe(30_000, next, Motion::Walking, 0);
         assert_eq!(s.energy.get(), 5_000 - u64::from(meters) * 2);
+    }
+
+    #[test]
+    fn route_distance_charges_loops_that_the_chord_hides() {
+        let mut s = initial();
+        let start = s.position;
+        // A 100 m out-and-back inside one observation ends where it began.
+        s.observe(60_000, start, Motion::Walking, 100);
+        assert_eq!(s.energy.get(), MAX - 200);
+        // The same report without a route distance cannot be charged for it,
+        // but still pays the time floor.
+        let mut t = initial();
+        t.observe(60_000, start, Motion::Walking, 0);
+        assert_eq!(t.energy.get(), MAX - 60);
+        // A short chord with a longer route pays the route.
+        let mut u = initial();
+        u.observe(60_000, fifty_meters_away(), Motion::Walking, 120);
+        assert_eq!(u.energy.get(), MAX - 240);
+    }
+
+    #[test]
+    fn implausible_speed_is_clamped_not_rejected() {
+        let mut s = initial();
+        let json = serde_json::to_string(&s).unwrap();
+        // 5 km in one second: charged at most six metres, state still advances.
+        let jump = r#"{"op":"observe","elapsed_ms":"1000","position":{"longitude_e7":"306000000","latitude_e7":"504501000"},"motion":"walking","walked_m":"5000"}"#;
+        let next = apply(&json, "0x0sky", "x0skai", jump).unwrap();
+        assert_ne!(next.position, s.position);
+        assert_eq!(next.energy.get(), MAX - 12);
+        // The ceiling is per elapsed second: 60 s allows at most 360 m.
+        s.observe(60_000, fifty_meters_away(), Motion::Walking, 10_000);
+        assert_eq!(s.energy.get(), MAX - 720);
+    }
+
+    #[test]
+    fn route_distance_is_optional_and_strictly_decimal() {
+        let s = initial();
+        let json = serde_json::to_string(&s).unwrap();
+        let old = r#"{"op":"observe","elapsed_ms":"10000","position":{"longitude_e7":"305234000","latitude_e7":"504505500"},"motion":"walking"}"#;
+        assert!(apply(&json, "0x0sky", "x0skai", old).is_ok());
+        let bad = old.replace(r#""walking"}"#, r#""walking","walked_m":"1e3"}"#);
+        assert!(apply(&json, "0x0sky", "x0skai", &bad).is_err());
+        let negative = old.replace(r#""walking"}"#, r#""walking","walked_m":-5}"#);
+        assert!(apply(&json, "0x0sky", "x0skai", &negative).is_err());
     }
 
     #[test]
     fn ticks_keep_remainders_and_reject_malformed_state() {
         let mut s = initial();
         for _ in 0..10 {
-            s.observe(100, s.position, Motion::Idle);
+            s.observe(100, s.position, Motion::Idle, 0);
         }
         assert_eq!(s.hunger.get(), 1);
         assert_eq!(s.energy.get(), 9_999);

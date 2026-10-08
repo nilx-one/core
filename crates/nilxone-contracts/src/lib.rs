@@ -36,8 +36,9 @@ pub use avaia_drive::{
 };
 pub use avaia_life::{AvaiaLife, LifeActivity, LifeIntent, apply_avaia_life};
 pub use avaia_proximity::{
-    AvaiaProximity, NEAR_DISTANCE_METERS, RED_DISTANCE_METERS, REVEAL_DISTANCE_METERS,
-    avaia_proximity, avaia_proximity_wire,
+    AvaiaProximity, MAX_COUNTED_ARTIFACTS, MIN_DURATION_DISTANCE_METERS, NEAR_DISTANCE_METERS,
+    ProximityLevel, RED_DISTANCE_METERS, REVEAL_DISTANCE_METERS, avaia_proximity,
+    avaia_proximity_wire,
 };
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};

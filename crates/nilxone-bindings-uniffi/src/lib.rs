@@ -110,8 +110,8 @@ pub fn apply_avaia_life(state: String, owner: String, subject: String, command: 
 /// Reads the same Avaia proximity policy as the Wasm host.
 #[must_use]
 #[uniffi::export]
-pub fn avaia_proximity(distance_m: u32, artifacts: u32) -> String {
-    nilxone_contracts::avaia_proximity_wire(distance_m, artifacts)
+pub fn avaia_proximity(distance_m: u32, artifacts: u32, previously_blocked: bool) -> String {
+    nilxone_contracts::avaia_proximity_wire(distance_m, artifacts, previously_blocked)
 }
 
 /// One transition of the Avaia's drive, the same as the Wasm export: the
@@ -137,6 +137,24 @@ mod tests {
         fixture_corpus_version, pub_dress_unicode_version, pub_dress_uts46_implementation,
         validate_pub_dress,
     };
+
+    #[test]
+    fn uniffi_surface_exposes_the_avaia_proximity_policy() {
+        for (distance, artifacts, blocked) in [
+            (0, 0, false),
+            (15, 3, false),
+            (4_499, 5, true),
+            (4_500, 0, true),
+            (4_500, 0, false),
+            (5_000, 0, false),
+        ] {
+            assert_eq!(
+                super::avaia_proximity(distance, artifacts, blocked),
+                nilxone_contracts::avaia_proximity_wire(distance, artifacts, blocked)
+            );
+        }
+        assert!(super::avaia_proximity(4_500, 0, true).contains(r#""can_reveal":false"#));
+    }
 
     #[test]
     fn uniffi_surface_exposes_the_avaia_drive() {

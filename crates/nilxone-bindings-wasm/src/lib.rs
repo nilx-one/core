@@ -146,11 +146,13 @@ pub fn apply_avaia_life(state: &str, owner: &str, subject: &str, command: &str) 
     nilxone_contracts::apply_avaia_life(state, owner, subject, command)
 }
 
-/// Reads Core's distance-bound reveal policy for an Avaia and its Bond.
+/// Reads Core's distance-bound reveal policy for an Avaia and its Bond. The
+/// host passes back whether the previous answer blocked reveals (`true` when
+/// it has none), which is what makes the 90% restore a real transition.
 #[must_use]
 #[wasm_bindgen]
-pub fn avaia_proximity(distance_m: u32, artifacts: u32) -> String {
-    nilxone_contracts::avaia_proximity_wire(distance_m, artifacts)
+pub fn avaia_proximity(distance_m: u32, artifacts: u32, previously_blocked: bool) -> String {
+    nilxone_contracts::avaia_proximity_wire(distance_m, artifacts, previously_blocked)
 }
 
 #[cfg(test)]
@@ -177,6 +179,24 @@ mod tests {
             super::apply_inventory_command("", r#"{"op":"finish_craft"}"#, "01"),
             r#"{"error":"invalid","ok":false}"#
         );
+    }
+
+    #[test]
+    fn wasm_surface_exposes_the_avaia_proximity_policy() {
+        for (distance, artifacts, blocked) in [
+            (0, 0, false),
+            (15, 3, false),
+            (4_499, 5, true),
+            (4_500, 0, true),
+            (4_500, 0, false),
+            (5_000, 0, false),
+        ] {
+            assert_eq!(
+                super::avaia_proximity(distance, artifacts, blocked),
+                nilxone_contracts::avaia_proximity_wire(distance, artifacts, blocked)
+            );
+        }
+        assert!(super::avaia_proximity(4_500, 0, true).contains(r#""can_reveal":false"#));
     }
 
     #[test]
