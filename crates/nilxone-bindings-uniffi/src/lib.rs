@@ -107,6 +107,13 @@ pub fn apply_avaia_life(state: String, owner: String, subject: String, command: 
     nilxone_contracts::apply_avaia_life(&state, &owner, &subject, &command)
 }
 
+/// Reads the same Avaia proximity policy as the Wasm host.
+#[must_use]
+#[uniffi::export]
+pub fn avaia_proximity(distance_m: u32, artifacts: u32) -> String {
+    nilxone_contracts::avaia_proximity_wire(distance_m, artifacts)
+}
+
 /// One transition of the Avaia's drive, the same as the Wasm export: the
 /// stored state (or the empty string), one input, the wall clock as a decimal
 /// string and the local hour. See `docs/avaia-drive.md`.
