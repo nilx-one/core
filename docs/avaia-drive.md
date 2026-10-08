@@ -38,7 +38,7 @@ host world layer ──input──▶ Core drive ──commands──▶ host ex
 | `tick` | — | Time passed. |
 | `life` | `intent` (`explore` / `return_home` / `recover`), `energy` (decimal string, 0–10000), `home?` | Avaia life's latest report, whenever it changes. `home` names home for the way back. |
 | `passing` | `things`: `ref`, `kind`, `group` (`landmark` / `area` / `find`), `off_route_m`, `studyable` | Things within reach of the walk under way. The host may report the same thing again; the drive remembers what it saw. |
-| `curiosity_options` | `to`: `ref`, `longing` | Answers `resolve` `curiosity`: notebook landmarks, most wanted first. |
+| `curiosity_options` | `to`: `ref`, `longing`, `kind?`, `meters?`, `feeling?` | Answers `resolve` `curiosity`: notebook landmarks, most wanted first. `kind`, `meters` and `feeling` are for a model's menu; the drive's own pick does not read them. |
 | `stroll_options` | `to`: refs | Answers `resolve` `stroll`: graph nodes in a fixed order. |
 | `outing_options` | `targets`: `ref`, `kind`, `meters`, `appeal?`, `feeling?`, `stay_ms?`, `revisit_ms?`; `wander`: refs; `home?`: `ref`, `meters` | Answers `resolve` `outing`. |
 | `chosen` | `index`: a menu index or `null` | Answers `choose`. |
@@ -55,10 +55,10 @@ host world layer ──input──▶ Core drive ──commands──▶ host ex
 | `visited` | `at` | records how the visit felt. |
 | `say` | `line`, `about?` | says a line in the study's voice: `walk`, `stroll`, `landmark.spotted`, `landmark.longing`, `blocked.building`, `blocked.water`, `blocked.fog`. |
 | `resolve` | `what`, `min_m`, `max_m`, `leash_m?`, `anchor?`, `wander_m?` | answers with the matching `*_options` input. A stroll's candidates lie `min_m`–`max_m` along the paths and within `leash_m` of `anchor` (where it settled; absent, where the body is). An outing's targets lie within `max_m`, and its wander nodes `wander_m` along the paths. |
-| `choose` | `what` (`outing` / `distraction`), `heading?`, `menu`, `default` | puts the menu to a model, or not, and answers `chosen`. |
+| `choose` | `what` (`outing` / `distraction` / `curiosity`), `heading?`, `menu`, `default` | puts the menu to a model, or not, and answers `chosen`. |
 | `wake_at` | `ms` | ticks no later than `ms`. |
 
-A menu option is `index`, `action` and, where it applies, `kind`, `reach` (`near` up to 1 km, `far`) and `feeling` (`new`, `known`, `fond`, `loved`). The actions are a closed set: `carry_on`, `glance`, `pick_up` for a distraction; `stay`, `go`, `wander`, `home` for an outing. `heading` tells a model what the walk a distraction would interrupt is for, such as `tap`: a point B its owner set.
+A menu option is `index`, `action` and, where it applies, `kind`, `reach` (`near` up to 1 km, `far`) and `feeling` (`new`, `known`, `fond`, `loved`). The actions are a closed set: `carry_on`, `glance`, `pick_up` for a distraction; `stay`, `go`, `wander`, `home` for an outing; `stay`, `study` for curiosity. `heading` tells a model what the walk a distraction would interrupt is for, such as `tap`: a point B its owner set.
 
 ## Behavior
 
@@ -66,7 +66,7 @@ A menu option is `index`, `action` and, where it applies, `kind`, `reach` (`near
 
 Arriving at a point B, it stands 20 s looking around, then settles there. It does not freeze until the next outing:
 
-1. **Curiosity**: 15 s after it settles (1.5 s after taking the wheel), it asks for notebook landmarks and walks to the first, then studies it.
+1. **Curiosity**: 15 s after it settles (1.5 s after taking the wheel), it asks for notebook landmarks and puts them to a model: `stay`, then up to six landmarks to `study`, each with its `kind`, `reach` (from `meters`) and `feeling` when the host gives them. A place it longs for reads as at least `fond`. The drive's own pick is the first landmark, the one the host wants most. It walks to the chosen one, saying `landmark.longing` for a fond or loved place and `landmark.spotted` otherwise, then studies it. Staying leaves it idle, and the strolls come next. With nothing in the notebook, no menu is offered.
 2. **Strolls**: 30 s after it settles, it asks for stroll nodes 30–120 m away along the paths and within 200 m of where it settled, walks to one, and looks around for 8 s. It says `stroll` on the first stroll after settling only. Each stroll in a row doubles the wait, up to 5 min. In the evening and at night (20:00–07:00) the wait doubles again. A stroll with nowhere to go counts as a stroll.
 3. **A stroll is not an outing.** It never touches the interval between outings, and it does not settle the Avaia, so restlessness counts on and the outing comes on time. A tired Avaia (life's energy below 4000) does not stroll, and no stroll is offered when an outing would be due first.
 
