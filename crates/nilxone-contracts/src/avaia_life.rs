@@ -12,6 +12,8 @@ use crate::{AvaiaPubDress, DecimalU64, GeoCoordinate, PubDress, distance_meters}
 
 const MAX: u64 = 10_000;
 const HOME_RADIUS_M: u32 = 50;
+// One percent of full energy for every 50 metres actually walked.
+const WALK_ENERGY_PER_METER: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -125,14 +127,15 @@ impl AvaiaLife {
         let energy = if recovering {
             (self.energy.get() + seconds * 10).min(MAX)
         } else {
-            self.energy.get().saturating_sub(
+            // Charge walked distance, not camera movement or imagined offline
+            // time. A zero-duration observation cannot claim travel.
+            let cost = if matches!(motion, Motion::Walking) && elapsed > 0 {
+                u64::from(distance_meters(self.position, position))
+                    .saturating_mul(WALK_ENERGY_PER_METER)
+            } else {
                 seconds
-                    * if matches!(motion, Motion::Walking) {
-                        3
-                    } else {
-                        1
-                    },
-            )
+            };
+            self.energy.get().saturating_sub(cost)
         };
         self.hunger = DecimalU64::new(hunger);
         self.energy = DecimalU64::new(energy);
@@ -241,6 +244,22 @@ mod tests {
         assert!(apply(&json, "0x0other", "x0skai", command).is_err());
         assert!(apply(&json, "0x0sky", "x0otherai", command).is_err());
         assert!(apply(&json, "0x0sky", "x0skai", r#"{"op":"initialize","home":{"longitude_e7":"0","latitude_e7":"0"},"position":{"longitude_e7":"0","latitude_e7":"0"}}"#).is_err());
+    }
+
+    #[test]
+    fn walking_energy_is_distance_based_and_stationary_time_is_not_travel() {
+        let mut s = initial();
+        let at = s.position;
+        let fifty_meters = GeoCoordinate::from_degrees(30.5234, 50.45055).unwrap();
+        let walked = distance_meters(at, fifty_meters);
+        assert!((49..=51).contains(&walked));
+        s.observe(40_000, fifty_meters, Motion::Walking);
+        assert_eq!(s.energy.get(), MAX - u64::from(walked) * 2);
+        let remaining = s.energy.get();
+        s.observe(40_000, fifty_meters, Motion::Walking);
+        assert_eq!(s.energy.get(), remaining);
+        s.observe(10_000, fifty_meters, Motion::Idle);
+        assert_eq!(s.energy.get(), remaining - 10);
     }
 
     #[test]
