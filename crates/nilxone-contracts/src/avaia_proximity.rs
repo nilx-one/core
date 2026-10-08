@@ -4,7 +4,7 @@
 //! Distance-bound capability of one Avaia relative to its Bond.
 //! Distance is supplied by the host in whole metres; Core alone decides
 //! whether a reveal is possible and how long it takes. This is not a
-//! BondChain interaction or proof of a shared physical presence.
+//! `BondChain` interaction or proof of a shared physical presence.
 
 use serde::Serialize;
 
@@ -61,11 +61,11 @@ pub fn avaia_proximity(distance_m: u32, artifacts: u32) -> AvaiaProximity {
     }
 }
 
-/// Same JSON projection for Wasm and UniFFI; never a persisted state transition.
+/// Same JSON projection for Wasm and `UniFFI`; never a persisted state transition.
 #[must_use]
 pub fn avaia_proximity_wire(distance_m: u32, artifacts: u32) -> String {
-    serde_json::to_string(&avaia_proximity(distance_m, artifacts))
-        .expect("AvaiaProximity consists only of fixed finite scalar values")
+    // A failed serialization cannot authorize a host-side reveal.
+    serde_json::to_string(&avaia_proximity(distance_m, artifacts)).unwrap_or_default()
 }
 
 #[cfg(test)]
