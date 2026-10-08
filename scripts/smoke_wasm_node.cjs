@@ -34,3 +34,12 @@ const tick = JSON.parse(core.apply_avaia_life(JSON.stringify(life.state), '0x0sk
 assert.equal(tick.state.energy, '9940');
 assert.equal(tick.state.hunger, '60');
 assert.deepEqual(tick.state.home, coordinate);
+
+const outward = JSON.parse(core.avaia_proximity(4600, 0, false));
+assert.equal(outward.can_reveal, true);
+assert.equal(outward.level, 'restricted');
+const inbound = JSON.parse(core.avaia_proximity(4600, 0, true));
+assert.equal(inbound.can_reveal, false);
+assert.equal(inbound.duration_ms, null);
+assert.equal(JSON.parse(core.avaia_proximity(4499, 0, true)).can_reveal, true);
+assert.equal(JSON.parse(core.avaia_proximity(5000, 0, false)).level, 'red');
