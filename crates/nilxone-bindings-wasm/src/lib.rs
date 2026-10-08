@@ -146,6 +146,13 @@ pub fn apply_avaia_life(state: &str, owner: &str, subject: &str, command: &str) 
     nilxone_contracts::apply_avaia_life(state, owner, subject, command)
 }
 
+/// Reads Core's distance-bound reveal policy for an Avaia and its Bond.
+#[must_use]
+#[wasm_bindgen]
+pub fn avaia_proximity(distance_m: u32, artifacts: u32) -> String {
+    nilxone_contracts::avaia_proximity_wire(distance_m, artifacts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
