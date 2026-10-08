@@ -72,7 +72,7 @@ Arriving at a point B, it stands 20 s looking around, then settles there. It doe
 
 ### Outings
 
-Restless 10 min after it settled, and never within 4 h of the last outing, it asks for targets within a there-and-back on what life's energy allows (2.5 km out on full energy, proportionally less, never past 3 km). The menu is `stay`, up to six targets, a wander (one node, picked per 4 h window) and `home` when home is more than 50 m away. A target visited within its `revisit_ms` (7 days unless the host says the place is dearer) stays off the menu. Home is on the menu for a model to take, never the drive's own pick: when its needs ask for home, life says so. The drive's own pick:
+The wish to go out is energy's. Rested, it is restless 3 min after it settled; the less energy life reports, the longer that takes, evenly up to 10 min with none left. Restless, and never within 20 min of the last outing, it asks for targets within a there-and-back on what life's energy allows (2.5 km out on full energy, proportionally less, never past 3 km). The menu is `stay`, up to six targets, a wander (one node, picked per 4 h window) and `home` when home is more than 50 m away. A target visited within its `revisit_ms` (7 days unless the host says the place is dearer) stays off the menu. Home is on the menu for a model to take, never the drive's own pick: when its needs ask for home, life says so. The drive's own pick:
 
 - in the evening and at night: only a target within 1 km;
 - the target with the highest `appeal` when the host gives one, else the nearest;

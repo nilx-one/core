@@ -45,10 +45,17 @@ pub const STROLL_IDLE_MS: u64 = 30_000;
 pub const STROLL_MAX_IDLE_MS: u64 = 300_000;
 /// How long it looks around where a stroll took it.
 pub const STROLL_LOOK_MS: u64 = 8_000;
-/// How long it stands settled before it is restless enough to go out.
-pub const RESTLESS_MS: u64 = 600_000;
+/// How long a rested Avaia stands settled before it wants to go out. The
+/// less energy life reports, the longer it takes, up to
+/// [`SPENT_RESTLESS_MS`] with none left: the wish to go out is energy's.
+pub const RESTLESS_MS: u64 = 180_000;
+/// How long it stands settled before it wants to go out with no energy left.
+pub const SPENT_RESTLESS_MS: u64 = 600_000;
 /// No two outings closer together than this.
-pub const OUTING_INTERVAL_MS: u64 = 14_400_000;
+pub const OUTING_INTERVAL_MS: u64 = 1_200_000;
+/// The window one wander node is picked for, so a menu offered twice in it
+/// offers the same wander.
+pub const WANDER_WINDOW_MS: u64 = 14_400_000;
 /// How long it looks around a target it walked out to, unless told otherwise.
 pub const VISIT_MS: u64 = 30_000;
 /// How long it studies a landmark.
@@ -761,15 +768,24 @@ pub fn next_due(state: &DriveState, hour: u8) -> Option<u64> {
     }
 }
 
-/// Restlessness, 0 to 1000: 0 while busy, climbing over [`RESTLESS_MS`] since
-/// it settled. Strolling about does not calm it.
+/// Restlessness, 0 to 1000: 0 while busy, climbing over [`restless_ms`]
+/// since it settled. Strolling about does not calm it.
 #[must_use]
 pub fn restlessness(state: &DriveState, now_ms: u64) -> u16 {
     if !(matches!(state.activity, Activity::Idle { .. }) || pottering(&state.activity)) {
         return 0;
     }
+    let full = restless_ms(state);
     let since = now_ms.saturating_sub(state.settled_ms);
-    u16::try_from(since.min(RESTLESS_MS) * 1_000 / RESTLESS_MS).unwrap_or(1_000)
+    u16::try_from(since.min(full) * 1_000 / full).unwrap_or(1_000)
+}
+
+/// How long it stands settled before it wants to go out: [`RESTLESS_MS`] on
+/// full energy, stretching evenly to [`SPENT_RESTLESS_MS`] with none left.
+#[must_use]
+pub fn restless_ms(state: &DriveState) -> u64 {
+    let spent = FULL_ENERGY - state.energy.get().min(FULL_ENERGY);
+    RESTLESS_MS + spent * (SPENT_RESTLESS_MS - RESTLESS_MS) / FULL_ENERGY
 }
 
 /// How far out an outing may plan: a there-and-back on what energy is left.
@@ -830,7 +846,7 @@ fn is_evening(hour: u8) -> bool {
 
 /// Restless enough, and the interval since the last outing passed.
 fn outing_due(state: &DriveState) -> u64 {
-    let restless = state.settled_ms + RESTLESS_MS;
+    let restless = state.settled_ms + restless_ms(state);
     state
         .last_outing_ms
         .map_or(restless, |last| restless.max(last + OUTING_INTERVAL_MS))
@@ -1297,7 +1313,7 @@ impl Step<'_> {
                 ..Entry::bare(Action::Go)
             });
         }
-        let wander = pick(wander, self.now / OUTING_INTERVAL_MS).map(|there| {
+        let wander = pick(wander, self.now / WANDER_WINDOW_MS).map(|there| {
             entries.push(Entry {
                 to: Some(there.clone()),
                 ..Entry::bare(Action::Wander)
@@ -1603,8 +1619,9 @@ mod tests {
         Action, Activity, CHOOSE_MS, CURIOSITY_IDLE_MS, Choice, DriveCommand, DriveInput,
         DriveKind, DriveRef, DriveState, FIRST_LOOK_MS, GLANCE_MS, Group, Home, Line,
         OUTING_INTERVAL_MS, POINT_B_STAND_MS, Passing, Purpose, RESTLESS_MS, Reach, Resolve,
-        STROLL_IDLE_MS, STROLL_LEASH_METERS, STROLL_LOOK_MS, STROLL_MAX_METERS, STROLL_MIN_METERS,
-        Stand, Target, VISIT_MS, avaia_drive_step_wire, next_due, restlessness, step,
+        SPENT_RESTLESS_MS, STROLL_IDLE_MS, STROLL_LEASH_METERS, STROLL_LOOK_MS, STROLL_MAX_METERS,
+        STROLL_MIN_METERS, Stand, Target, VISIT_MS, avaia_drive_step_wire, next_due, restless_ms,
+        restlessness, step,
     };
 
     const T0: u64 = 1_800_000_000_000;
@@ -1843,7 +1860,49 @@ mod tests {
             curiosity_asked: true,
             ..state
         };
-        assert_eq!(next_due(&state, NOON), Some(settled + RESTLESS_MS));
+        // Tired, it only waits to want to go out, and wants it later.
+        assert_eq!(next_due(&state, NOON), Some(settled + 558_000));
+    }
+
+    #[test]
+    fn the_wish_to_go_out_follows_energy() {
+        let at = |energy| DriveState {
+            energy: crate::DecimalU64::new(energy),
+            ..fresh()
+        };
+        assert_eq!(restless_ms(&at(10_000)), RESTLESS_MS);
+        assert_eq!(restless_ms(&at(5_000)), 390_000);
+        assert_eq!(restless_ms(&at(0)), SPENT_RESTLESS_MS);
+        let rested = at(10_000);
+        assert_eq!(restlessness(&rested, T0 + RESTLESS_MS / 2), 500);
+        assert_eq!(restlessness(&at(0), T0 + RESTLESS_MS / 2), 150);
+    }
+
+    #[test]
+    fn an_outing_is_wanted_again_within_a_sitting() {
+        // Back from an outing and settled, it wants out again once both the
+        // interval and its restlessness have passed: within the same sitting.
+        let out = T0;
+        let state = DriveState {
+            last_outing_ms: Some(out),
+            settled_ms: out + 60_000,
+            // Pottering about since, so no stroll comes before the outing.
+            activity: Activity::Idle {
+                since_ms: out + 1_000_000,
+            },
+            curiosity_asked: true,
+            strolls: 16,
+            ..fresh()
+        };
+        assert_eq!(next_due(&state, NOON), Some(out + OUTING_INTERVAL_MS));
+        let (_, commands) = run(&state, DriveInput::Tick {}, out + OUTING_INTERVAL_MS);
+        assert!(matches!(
+            commands[0],
+            DriveCommand::Resolve {
+                what: Resolve::Outing,
+                ..
+            }
+        ));
     }
 
     #[test]
