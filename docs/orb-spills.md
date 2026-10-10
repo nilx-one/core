@@ -61,3 +61,5 @@ Who picked an orb up first is not Core's to decide: the host's service claims
 it, first come first served, and answers a later pick-up as taken ("crap!").
 An orb is a pick-up intent and presentation, never a `BondChain` interaction,
 a Relationship, or proof of presence.
+
+<!-- © 2026 aiaiaiai · aiaiaiai.org -->

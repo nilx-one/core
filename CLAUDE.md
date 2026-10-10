@@ -105,3 +105,5 @@ remaining risk or blocker, and whether deploy or another protected action
 needs authorization. Do not narrate every tool call, repeat logs without
 interpreting them, claim success you did not verify, or ask for confirmation
 the policy already grants.
+
+<!-- © 2026 aiaiaiai · aiaiaiai.org -->
