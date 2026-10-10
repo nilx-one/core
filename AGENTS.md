@@ -188,3 +188,5 @@ Do not ask for confirmation when this policy already grants authority to
 continue. If the task cannot be completed, identify the concrete blocker and
 the exact state reached instead of giving a generic access or tooling
 disclaimer.
+
+<!-- © 2026 aiaiaiai · aiaiaiai.org -->
