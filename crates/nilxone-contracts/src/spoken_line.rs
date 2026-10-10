@@ -263,7 +263,7 @@ impl fmt::Display for EarshotRadiusError {
 impl std::error::Error for EarshotRadiusError {}
 
 /// Meters per degree of latitude used by the distance approximation.
-const CENTIMETERS_PER_DEGREE: i128 = 11_132_000;
+pub(crate) const CENTIMETERS_PER_DEGREE: i128 = 11_132_000;
 const E7: i128 = GEO_COORDINATE_E7_SCALE as i128;
 const COSINE_SCALE: i128 = 1_000_000;
 
@@ -282,7 +282,7 @@ const COSINE_PER_DEGREE: [i64; 91] = [
 
 /// `cos` of an absolute latitude in E7 degrees, in millionths, by linear
 /// interpolation of [`COSINE_PER_DEGREE`]. Integer-only, so every runtime agrees.
-fn cosine_millionths(absolute_latitude_e7: i64) -> i128 {
+pub(crate) fn cosine_millionths(absolute_latitude_e7: i64) -> i128 {
     let degree_e7 = i64::from(GEO_COORDINATE_E7_SCALE);
     let whole = usize::try_from(absolute_latitude_e7 / degree_e7).map_or(90, |v| v.min(90));
     let fraction = i128::from(absolute_latitude_e7 % degree_e7);

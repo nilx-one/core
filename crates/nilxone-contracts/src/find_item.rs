@@ -399,7 +399,7 @@ pub fn item_for_find(
 }
 
 /// FNV-1a over the UTF-8 of `prefix` then `value`, 32 bits.
-fn fnv1a32(prefix: &str, value: &str) -> u32 {
+pub(crate) fn fnv1a32(prefix: &str, value: &str) -> u32 {
     prefix
         .bytes()
         .chain(value.bytes())
@@ -409,7 +409,7 @@ fn fnv1a32(prefix: &str, value: &str) -> u32 {
 }
 
 /// The segment row and column of a canonical artifact id.
-fn artifact_segment(id: &str) -> Option<(i64, i64)> {
+pub(crate) fn artifact_segment(id: &str) -> Option<(i64, i64)> {
     let mut parts = id.strip_prefix("art:seg:")?.split(':');
     let row = canonical_integer(parts.next()?)?;
     let column = canonical_integer(parts.next()?)?;

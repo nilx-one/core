@@ -118,6 +118,19 @@ pub fn avaia_drive_step(state: &str, input: &str, now_ms: &str, hour: u8) -> Str
     }
 }
 
+/// The orbs around a Bond: what lies where and when it lands, and what the
+/// Bond and the Avaia reach now. `world` is an `OrbWorld` as JSON and
+/// `now_ms` a decimal string. Answers `{"ok":true,"view":…}` or
+/// `{"ok":false,"error":"invalid"}`; see `docs/orb-spills.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn orb_world(world: &str, now_ms: &str) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::orb_world_wire(world, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[wasm_bindgen]
@@ -197,6 +210,19 @@ mod tests {
             );
         }
         assert!(super::avaia_proximity(4_500, 0, true).contains(r#""can_reveal":false"#));
+    }
+
+    #[test]
+    fn wasm_surface_exposes_the_orb_world() {
+        assert_eq!(
+            super::orb_world(r#"{"spills":[]}"#, "1000"),
+            nilxone_contracts::orb_world_wire(r#"{"spills":[]}"#, 1_000)
+        );
+        assert!(super::orb_world(r#"{"spills":[]}"#, "1000").starts_with(r#"{"ok":true"#));
+        assert_eq!(
+            super::orb_world(r#"{"spills":[]}"#, "01"),
+            r#"{"error":"invalid","ok":false}"#
+        );
     }
 
     #[test]
