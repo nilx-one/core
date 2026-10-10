@@ -43,3 +43,22 @@ assert.equal(inbound.can_reveal, false);
 assert.equal(inbound.duration_ms, null);
 assert.equal(JSON.parse(core.avaia_proximity(4499, 0, true)).can_reveal, true);
 assert.equal(JSON.parse(core.avaia_proximity(5000, 0, false)).level, 'red');
+
+const find = { longitude_e7: '304469000', latitude_e7: '504655000' };
+const orbWorld = JSON.parse(core.orb_world(JSON.stringify({
+  spills: [{
+    artifact_id: 'art:seg:312346:298243:e2908:1:0',
+    from: { longitude_e7: '304461000', latitude_e7: '504650000' },
+    to: find,
+    appeared_at: '1000',
+    expires_at: '1801000',
+    count: 20,
+    taken: [],
+  }],
+  avaia: find,
+}), '1000'));
+assert.equal(orbWorld.ok, true);
+assert.equal(orbWorld.view.orbs.filter((orb) => orb.kind === 'orb').length, 20);
+assert.equal(orbWorld.view.orbs[0].lands_at, '1070');
+assert.equal(orbWorld.view.next_expiry, '1801000');
+assert.deepEqual(JSON.parse(core.orb_world('{}', '1000')), { error: 'invalid', ok: false });
