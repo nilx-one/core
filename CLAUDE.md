@@ -101,11 +101,11 @@ potential collaborators, not interchangeable author identities.
 - When tools allow explicit Git author identity, use the connected account's
   verified email, never impersonate the other account. A co-author belongs
   in the trailer. Commit author/co-author emails may be public in Git history.
-- Put trailers in the *commit message*, each on its own line, after a blank
+- Put trailers in the _commit message_, each on its own line, after a blank
   line at the end of the message. Attribute only actual co-authors; never
   add the commit author as their own co-author or duplicate a trailer.
 - Preserve legitimate tool/model attribution if present, but a line such as
-  `Co-Authored-By: Claude Opus <noreply@anthropic.com>` does not identify
+  `Co-Authored-By: <model name> <noreply@anthropic.com>` does not identify
   `x0skai` or `0x0sky`. Do not replace a real account with a model label.
 - Before merge, inspect the pushed PR commit messages on GitHub, not only
   local configuration or the PR description. Confirm the intended co-author
