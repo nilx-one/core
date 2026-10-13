@@ -85,7 +85,7 @@ Once the exact head revision is verified, required CI is green, applicable
 deploy validation is green, the requested scope is complete, and no known
 blocker remains, mark the pull request ready without asking the user again.
 
-Merge only with explicit user authorization, and only when all of the following are true:
+Merge automatically when all of the following are true:
 
 - the requested task is complete;
 - the final diff matches the intended scope;
@@ -136,7 +136,7 @@ the release.
 
 ### Deployment
 
-Deployment always requires explicit user authorization, even after a
+Deployment always requires explicit user authorization, even after an automatic
 merge.
 
 After authorization, deploy the already verified revision or artifact, perform

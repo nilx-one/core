@@ -45,7 +45,7 @@ independent and do not conflict; never merge one only to clear a queue.
 
 inspect state → resolve the previous pull request → branch from the latest
 base → open a **draft** pull request → full CI → green → deploy validation (if
-applicable) → mark ready for review → merge when authorized → deploy by hand.
+applicable) → mark ready for review → merge when ready → deploy by hand.
 
 GitHub cannot merge a draft, and nobody can approve one. Once the head is green
 and you have re-read your own diff, mark the pull request ready yourself. A
@@ -63,7 +63,11 @@ Each stage has one job and does not redo another's:
   pre-activation smoke contracts. Reuse CI results and artifacts. It does not
   rerun CI, tests, analysis or contract checks, rebuild an identical artifact,
   or activate a release.
-- **Merge** needs explicit user authorization. Once authorization exists, the requested task is complete, its scope is satisfied, CI is green, deploy validation is green or not applicable, and no known blocker invalidates it, merge and record the merged state. Afterwards, refresh the base and carry on without asking again for the same authorized merge. Merging is not deploying.
+- **Merge** is automatic and needs no user authorization once the requested
+  task is complete, its scope is satisfied, CI is green, deploy validation is
+  green or not applicable, and no known blocker invalidates it. Afterwards,
+  record the merged state, refresh the base, and carry on with the sequence
+  without waiting for confirmation. Merging is not deploying.
 - **Deploy** is manual, comes after merge, and needs explicit user
   authorization every time. It consumes the verified artifact, makes the
   environment transition, activates the release, and checks minimal health. It
