@@ -178,64 +178,64 @@ deployment results without evidence from the corresponding operation.
 
 ### Shared-account co-authorship
 
-The connected GitHub identity is the commit author; a model name, tool, session,
-PR author, or reviewer is not automatically a co-author. Recognize distinct
-GitHub accounts `0x0sky` (ChatGPT/Codex) and `x0skai` (Claude Code) as
-potential collaborators, not interchangeable author identities.
+The owner works from a phone. Agents must perform Git configuration, commit
+creation, PR updates and verification in their connected environment; do not
+require a local checkout or terminal on the owner's phone.
 
-- Credit the other account only when it actually contributed authored code,
-  documentation, tests, or a concrete patch incorporated into this commit.
-  A review, approval, prompt, or GitHub login alone does not qualify. Do not
-  add a co-author for the sake of an achievement.
-- For a commit authored by `0x0sky` with actual contribution by `x0skai`,
-  include `Co-authored-by: x0skai <x0skai@aiaiaiai.org>`.
-- For a commit authored by `x0skai` with actual contribution by `0x0sky`,
-  include `Co-authored-by: 0x0sky <0x0sky@aiaiaiai.org>`.
-- These organization-domain emails are the preferred attribution addresses
-  supplied for this two-account workflow, not proof of GitHub verification.
-  Before using either for Git author or co-author attribution, confirm it is
-  added to and verified on the respective GitHub account. Until verified, use
-  that account's confirmed GitHub-associated noreply address instead.
-- When tools allow explicit Git author identity, use the connected account's
-  verified email, never impersonate the other account. A co-author belongs
-  in the trailer. Commit author/co-author emails may be public in Git history.
-- Put trailers in the _commit message_, each on its own line, after a blank
-  line at the end of the message. Attribute only actual co-authors; never
-  add the commit author as their own co-author or duplicate a trailer.
-- Preserve legitimate tool/model attribution if present, but a line such as
-  `Co-Authored-By: <model name> <noreply@anthropic.com>` does not identify
-  `x0skai` or `0x0sky`. Do not replace a real account with a model label.
-- Before merge, inspect the pushed PR commit messages on GitHub, not only
-  local configuration or the PR description. Confirm the intended co-author
-  trailer survived. A comment, review, approval or PR body is not a substitute.
-- **Bidirectional workflow:** the authenticated agent is the primary commit
-  author. If both accounts authored parts of a change, add the other account
-  as a co-author to that original commit, in either direction, before pushing.
-- **First and last source commits:** when both accounts genuinely contributed
-  to those exact changes, record the other account as co-author in both the
-  first and last substantive PR commits. Arrange genuine collaboration before
-  the first commit and during the final change; never add filler commits.
-- **Intermediate commits:** do the same for every genuinely co-authored commit.
-  Preserve solo authorship on commits with no real second contributor.
-- **Audit before merge:** check the pushed first, last and any other joint PR
-  commits, their primary authors, trailers and linked co-author accounts.
-  Prefer linked identity or GitHub user ID over displayed names: `0x0sky`
-  is 75973992 and `x0skai` is 300452669. The name "0x0sky's bot" by
-  itself does not establish which account GitHub linked.
-- **Merge strategy:** normal merge preserves the source commits and their
-  trailers. If supported, add the genuine co-author to the final merge-commit
-  message too; do not assume this happens automatically. When squash is
-  allowed, verify the final squash commit includes the appropriate trailer.
-  Never change merge methods just to create a badge or treat the PR body as
-  co-author metadata.
-- **Audit after merge:** inspect the resulting merge/squash commit and source
-  commits for linked identities, and report GitHub co-author attribution
-  separately from Achievement award status. `Verified` confirms a commit
-  signature, not that GitHub awarded or validated co-authorship.
-- Do not manufacture commits, retroactively rewrite merged history, invent
-  contributions, or block a valid solo-authored PR merely to earn a badge.
-  Report verified commit attribution separately from GitHub Achievement
-  eligibility or award status, which may update asynchronously.
+| Environment | Primary Git author | Required tool trailer |
+| --- | --- | --- |
+| ChatGPT / Codex | `0x0sky <0x0sky@aiaiaiai.org>` | `Assisted-by: OpenAI Codex` |
+| Claude Code | `x0skai <x0skai@aiaiaiai.org>` | `Co-authored-by: Claude <noreply@anthropic.com>` |
+
+These addresses were explicitly confirmed by the owner. GitHub-linked identity
+must still be checked on pushed commits; signature verification is separate.
+Never infer the Git author from the PR author, display name or model name.
+
+- When the other account contributed code, tests, documentation or an
+  incorporated patch to this exact commit, add its canonical trailer:
+  `Co-authored-by: x0skai <x0skai@aiaiaiai.org>` or
+  `Co-authored-by: 0x0sky <0x0sky@aiaiaiai.org>`.
+- Credit Claude with `Co-authored-by: Claude <noreply@anthropic.com>` when
+  Claude contributed, including a Codex-authored commit incorporating its work.
+  Credit Codex with `Assisted-by: OpenAI Codex` when Codex contributed,
+  including a Claude-authored commit incorporating its work.
+- Account credit and tool credit are distinct and may coexist. Never add
+  the primary author as their own co-author or duplicate a trailer.
+- Put all trailers in the final commit-message paragraph, separated from the
+  body by a blank line, with one trailer per line and no semicolons.
+- Apply this to the first, intermediate and final substantive commits whenever
+  the corresponding contribution exists. A review, prompt, approval or account
+  ownership alone does not establish joint authorship. Do not manufacture
+  contributions or filler commits for an achievement.
+- Before the first commit, inspect the authenticated account and Git author.
+  In a shell, set repository-local `user.name` and `user.email` from the table.
+  If an API chooses author metadata itself, inspect the resulting commit.
+  The current GitHub API adapter cannot set author email and uses the verified
+  `75973992+0x0sky@users.noreply.github.com` identity. This exact adapter
+  exception is accepted by CI and must be disclosed in the PR; it does not
+  change the preferred email or co-author addresses. Do not impersonate the
+  other account or silently substitute any other email.
+- Before handing work to another agent, update the PR's Attribution / handoff
+  section: account and tool used, authored files/patch or SHA, contribution
+  incorporated from the other agent (or none), verified head/checks, remaining
+  work and merge authorization. Preserve that evidence across context changes.
+- Run `python scripts/check_commit_attribution.py BASE HEAD BASELINE` before
+  delivery, using the policy baseline pinned in the attribution workflow.
+  CI checks new source commits, not the synthetic PR merge commit. Existing
+  history at adoption is exempt; never rewrite merged history to add credit.
+- Inspect pushed first/last/joint commit messages and linked GitHub authors.
+  The checker validates metadata, not whether a contribution actually occurred.
+  It does not prove email verification, account linkage or achievement status.
+- For squash, construct and inspect the final message explicitly: preserve all
+  genuine account/tool credits across the squashed changes, excluding the final
+  primary author from co-author trailers. Do not assume GitHub preserves them.
+  Inspect the resulting commit after an authorized merge.
+- Keep the PR draft until required checks pass. Do not merge without explicit
+  user authorization; deployment requires separate authorization. This rule
+  overrides generic automatic-merge wording elsewhere in these instructions.
+- The `Commit attribution` workflow reports failures; repository administrators
+  must make its check required if merge blocking is desired. Do not claim branch
+  protection is configured merely because the workflow exists.
 
 ### Reporting
 
