@@ -182,10 +182,10 @@ The owner works from a phone. Agents must perform Git configuration, commit
 creation, PR updates and verification in their connected environment; do not
 require a local checkout or terminal on the owner's phone.
 
-| Environment | Primary Git author | Required tool trailer |
-| --- | --- | --- |
-| ChatGPT / Codex | `0x0sky <0x0sky@aiaiaiai.org>` | `Assisted-by: OpenAI Codex` |
-| Claude Code | `x0skai <x0skai@aiaiaiai.org>` | `Co-authored-by: Claude <noreply@anthropic.com>` |
+| Environment     | Primary Git author             | Required tool trailer                            |
+| --------------- | ------------------------------ | ------------------------------------------------ |
+| ChatGPT / Codex | `0x0sky <0x0sky@aiaiaiai.org>` | `Assisted-by: OpenAI Codex`                      |
+| Claude Code     | `x0skai <x0skai@aiaiaiai.org>` | `Co-authored-by: Claude <noreply@anthropic.com>` |
 
 These addresses were explicitly confirmed by the owner. GitHub-linked identity
 must still be checked on pushed commits; signature verification is separate.
