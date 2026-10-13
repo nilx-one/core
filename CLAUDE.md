@@ -45,7 +45,7 @@ independent and do not conflict; never merge one only to clear a queue.
 
 inspect state → resolve the previous pull request → branch from the latest
 base → open a **draft** pull request → full CI → green → deploy validation (if
-applicable) → mark ready for review → merge when ready → deploy by hand.
+applicable) → mark ready for review → merge when authorized → deploy by hand.
 
 GitHub cannot merge a draft, and nobody can approve one. Once the head is green
 and you have re-read your own diff, mark the pull request ready yourself. A
@@ -63,11 +63,7 @@ Each stage has one job and does not redo another's:
   pre-activation smoke contracts. Reuse CI results and artifacts. It does not
   rerun CI, tests, analysis or contract checks, rebuild an identical artifact,
   or activate a release.
-- **Merge** is automatic and needs no user authorization once the requested
-  task is complete, its scope is satisfied, CI is green, deploy validation is
-  green or not applicable, and no known blocker invalidates it. Afterwards,
-  record the merged state, refresh the base, and carry on with the sequence
-  without waiting for confirmation. Merging is not deploying.
+- **Merge** needs explicit user authorization. Once authorization exists, the requested task is complete, its scope is satisfied, CI is green, deploy validation is green or not applicable, and no known blocker invalidates it, merge and record the merged state. Afterwards, refresh the base and carry on without asking again for the same authorized merge. Merging is not deploying.
 - **Deploy** is manual, comes after merge, and needs explicit user
   authorization every time. It consumes the verified artifact, makes the
   environment transition, activates the release, and checks minimal health. It
@@ -80,64 +76,45 @@ different from the earlier check.
 
 ### Shared-account co-authorship
 
-The owner works from a phone. Agents must perform Git configuration, commit
-creation, PR updates and verification in their connected environment; do not
-require a local checkout or terminal on the owner's phone.
+Commit as the GitHub account that actually did the work, identified by its
+account ID:
 
-| Environment     | Primary Git author             | Required tool trailer                            |
-| --------------- | ------------------------------ | ------------------------------------------------ |
-| ChatGPT / Codex | `0x0sky <0x0sky@aiaiaiai.org>` | `Assisted-by: OpenAI Codex`                      |
-| Claude Code     | `x0skai <x0skai@aiaiaiai.org>` | `Co-authored-by: Claude <noreply@anthropic.com>` |
+| GitHub account | Account ID | Git author (ID-based noreply)               |
+| -------------- | ---------- | ------------------------------------------- |
+| `0x0sky`       | 75973992   | `75973992+0x0sky@users.noreply.github.com`  |
+| `x0skai`       | 300452669  | `300452669+x0skai@users.noreply.github.com` |
 
-These addresses were explicitly confirmed by the owner. GitHub-linked identity
-must still be checked on pushed commits; signature verification is separate.
-Never infer the Git author from the PR author, display name or model name.
+Tool credit is separate from account credit and applies only to real
+contribution to the commit:
 
-- When the other account contributed code, tests, documentation or an
-  incorporated patch to this exact commit, add its canonical trailer:
-  `Co-authored-by: x0skai <x0skai@aiaiaiai.org>` or
-  `Co-authored-by: 0x0sky <0x0sky@aiaiaiai.org>`.
-- Credit Claude with `Co-authored-by: Claude <noreply@anthropic.com>` when
-  Claude contributed, including a Codex-authored commit incorporating its work.
-  Credit Codex with `Assisted-by: OpenAI Codex` when Codex contributed,
-  including a Claude-authored commit incorporating its work.
-- Account credit and tool credit are distinct and may coexist. Never add
-  the primary author as their own co-author or duplicate a trailer.
-- Put all trailers in the final commit-message paragraph, separated from the
-  body by a blank line, with one trailer per line and no semicolons.
-- Apply this to the first, intermediate and final substantive commits whenever
-  the corresponding contribution exists. A review, prompt, approval or account
-  ownership alone does not establish joint authorship. Do not manufacture
-  contributions or filler commits for an achievement.
-- Before the first commit, inspect the authenticated account and Git author.
-  In a shell, set repository-local `user.name` and `user.email` from the table.
-  If an API chooses author metadata itself, inspect the resulting commit.
-  The current GitHub API adapter cannot set author email and uses the verified
-  `75973992+0x0sky@users.noreply.github.com` identity. This exact adapter
-  exception is accepted by CI and must be disclosed in the PR; it does not
-  change the preferred email or co-author addresses. Do not impersonate the
-  other account or silently substitute any other email.
-- Before handing work to another agent, update the PR's Attribution / handoff
-  section: account and tool used, authored files/patch or SHA, contribution
-  incorporated from the other agent (or none), verified head/checks, remaining
-  work and merge authorization. Preserve that evidence across context changes.
-- Run `python scripts/check_commit_attribution.py BASE HEAD BASELINE` before
-  delivery, using the policy baseline pinned in the attribution workflow.
-  CI checks new source commits, not the synthetic PR merge commit. Existing
-  history at adoption is exempt; never rewrite merged history to add credit.
-- Inspect pushed first/last/joint commit messages and linked GitHub authors.
-  The checker validates metadata, not whether a contribution actually occurred.
-  It does not prove email verification, account linkage or achievement status.
-- For squash, construct and inspect the final message explicitly: preserve all
-  genuine account/tool credits across the squashed changes, excluding the final
-  primary author from co-author trailers. Do not assume GitHub preserves them.
-  Inspect the resulting commit after an authorized merge.
-- Keep the PR draft until required checks pass. Do not merge without explicit
-  user authorization; deployment requires separate authorization. This rule
-  overrides generic automatic-merge wording elsewhere in these instructions.
-- The `Commit attribution` workflow reports failures; repository administrators
-  must make its check required if merge blocking is desired. Do not claim branch
-  protection is configured merely because the workflow exists.
+- `Assisted-by: OpenAI Codex` when Codex contributed.
+- `Co-authored-by: Claude <noreply@anthropic.com>` when Claude contributed.
+
+Rules:
+
+- Add the other account as `Co-authored-by: <login> <<ID>+<login>@users.noreply.github.com>`
+  only when it contributed code, tests, documentation or an incorporated patch
+  to that exact commit. A review, approval, prompt or account ownership alone
+  does not qualify.
+- Solo authorship is normal. A commit with no real second contributor has no
+  account co-author. Do not add one for an achievement or to satisfy a check.
+- Never add the primary author as its own co-author, and never duplicate a
+  trailer.
+- Put trailers in the final paragraph of the commit message, one per line.
+- Never label a commit as an unknown author to avoid this rule. If the connected
+  GitHub API cannot author as the correct account, commit from a shell with the
+  correct repository-local identity. If no such shell exists, state the
+  limitation in the PR and do not claim the attribution.
+- The commit-attribution check validates identities, trailer format, and
+  duplicate or self credit. It cannot prove that a contribution happened; the
+  author and reviewers establish that.
+- Before merge, inspect the pushed commits: author account ID, trailers and
+  co-author IDs. A comment, review or PR body is not a substitute.
+- For squash merges, write the final message explicitly so genuine co-authors
+  and tool credits survive. Do not assume GitHub preserves them.
+- Do not manufacture commits, rewrite merged history, or change merge methods to
+  create credit. Signature verification and achievement status are reported
+  separately.
 
 ### Efficiency
 

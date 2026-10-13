@@ -7,11 +7,11 @@ import sys
 
 
 ACCOUNTS = {
-    "0x0sky": "0x0sky@aiaiaiai.org",
-    "x0skai": "x0skai@aiaiaiai.org",
+    "0x0sky": "75973992+0x0sky@users.noreply.github.com",
+    "x0skai": "300452669+x0skai@users.noreply.github.com",
 }
+ACCOUNT_BY_ADDRESS = {address.lower(): name for name, address in ACCOUNTS.items()}
 CLAUDE = "Claude <noreply@anthropic.com>"
-API_EMAILS = {"75973992+0x0sky@users.noreply.github.com": "0x0sky"}
 
 
 def validate(email, message):
@@ -26,29 +26,22 @@ def validate(email, message):
     relevant = coauthors + assisted
     if len(relevant) != len(set(v.lower() for v in relevant)):
         errors.append("duplicate attribution trailer")
-    author = next((name for name, addr in ACCOUNTS.items() if addr == email.lower()), API_EMAILS.get(email.lower()))
-    # Legacy account-associated noreply addresses must not silently replace the
-    # owner's chosen primary identity in new commits.
-    if author is None and re.search(r"(?:\+|^)(?:0x0sky|x0skai)@", email, re.I):
-        errors.append("use the confirmed primary author organization email")
+    # None means an external contributor: account rules do not apply to them.
+    author = ACCOUNT_BY_ADDRESS.get(email.lower())
     for value in coauthors:
         match = re.fullmatch(r"([^<>]+) <([^<>\s]+)>", value)
         if not match:
             errors.append("malformed co-author trailer")
             continue
         name, address = match.groups()
-        if address.lower() == email.lower() or name == author:
+        if (author and name == author) or address.lower() == email.lower():
             errors.append("primary author repeated as co-author")
-        if name in ACCOUNTS and address != ACCOUNTS[name]:
+        if name in ACCOUNTS and address.lower() != ACCOUNTS[name]:
             errors.append("incorrect account co-author address")
-        if address in ACCOUNTS.values() and name != next(n for n, a in ACCOUNTS.items() if a == address):
+        if address.lower() in ACCOUNT_BY_ADDRESS and name != ACCOUNT_BY_ADDRESS[address.lower()]:
             errors.append("incorrect account co-author name")
         if name.lower() == "claude" and value != CLAUDE:
             errors.append("incorrect Claude attribution")
-    if author == "0x0sky" and "OpenAI Codex" not in assisted:
-        errors.append("Codex author requires Assisted-by: OpenAI Codex")
-    if author == "x0skai" and CLAUDE not in coauthors:
-        errors.append("Claude Code author requires the Claude tool trailer")
     if any(v.startswith("OpenAI") and v != "OpenAI Codex" for v in assisted):
         errors.append("use Assisted-by: OpenAI Codex")
     return errors
