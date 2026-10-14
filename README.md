@@ -42,6 +42,10 @@ Core may expose typed contracts needed to transport or project derived state, bu
 
 What an Avaia does next while it is at the wheel — strolling about after a point B, going out, stepping aside for something on the way — is the deterministic [Avaia drive](docs/avaia-drive.md): the host's world layer reports what happened and carries out the commands, and a local model may only pick from the closed menus the drive offers.
 
+## Error reporting
+
+Core-owned failures (registration handles, Avaia address and drive, and BondChain contract errors) project to canonical `errors.v1` event JSON through `nilxone_contracts::errors_v1_event`. Core owns the taxonomy and the `error_id` mapping; the host supplies the `event_id` (a fresh UUID per occurrence) and the RFC 3339 `observed_at`, then forwards the bytes to its 4x-errors reporter. Core performs no I/O and generates no identifiers or timestamps.
+
 ## Local verification
 
 Use the pinned Rust toolchain from `rust-toolchain.toml`:
