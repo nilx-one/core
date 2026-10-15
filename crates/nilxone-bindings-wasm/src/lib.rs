@@ -168,6 +168,20 @@ pub fn avaia_proximity(distance_m: u32, artifacts: u32, previously_blocked: bool
     nilxone_contracts::avaia_proximity_wire(distance_m, artifacts, previously_blocked)
 }
 
+/// Returns the reporter input for a Core failure, named by its `errors.v1`
+/// surface and `snake_case` code. The result is `{"ok":true,"report":{...}}`, where
+/// `report` carries `errorId`, `severity`, `message`, `context` and `tags` for a
+/// browser reporter, or `{"ok":false,"error":"unknown_failure"}` outside the
+/// closed taxonomy.
+#[must_use]
+#[wasm_bindgen]
+pub fn core_failure_report(surface: &str, code: &str) -> String {
+    match nilxone_contracts::failure_report(surface, code) {
+        Ok(report) => format!(r#"{{"ok":true,"report":{report}}}"#),
+        Err(_) => r#"{"error":"unknown_failure","ok":false}"#.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -257,6 +271,20 @@ mod tests {
         assert_eq!(validate_pub_dress("0x0Sky"), "valid");
         assert_eq!(validate_pub_dress("0x0небо"), "valid");
         assert_eq!(validate_pub_dress("0xgsky"), "invalid_discriminator");
+    }
+
+    #[test]
+    fn wasm_surface_exposes_core_failure_reports() {
+        let report = super::core_failure_report("avaia.drive", "invalid");
+        assert!(
+            report.starts_with(r#"{"ok":true,"report":{"context""#),
+            "{report}"
+        );
+        assert!(report.contains(r#""errorId":"core.avaia.drive.invalid""#));
+        assert_eq!(
+            super::core_failure_report("avaia.drive", "unknown"),
+            r#"{"error":"unknown_failure","ok":false}"#
+        );
     }
 
     #[test]

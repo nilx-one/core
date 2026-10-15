@@ -16,6 +16,7 @@ mod canonical;
 mod economy;
 mod envelope;
 mod error;
+mod error_report;
 mod find_item;
 mod geography;
 mod identifier;
@@ -53,6 +54,10 @@ pub use envelope::{
     TransitionOutcome,
 };
 pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
+pub use error_report::{
+    ERRORS_PROJECT, ERRORS_PROTOCOL_VERSION, ReportError, Reportable, error_id, errors_v1_event,
+    failure_report,
+};
 pub use find_item::{
     CATALOG as FIND_CATALOG, City, Condition, FIND_CATALOG_VERSION, FindItem, FindItemError,
     FindTier, PickupRarities, Rarity, find_item, item_for_find,

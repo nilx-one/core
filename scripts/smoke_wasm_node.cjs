@@ -62,3 +62,19 @@ assert.equal(orbWorld.view.orbs.filter((orb) => orb.kind === 'orb').length, 20);
 assert.equal(orbWorld.view.orbs[0].lands_at, '1070');
 assert.equal(orbWorld.view.next_expiry, '1801000');
 assert.deepEqual(JSON.parse(core.orb_world('{}', '1000')), { error: 'invalid', ok: false });
+
+const report = JSON.parse(core.core_failure_report('registration.pubdress', 'invalid_prefix'));
+assert.deepEqual(report, {
+  ok: true,
+  report: {
+    context: { code: 'invalid_prefix', contract_version: '0.1.0', surface: 'registration.pubdress' },
+    errorId: 'core.registration.pubdress.invalid.prefix',
+    message: 'Core rejected registration.pubdress input: invalid_prefix.',
+    severity: 'error',
+    tags: ['core', 'contract.0.1.0'],
+  },
+});
+assert.deepEqual(JSON.parse(core.core_failure_report('avaia.drive', 'tick')), {
+  error: 'unknown_failure',
+  ok: false,
+});

@@ -48,6 +48,26 @@ impl ErrorCode {
         }
     }
 
+    /// Returns the stable `snake_case` wire code.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MalformedEnvelope => "malformed_envelope",
+            Self::UnsupportedContractVersion => "unsupported_contract_version",
+            Self::UnknownVariant => "unknown_variant",
+            Self::InvalidIdentifier => "invalid_identifier",
+            Self::InvalidParticipants => "invalid_participants",
+            Self::StateRevisionMismatch => "state_revision_mismatch",
+            Self::InvalidTransition => "invalid_transition",
+            Self::TerminalBondChain => "terminal_bond_chain",
+            Self::HistoryRollback => "history_rollback",
+            Self::HistoryDivergence => "history_divergence",
+            Self::InvalidHistory => "invalid_history",
+            Self::UnknownAuthority => "unknown_authority",
+            Self::MissingContext => "missing_context",
+        }
+    }
+
     const fn keys(self) -> &'static [&'static str] {
         match self {
             Self::MalformedEnvelope => &[],
