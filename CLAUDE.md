@@ -88,6 +88,14 @@ account ID:
 | `0x0sky`       | 75973992   | `75973992+0x0sky@users.noreply.github.com`  |
 | `x0skai`       | 300452669  | `300452669+x0skai@users.noreply.github.com` |
 
+**Claude Code commits only as `x0skai`.** Every commit Claude Code creates or
+amends is authored and committed as
+`x0skai <300452669+x0skai@users.noreply.github.com>` and ends with
+`Co-authored-by: Claude <noreply@anthropic.com>`. Claude Code never commits as
+`0x0sky`, never overrides the session's `x0skai` git identity with another
+account, and adds `0x0sky` as a co-author only under the rule below, when
+`0x0sky` itself contributed to that exact commit.
+
 Tool credit is separate from account credit and applies only to real
 contribution to the commit:
 
