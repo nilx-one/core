@@ -17,7 +17,14 @@ class AttributionTests(unittest.TestCase):
         self.assertEqual(module.validate(ZERO, "fix: example\n"), [])
 
     def test_codex_credit(self):
-        self.assertEqual(module.validate(ZERO, "fix: example\n\nAssisted-by: OpenAI Codex\n"), [])
+        self.assertEqual(module.validate(ZERO, "fix: example\n\nCo-authored-by: Codex <codex@openai.com>\n"), [])
+
+    def test_assisted_by_does_not_count_as_codex_coauthor(self):
+        self.assertTrue(module.validate(ZERO, "fix: example\n\nAssisted-by: OpenAI Codex\n"))
+
+    def test_codex_must_use_canonical_name_and_email(self):
+        self.assertTrue(module.validate(ZERO, "fix: example\n\nCo-authored-by: Codex <noreply@openai.com>\n"))
+        self.assertTrue(module.validate(ZERO, "fix: example\n\nCo-authored-by: Other <codex@openai.com>\n"))
 
     def test_claude_credit_from_api_identity_is_not_forced_to_codex(self):
         message = "fix: example\n\nCo-authored-by: Claude <noreply@anthropic.com>\n"
@@ -27,7 +34,7 @@ class AttributionTests(unittest.TestCase):
         for author, other in [("0x0sky", "x0skai"), ("x0skai", "0x0sky")]:
             message = (
                 f"fix: example\n\nCo-authored-by: {other} <{module.ACCOUNTS[other]}>\n"
-                "Co-authored-by: Claude <noreply@anthropic.com>\nAssisted-by: OpenAI Codex\n"
+                "Co-authored-by: Claude <noreply@anthropic.com>\nCo-authored-by: Codex <codex@openai.com>\n"
             )
             self.assertEqual(module.validate(module.ACCOUNTS[author], message), [])
 
@@ -36,7 +43,7 @@ class AttributionTests(unittest.TestCase):
 
     def test_self_and_duplicate(self):
         self.assertTrue(module.validate(ZERO, f"fix: example\n\nCo-authored-by: 0x0sky <{ZERO}>\n"))
-        self.assertTrue(module.validate(ZERO, "fix: example\n\nAssisted-by: OpenAI Codex\nAssisted-by: OpenAI Codex\n"))
+        self.assertTrue(module.validate(ZERO, "fix: example\n\nCo-authored-by: Codex <codex@openai.com>\nCo-authored-by: Codex <codex@openai.com>\n"))
 
     def test_unknown_tool_name_rejected(self):
         self.assertTrue(module.validate(ZERO, "fix: example\n\nAssisted-by: OpenAI ChatGPT\n"))
