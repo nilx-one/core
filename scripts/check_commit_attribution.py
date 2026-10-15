@@ -8,10 +8,11 @@ import sys
 
 ACCOUNTS = {
     "0x0sky": "75973992+0x0sky@users.noreply.github.com",
-    "x0skai": "300452669+x0skai@users.noreply.github.com",
+    "x0skai": "x0skai@aiaiaiai.org",
 }
 ACCOUNT_BY_ADDRESS = {address.lower(): name for name, address in ACCOUNTS.items()}
 CLAUDE = "Claude <noreply@anthropic.com>"
+CODEX = "Codex <codex@openai.com>"
 
 
 def validate(email, message):
@@ -42,8 +43,12 @@ def validate(email, message):
             errors.append("incorrect account co-author name")
         if name.lower() == "claude" and value != CLAUDE:
             errors.append("incorrect Claude attribution")
-    if any(v.startswith("OpenAI") and v != "OpenAI Codex" for v in assisted):
-        errors.append("use Assisted-by: OpenAI Codex")
+        if (name.lower() == "codex" or address.lower() == "codex@openai.com") and value != CODEX:
+            errors.append("incorrect Codex attribution; use Co-authored-by: " + CODEX)
+    if any("codex" in v.lower() for v in assisted):
+        errors.append("Codex needs Co-authored-by: " + CODEX + ", not Assisted-by")
+    if any(v.lower().startswith("openai") and "codex" not in v.lower() for v in assisted):
+        errors.append("unsupported OpenAI tool attribution")
     return errors
 
 
