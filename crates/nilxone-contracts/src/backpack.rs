@@ -270,11 +270,17 @@ impl Backpack {
     ///
     /// # Errors
     ///
-    /// [`EconomyError::UnknownItem`], or [`EconomyError::NoRoom`] when it fits
-    /// nowhere.
+    /// [`EconomyError::UnknownItem`], [`EconomyError::TooBig`] when it is
+    /// bigger than the grid itself, or [`EconomyError::NoRoom`] when it would
+    /// fit an empty grid but fits nowhere now.
     pub fn put(&mut self, id: &str) -> Result<Placed, EconomyError> {
         let id = known(id)?;
         let grid = self.carry.grid();
+        if let Some(size) = size_of(id)
+            && (size.width > grid.width || size.height > grid.height)
+        {
+            return Err(EconomyError::TooBig);
+        }
         for y in 0..grid.height {
             for x in 0..grid.width {
                 if self.fits_at(id, x, y) {
@@ -363,6 +369,19 @@ mod tests {
     use super::{Backpack, Carry, SIZES, size_of};
     use crate::CRAFTED;
     use crate::economy::{EconomyError, found_things, item_kind};
+
+    #[test]
+    fn a_thing_bigger_than_the_grid_is_too_big_not_short_of_room() {
+        let mut pocket = Backpack::new(Carry::Pocket);
+        assert_eq!(pocket.put("headphones"), Err(EconomyError::TooBig));
+        assert_eq!(pocket.put("reel_to_reel"), Err(EconomyError::TooBig));
+        for _ in 0..3 {
+            pocket.put("can").unwrap();
+        }
+        assert_eq!(pocket.put("can"), Err(EconomyError::NoRoom));
+        let mut backpack = Backpack::new(Carry::Backpack);
+        backpack.put("reel_to_reel").unwrap();
+    }
 
     #[test]
     fn grids_hold_3_12_and_120_cells() {
@@ -456,7 +475,7 @@ mod tests {
         let mut full = Backpack::new(Carry::Backpack);
         full.put("reel_to_reel").unwrap();
         let before = full.clone();
-        assert_eq!(full.switch_to(Carry::Pocket), Err(EconomyError::NoRoom));
+        assert_eq!(full.switch_to(Carry::Pocket), Err(EconomyError::TooBig));
         assert_eq!(full, before);
     }
 }

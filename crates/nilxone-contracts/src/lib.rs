@@ -68,7 +68,7 @@ pub use geography::{
 pub use identifier::{
     BondChainId, BondId, IdentifierError, OperationId, Sha256Digest, SpokenLineId,
 };
-pub use inventory::{CraftJob, GIFT_LEVEL, GIFT_POCKET_CELLS, Holder, Inventory, Outcome};
+pub use inventory::{CraftJob, GIFT_LEVEL, Holder, Inventory, Outcome};
 pub use inventory_wire::{
     apply_inventory_command, backpack_gift_due_wire, economy_catalog_json, find_item_wire,
     picks_up_wire,

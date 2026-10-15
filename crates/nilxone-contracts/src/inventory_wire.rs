@@ -302,6 +302,8 @@ fn outcome_value(outcome: Outcome) -> Value {
         "seeds_gained": DecimalU64::new(outcome.seeds_gained),
         "seeds_spent": DecimalU64::new(outcome.seeds_spent),
         "experience": outcome.experience,
+        "gifted": outcome.gifted,
+        "left_behind": outcome.left_behind.map(EconomyError::code),
     })
 }
 
@@ -669,10 +671,26 @@ mod tests {
         );
         assert_eq!(answer["state"]["bond"]["things"][2]["y"], 2);
         assert_eq!(answer["state"]["seeds"], "15");
+        // Three full cells no longer bring the gift by themselves: the next
+        // thing that does not fit will.
         assert_eq!(
             super::backpack_gift_due_wire(&answer["state"].to_string(), 1),
-            "yes"
+            "no"
         );
+        let tier = (1..=4)
+            .find(|&tier| {
+                super::item_for_find(KYIV, super::FindTier::new(tier).unwrap())
+                    .is_ok_and(|item| item.seeds == 0)
+            })
+            .unwrap();
+        let next = apply(
+            &answer["state"].to_string(),
+            &format!(r#"{{"op":"pick_up","holder":"bond","artifact_id":"{KYIV}","tier":{tier}}}"#),
+            0,
+        );
+        assert_eq!(next["ok"], true, "{next}");
+        assert_eq!(next["outcome"]["gifted"], true);
+        assert_eq!(next["state"]["bond"]["carry"], "backpack");
     }
 
     #[test]
