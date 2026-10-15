@@ -16,7 +16,7 @@ use crate::find_item::{CATALOG, FindItem, find_item};
 
 /// Version of the prices and recipes. Any change to a price, a recipe or a
 /// crafted item raises it.
-pub const ECONOMY_VERSION: u32 = 2;
+pub const ECONOMY_VERSION: u32 = 3;
 
 /// The in-game money's binding-safe code. One currency everywhere.
 pub const SEED_CODE: &str = "seed";

@@ -72,8 +72,8 @@ pub struct Inventory {
     gifted: bool,
 }
 
-/// How many of the pockets' five cells, taken, make a backpack a gift due.
-pub const GIFT_POCKET_CELLS: u32 = 4;
+/// A filled three-cell pocket makes xSasha's backpack gift due.
+pub const GIFT_POCKET_CELLS: u32 = 3;
 
 /// The Bond level by which the backpack gift is due however full the
 /// pockets are.
@@ -146,7 +146,7 @@ impl Inventory {
     }
 
     /// Whether xSasha's backpack gift is due: not given yet, and the Bond's
-    /// pockets are four cells of five full, or the Bond is level 3. The level
+    /// pockets are full (three cells), or the Bond is level 3. The level
     /// is the host's to say.
     #[must_use]
     pub fn backpack_gift_due(&self, bond_level: u32) -> bool {
@@ -516,8 +516,8 @@ mod tests {
             inventory.rearrange(Holder::Bond, (0, 0), (1, 0)),
             Err(EconomyError::NoRoom)
         );
-        let moved = inventory.rearrange(Holder::Bond, (0, 0), (7, 4)).unwrap();
-        assert_eq!((moved.x, moved.y), (7, 4));
+        let moved = inventory.rearrange(Holder::Bond, (0, 0), (2, 3)).unwrap();
+        assert_eq!((moved.x, moved.y), (2, 3));
     }
 
     #[test]
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn a_done_craft_waits_for_room() {
         let headphones = recipe("repair_headphones").unwrap();
-        let mut inventory = Inventory::new(Carry::Pocket, Carry::Pocket);
+        let mut inventory = Inventory::new(Carry::Backpack, Carry::Pocket);
         inventory
             .pick_up(Holder::Bond, find_item("broken_headphones").unwrap())
             .unwrap();
@@ -619,7 +619,7 @@ mod tests {
         let job = inventory
             .start_craft(headphones, Place::Anywhere, 0)
             .unwrap();
-        for _ in 0..5 {
+        for _ in 0..12 {
             inventory
                 .pick_up(Holder::Bond, find_item("can").unwrap())
                 .unwrap();
@@ -663,9 +663,9 @@ mod tests {
     }
 
     #[test]
-    fn the_gift_comes_when_pockets_are_four_fifths_full() {
+    fn the_gift_comes_when_three_pocket_cells_are_full() {
         let mut inventory = Inventory::default();
-        for _ in 0..3 {
+        for _ in 0..2 {
             inventory
                 .pick_up(Holder::Bond, find_item("can").unwrap())
                 .unwrap();
@@ -682,7 +682,7 @@ mod tests {
             assert_eq!(inventory.backpack(holder).carry(), Carry::Backpack);
             assert!(inventory.owned(holder).has(Carry::Backpack));
         }
-        assert_eq!(inventory.backpack(Holder::Bond).count("can"), 4);
+        assert_eq!(inventory.backpack(Holder::Bond).count("can"), 3);
         assert!(inventory.gifted());
         assert_eq!(inventory.gift_backpacks(5), Err(EconomyError::NotDue));
     }

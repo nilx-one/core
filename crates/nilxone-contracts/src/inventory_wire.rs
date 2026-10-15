@@ -7,12 +7,13 @@
 //! time; Core answers with the next state and what it paid. Every u64 travels
 //! as a decimal string, as elsewhere in the contract. Unknown members are
 //! refused, and a stored state is checked as it is read: things that overlap
-//! or fall outside their grid are refused, never repaired.
+//! or fall outside their grid are refused. Legacy v1 grids are validated
+//! against their original bounds before deterministic, lossless migration.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::backpack::{Backpack, Carries, Carry, size_of};
+use crate::backpack::{Backpack, Carries, Carry, Size, size_of};
 use crate::economy::{CRAFTED, EconomyError, Place, RECIPES, item_kind, recipe};
 use crate::find_item::{CATALOG, FindTier, PickupRarities, item_for_find};
 use crate::inventory::{Holder, Inventory, Outcome};
@@ -44,6 +45,9 @@ struct CraftWire {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InventoryWire {
+    /// v1 did not record the grid layout. The current format uses v2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout_version: Option<u8>,
     bond: BackpackWire,
     avaia: BackpackWire,
     seeds: DecimalU64,
@@ -104,6 +108,8 @@ enum Command {
     GiftBackpacks {
         bond_level: u32,
     },
+    /// Persist v1 -> v2 layout migration without changing items or currency.
+    Normalize,
 }
 
 /// Failure reading the wire, on top of [`EconomyError`].
@@ -124,14 +130,71 @@ fn place(code: &str) -> Result<Place, &'static str> {
         .ok_or(INVALID)
 }
 
-fn backpack_from_wire(wire: &BackpackWire) -> Result<Backpack, &'static str> {
-    let mut backpack = Backpack::new(Carry::from_code(&wire.carry).ok_or(INVALID)?);
+const LAYOUT_VERSION: u8 = 2;
+
+/// Validate old coordinates against their original rectangular grid before
+/// repacking. Never turn an invalid old state into a valid one by accident.
+fn validate_legacy_grid(wire: &BackpackWire, carry: Carry) -> Result<(), &'static str> {
+    let grid = match carry {
+        Carry::Pocket => Size { width: 5, height: 1 },
+        Carry::Backpack => Size { width: 8, height: 5 },
+        Carry::Bag => Carry::Bag.grid(),
+    };
+    let mut occupied = std::collections::BTreeSet::new();
     for thing in &wire.things {
-        backpack
-            .put_at(&thing.id, thing.x, thing.y)
-            .map_err(|_| INVALID)?;
+        let size = size_of(&thing.id).ok_or(INVALID)?;
+        if u16::from(thing.x) + u16::from(size.width) > u16::from(grid.width)
+            || u16::from(thing.y) + u16::from(size.height) > u16::from(grid.height)
+        {
+            return Err(INVALID);
+        }
+        for y in thing.y..thing.y + size.height {
+            for x in thing.x..thing.x + size.width {
+                if !occupied.insert((x, y)) {
+                    return Err(INVALID);
+                }
+            }
+        }
     }
-    Ok(backpack)
+    Ok(())
+}
+
+fn backpack_from_wire(wire: &BackpackWire, legacy: bool) -> Result<Backpack, &'static str> {
+    let carry = Carry::from_code(&wire.carry).ok_or(INVALID)?;
+    if !legacy {
+        let mut backpack = Backpack::new(carry);
+        for thing in &wire.things {
+            backpack.put_at(&thing.id, thing.x, thing.y).map_err(|_| INVALID)?;
+        }
+        return Ok(backpack);
+    }
+
+    validate_legacy_grid(wire, carry)?;
+    // Preserve original coordinates if possible; otherwise repack into the
+    // smallest permitted container without losing any earned item.
+    let candidates: &[Carry] = match carry {
+        Carry::Pocket => &[Carry::Pocket, Carry::Backpack, Carry::Bag],
+        Carry::Backpack => &[Carry::Backpack, Carry::Bag],
+        Carry::Bag => &[Carry::Bag],
+    };
+    for &candidate in candidates {
+        let mut kept = Backpack::new(candidate);
+        if wire.things.iter().all(|thing| {
+            kept.put_at(&thing.id, thing.x, thing.y).is_ok()
+        }) {
+            return Ok(kept);
+        }
+        let mut sorted: Vec<_> = wire.things.iter().collect();
+        sorted.sort_by_key(|thing| {
+            let size = size_of(&thing.id).expect("legacy state was validated");
+            core::cmp::Reverse(u16::from(size.width) * u16::from(size.height))
+        });
+        let mut packed = Backpack::new(candidate);
+        if sorted.iter().all(|thing| packed.put(&thing.id).is_ok()) {
+            return Ok(packed);
+        }
+    }
+    Err(INVALID)
 }
 
 fn backpack_to_wire(backpack: &Backpack) -> BackpackWire {
@@ -155,13 +218,26 @@ fn read_state(state: &str) -> Result<Inventory, &'static str> {
         return Ok(Inventory::default());
     }
     let wire: InventoryWire = serde_json::from_str(state).map_err(|_| INVALID)?;
-    let bond = backpack_from_wire(&wire.bond)?;
-    let avaia = backpack_from_wire(&wire.avaia)?;
+    let legacy = match wire.layout_version {
+        None | Some(1) => true,
+        Some(LAYOUT_VERSION) => false,
+        _ => return Err(INVALID),
+    };
+    let bond = backpack_from_wire(&wire.bond, legacy)?;
+    let mut avaia = backpack_from_wire(&wire.avaia, legacy)?;
+    // A previously overfull Bond pocket already passed the old gift
+    // threshold (4/5): honor that gift for both holders on migration.
+    let migrated_gift = legacy
+        && wire.bond.carry == "pocket"
+        && bond.carry() != Carry::Pocket;
+    if migrated_gift && avaia.carry() == Carry::Pocket {
+        avaia.switch_to(Carry::Backpack).map_err(|_| INVALID)?;
+    }
     let owned = match &wire.owned {
         Some(owned) => [carries(&owned.bond)?, carries(&owned.avaia)?],
         None => [Carries::POCKETS, Carries::POCKETS],
     };
-    let gifted = wire.gifted.unwrap_or(bond.carry() != Carry::Pocket);
+    let gifted = migrated_gift || wire.gifted.unwrap_or(bond.carry() != Carry::Pocket);
     let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted);
     if let Some(craft) = wire.craft {
         inventory
@@ -185,6 +261,7 @@ fn carry_codes(owned: Carries) -> Vec<String> {
 
 fn write_state(inventory: &Inventory) -> Value {
     let wire = InventoryWire {
+        layout_version: Some(LAYOUT_VERSION),
         bond: backpack_to_wire(inventory.backpack(Holder::Bond)),
         avaia: backpack_to_wire(inventory.backpack(Holder::Avaia)),
         seeds: DecimalU64::new(inventory.seeds()),
@@ -286,6 +363,7 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> Strin
             .gift_backpacks(bond_level)
             .map(|()| Outcome::default())
             .map_err(Ok),
+        Command::Normalize => Ok(Outcome::default()),
     })();
     match result {
         Ok(outcome) => {
@@ -451,7 +529,7 @@ mod tests {
         let state = picked["state"].to_string();
         assert_eq!(
             state,
-            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0"}"#
+            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"layout_version":2,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0"}"#
         );
         let handed = apply(
             &state,
@@ -526,6 +604,11 @@ mod tests {
         let catalog: Value = serde_json::from_str(&economy_catalog_json()).unwrap();
         assert_eq!(catalog["currency"]["emblem"], "₴€£");
         assert_eq!(catalog["carries"][2]["width"], 12);
+        assert_eq!(catalog["economy_version"], 3);
+        assert_eq!(catalog["carries"][0]["width"], 1);
+        assert_eq!(catalog["carries"][0]["height"], 3);
+        assert_eq!(catalog["carries"][1]["width"], 3);
+        assert_eq!(catalog["carries"][1]["height"], 4);
         assert!(
             catalog["found"]
                 .as_array()
@@ -557,6 +640,60 @@ mod tests {
             serde_json::json!(["pocket", "backpack"])
         );
         assert_eq!(super::backpack_gift_due_wire(old, 9), "no");
+    }
+
+
+    #[test]
+    fn old_pockets_repack_and_preserve_three_items() {
+        let old = r#"{"bond":{"carry":"pocket","things":[{"id":"can","x":0,"y":0},{"id":"can","x":1,"y":0},{"id":"can","x":2,"y":0}]},"avaia":{"carry":"pocket","things":[]},"seeds":"15","craft":null}"#;
+        let answer = apply(old, r#"{"op":"normalize"}"#, 0);
+        assert_eq!(answer["ok"], true);
+        assert_eq!(answer["state"]["layout_version"], 2);
+        assert_eq!(answer["state"]["bond"]["carry"], "pocket");
+        assert_eq!(answer["state"]["bond"]["things"].as_array().unwrap().len(), 3);
+        assert_eq!(answer["state"]["bond"]["things"][2]["y"], 2);
+        assert_eq!(answer["state"]["seeds"], "15");
+        assert_eq!(super::backpack_gift_due_wire(&answer["state"].to_string(), 1), "yes");
+    }
+
+    #[test]
+    fn old_full_pocket_migrates_to_both_backpacks_without_item_loss() {
+        let old = r#"{"bond":{"carry":"pocket","things":[{"id":"can","x":0,"y":0},{"id":"can","x":1,"y":0},{"id":"can","x":2,"y":0},{"id":"can","x":3,"y":0},{"id":"can","x":4,"y":0}]},"avaia":{"carry":"pocket","things":[{"id":"can","x":4,"y":0}]},"seeds":"99","craft":null}"#;
+        let answer = apply(old, r#"{"op":"normalize"}"#, 0);
+        assert_eq!(answer["ok"], true);
+        assert_eq!(answer["state"]["bond"]["carry"], "backpack");
+        assert_eq!(answer["state"]["avaia"]["carry"], "backpack");
+        assert_eq!(answer["state"]["gifted"], true);
+        assert_eq!(answer["state"]["bond"]["things"].as_array().unwrap().len(), 5);
+        assert_eq!(answer["state"]["avaia"]["things"].as_array().unwrap().len(), 1);
+        assert_eq!(answer["state"]["seeds"], "99");
+    }
+
+    #[test]
+    fn legacy_backpack_overflow_is_compensated_with_a_bag() {
+        let things: Vec<_> = (0..13).map(|x| {
+            serde_json::json!({"id":"can","x": x % 8,"y": x / 8})
+        }).collect();
+        let old = serde_json::json!({
+            "bond":{"carry":"backpack","things":things},
+            "avaia":{"carry":"pocket","things":[]},
+            "seeds":"0","craft":null,"gifted":true
+        });
+        let answer = apply(&old.to_string(), r#"{"op":"normalize"}"#, 0);
+        assert_eq!(answer["ok"], true);
+        assert_eq!(answer["state"]["bond"]["carry"], "bag");
+        assert_eq!(answer["state"]["bond"]["things"].as_array().unwrap().len(), 13);
+        assert_eq!(answer["state"]["owned"]["bond"], serde_json::json!(["pocket","backpack","bag"]));
+    }
+
+    #[test]
+    fn strict_new_geometry_and_corrupt_legacy_states_fail_closed() {
+        let new_outside = r#"{"layout_version":2,"bond":{"carry":"pocket","things":[{"id":"can","x":1,"y":0}]},"avaia":{"carry":"pocket","things":[]},"seeds":"0","craft":null}"#;
+        let old_overlap = r#"{"bond":{"carry":"pocket","things":[{"id":"can","x":0,"y":0},{"id":"can","x":0,"y":0}]},"avaia":{"carry":"pocket","things":[]},"seeds":"0","craft":null}"#;
+        let unknown_version = r#"{"layout_version":9,"bond":{"carry":"pocket","things":[]},"avaia":{"carry":"pocket","things":[]},"seeds":"0","craft":null}"#;
+        for state in [new_outside, old_overlap, unknown_version] {
+            assert_eq!(apply(state, r#"{"op":"normalize"}"#, 0)["error"], "invalid");
+        }
     }
 
     #[test]
