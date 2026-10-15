@@ -245,6 +245,12 @@ fn read_state(state: &str) -> Result<Inventory, &'static str> {
         Some(owned) => [carries(&owned.bond)?, carries(&owned.avaia)?],
         None => [Carries::POCKETS, Carries::POCKETS],
     };
+    // A legacy holder owned its original carry even if the new smaller layout
+    // forced a bigger container. Do not lose ownership of the old backpack.
+    let owned = [
+        owned[0].with(Carry::from_code(&wire.bond.carry).ok_or(INVALID)?),
+        owned[1].with(Carry::from_code(&wire.avaia.carry).ok_or(INVALID)?),
+    ];
     let gifted = migrated_gift || wire.gifted.unwrap_or(bond.carry() != Carry::Pocket);
     let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted);
     if let Some(craft) = wire.craft {
