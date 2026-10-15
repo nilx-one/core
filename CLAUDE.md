@@ -92,16 +92,18 @@ One rule, no judgement calls:
   never commit as `0x0sky`.
 - **End every Claude Code commit with**
   `Co-authored-by: Claude <noreply@anthropic.com>` whenever Claude wrote any
-  of it. Add `Assisted-by: OpenAI Codex` only when Codex contributed.
+  of it. Add `Co-authored-by: Codex <codex@openai.com>` only when Codex
+  contributed substantive changes to that exact commit. `Assisted-by` is not
+  GitHub co-authorship.
 - **Claude Code never adds `0x0sky` as a co-author.** When `0x0sky`
   contributes to a commit, `0x0sky` adds its own `Co-authored-by` trailer.
 - Trailers go in the final paragraph, one per line, never duplicated, and the
   commit's author never appears among its own co-authors.
 - **Squash merges:** GitHub makes the PR's author the squash commit's author.
-  Write the final message explicitly: keep the Claude and Codex trailers from
-  the branch, add `Co-authored-by: x0skai <x0skai@aiaiaiai.org>` when the PR
-  author is `0x0sky` and `x0skai` committed to the branch, and drop any
-  trailer that names the squash author.
+  Write the final message explicitly: keep genuine Claude and Codex co-author
+  trailers from the branch, plus credited account contributors (only for
+  incorporated work). Never repeat the squash author among its co-authors.
+  Verify the actual merged commit's author and trailer lines afterwards.
 - Never rewrite merged history, manufacture commits or change merge methods
   to create credit. The commit-attribution check validates identities and
   trailer format; it cannot prove a contribution happened.
