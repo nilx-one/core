@@ -273,6 +273,9 @@ pub enum EconomyError {
     Overflow,
     /// The thing does not fit the grid there.
     NoRoom,
+    /// The thing is bigger than the grid itself: it would not fit even if
+    /// the grid were empty.
+    TooBig,
     /// A craft is already running.
     Busy,
     /// No craft is running.
@@ -301,6 +304,7 @@ impl EconomyError {
             Self::WrongPlace => "wrong_place",
             Self::Overflow => "overflow",
             Self::NoRoom => "no_room",
+            Self::TooBig => "too_big",
             Self::Busy => "busy",
             Self::NoJob => "no_job",
             Self::NotReady => "not_ready",

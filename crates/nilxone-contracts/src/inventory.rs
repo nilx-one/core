@@ -59,6 +59,11 @@ pub struct Outcome {
     /// Experience the Bond earned by it. A pick-up pays through the find's
     /// own award, so it is `0` here.
     pub experience: u32,
+    /// Whether this command gave xSasha's backpack gift.
+    pub gifted: bool,
+    /// Why a picked-up thing stayed where it lay although the command
+    /// succeeded: the gift was given, but the thing does not fit even then.
+    pub left_behind: Option<EconomyError>,
 }
 
 /// Everything a Bond and its Avaia hold.
@@ -72,11 +77,8 @@ pub struct Inventory {
     gifted: bool,
 }
 
-/// A filled three-cell pocket makes xSasha's backpack gift due.
-pub const GIFT_POCKET_CELLS: u32 = 3;
-
-/// The Bond level by which the backpack gift is due however full the
-/// pockets are.
+/// The Bond level by which the backpack gift is due, even if nothing was
+/// ever too much for the pockets.
 pub const GIFT_LEVEL: u32 = 3;
 
 impl Default for Inventory {
@@ -145,15 +147,12 @@ impl Inventory {
         self.gifted
     }
 
-    /// Whether xSasha's backpack gift is due: not given yet, and the Bond's
-    /// pockets are full (three cells), or the Bond is level 3. The level
-    /// is the host's to say.
+    /// Whether xSasha's backpack gift is due by level: not given yet, and the
+    /// Bond is level 3. The level is the host's to say. The gift also comes,
+    /// earlier, from a pick-up that does not fit the pockets (`pick_up`).
     #[must_use]
-    pub fn backpack_gift_due(&self, bond_level: u32) -> bool {
-        !self.gifted
-            && (bond_level >= GIFT_LEVEL
-                || (self.bond.carry() == Carry::Pocket
-                    && self.bond.used_cells() >= GIFT_POCKET_CELLS))
+    pub const fn backpack_gift_due(&self, bond_level: u32) -> bool {
+        !self.gifted && bond_level >= GIFT_LEVEL
     }
 
     /// Gives both the Bond and the Avaia a backpack, once, when it is due:
@@ -166,6 +165,10 @@ impl Inventory {
         if !self.backpack_gift_due(bond_level) {
             return Err(EconomyError::NotDue);
         }
+        self.give_backpacks()
+    }
+
+    fn give_backpacks(&mut self) -> Result<(), EconomyError> {
         for holder in [Holder::Bond, Holder::Avaia] {
             self.own(holder, Carry::Backpack);
             if self.backpack(holder).carry() == Carry::Pocket {
@@ -250,8 +253,23 @@ impl Inventory {
                 ..Outcome::default()
             });
         }
-        self.backpack_mut(holder).put(found.id)?;
-        Ok(Outcome::default())
+        match self.backpack_mut(holder).put(found.id) {
+            Ok(_) => Ok(Outcome::default()),
+            // A thing that does not fit the pockets, before the gift, is
+            // what brings it: both get a backpack, and it goes into one.
+            Err(EconomyError::NoRoom | EconomyError::TooBig)
+                if !self.gifted && self.backpack(holder).carry() == Carry::Pocket =>
+            {
+                self.give_backpacks()?;
+                let left_behind = self.backpack_mut(holder).put(found.id).err();
+                Ok(Outcome {
+                    gifted: true,
+                    left_behind,
+                    ..Outcome::default()
+                })
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Moves a thing within `holder`'s grid, or puts it in at a cell.
@@ -482,12 +500,16 @@ mod tests {
     }
 
     #[test]
-    fn a_full_pocket_leaves_the_find_where_it_lies() {
-        let mut inventory = Inventory::new(Carry::Pocket, Carry::Pocket);
+    fn after_the_gift_pockets_worn_again_leave_a_big_find_where_it_lies() {
+        let mut inventory = Inventory::default();
+        inventory.gift_backpacks(3).unwrap();
+        inventory.switch_carry(Holder::Bond, Carry::Pocket).unwrap();
+        let before = inventory.clone();
         assert_eq!(
             inventory.pick_up(Holder::Bond, find_item("reel_to_reel").unwrap()),
-            Err(EconomyError::NoRoom)
+            Err(EconomyError::TooBig)
         );
+        assert_eq!(inventory, before);
     }
 
     #[test]
@@ -663,28 +685,68 @@ mod tests {
     }
 
     #[test]
-    fn the_gift_comes_when_three_pocket_cells_are_full() {
+    fn a_full_pocket_alone_does_not_bring_the_gift() {
         let mut inventory = Inventory::default();
-        for _ in 0..2 {
+        for _ in 0..3 {
+            let outcome = inventory
+                .pick_up(Holder::Bond, find_item("can").unwrap())
+                .unwrap();
+            assert!(!outcome.gifted);
+        }
+        assert!(!inventory.backpack_gift_due(1));
+        assert_eq!(inventory.gift_backpacks(1), Err(EconomyError::NotDue));
+        assert_eq!(inventory.backpack(Holder::Bond).carry(), Carry::Pocket);
+    }
+
+    #[test]
+    fn a_thing_the_pockets_cannot_hold_brings_the_gift_and_goes_in() {
+        let mut inventory = Inventory::default();
+        for _ in 0..3 {
             inventory
                 .pick_up(Holder::Bond, find_item("can").unwrap())
                 .unwrap();
         }
-        assert!(!inventory.backpack_gift_due(1));
-        assert_eq!(inventory.gift_backpacks(1), Err(EconomyError::NotDue));
-        inventory
+        let outcome = inventory
             .pick_up(Holder::Bond, find_item("can").unwrap())
             .unwrap();
-        assert!(inventory.backpack_gift_due(1));
-
-        inventory.gift_backpacks(1).unwrap();
+        assert!(outcome.gifted);
+        assert_eq!(outcome.left_behind, None);
         for holder in [Holder::Bond, Holder::Avaia] {
             assert_eq!(inventory.backpack(holder).carry(), Carry::Backpack);
             assert!(inventory.owned(holder).has(Carry::Backpack));
         }
-        assert_eq!(inventory.backpack(Holder::Bond).count("can"), 3);
+        assert_eq!(inventory.backpack(Holder::Bond).count("can"), 4);
         assert!(inventory.gifted());
         assert_eq!(inventory.gift_backpacks(5), Err(EconomyError::NotDue));
+    }
+
+    #[test]
+    fn a_thing_too_wide_for_empty_pockets_brings_the_gift_too() {
+        let mut inventory = Inventory::default();
+        let outcome = inventory
+            .pick_up(Holder::Avaia, find_item("reel_to_reel").unwrap())
+            .unwrap();
+        assert!(outcome.gifted);
+        assert_eq!(outcome.left_behind, None);
+        assert_eq!(inventory.backpack(Holder::Avaia).count("reel_to_reel"), 1);
+        assert_eq!(inventory.backpack(Holder::Bond).carry(), Carry::Backpack);
+    }
+
+    #[test]
+    fn after_the_gift_a_thing_with_no_room_stays_where_it_lay() {
+        let mut inventory = Inventory::default();
+        inventory.gift_backpacks(3).unwrap();
+        for _ in 0..12 {
+            inventory
+                .pick_up(Holder::Bond, find_item("can").unwrap())
+                .unwrap();
+        }
+        let before = inventory.clone();
+        assert_eq!(
+            inventory.pick_up(Holder::Bond, find_item("can").unwrap()),
+            Err(EconomyError::NoRoom)
+        );
+        assert_eq!(inventory, before);
     }
 
     #[test]
