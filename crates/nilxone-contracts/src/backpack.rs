@@ -3,16 +3,16 @@
 
 //! A grid to carry things in, as in S.T.A.L.K.E.R.: every thing takes a
 //! rectangle of cells, and what is carried in decides how many cells there
-//! are. A pocket holds 5, a backpack 40, a bag 120.
+//! are. A pocket holds 3, a backpack 12, a bag 120.
 
 use crate::economy::EconomyError;
 
 /// What things are carried in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Carry {
-    /// Pockets: 5 × 1, 5 cells.
+    /// Pockets: 1 × 3, 3 cells.
     Pocket,
-    /// A backpack: 8 × 5, 40 cells.
+    /// A backpack: 3 × 4, 12 cells.
     Backpack,
     /// A whole bag: 12 × 10, 120 cells.
     Bag,
@@ -62,12 +62,12 @@ impl Carry {
     pub const fn grid(self) -> Size {
         match self {
             Self::Pocket => Size {
-                width: 5,
-                height: 1,
+                width: 1,
+                height: 3,
             },
             Self::Backpack => Size {
-                width: 8,
-                height: 5,
+                width: 3,
+                height: 4,
             },
             Self::Bag => Size {
                 width: 12,
@@ -365,9 +365,23 @@ mod tests {
     use crate::economy::{EconomyError, found_things, item_kind};
 
     #[test]
-    fn grids_hold_5_40_and_120_cells() {
+    fn grids_hold_3_12_and_120_cells() {
         let cells: Vec<_> = Carry::ALL.iter().map(|carry| carry.cells()).collect();
-        assert_eq!(cells, [5, 40, 120]);
+        assert_eq!(cells, [3, 12, 120]);
+        assert_eq!(
+            Carry::Pocket.grid(),
+            super::Size {
+                width: 1,
+                height: 3
+            }
+        );
+        assert_eq!(
+            Carry::Backpack.grid(),
+            super::Size {
+                width: 3,
+                height: 4
+            }
+        );
         assert_eq!(Carry::from_code("bag"), Some(Carry::Bag));
     }
 
@@ -392,23 +406,22 @@ mod tests {
         let mut backpack = Backpack::new(Carry::Backpack);
         backpack.put_at("reel_to_reel", 0, 0).unwrap();
         assert_eq!(backpack.put_at("can", 2, 2), Err(EconomyError::NoRoom));
-        assert_eq!(backpack.put_at("can", 3, 0).map(|placed| placed.x), Ok(3));
-        assert_eq!(backpack.put_at("cd_radio", 6, 0), Err(EconomyError::NoRoom));
+        assert_eq!(backpack.put_at("can", 0, 3).map(|placed| placed.y), Ok(3));
+        assert_eq!(backpack.put_at("cd_radio", 1, 0), Err(EconomyError::NoRoom));
         assert_eq!(backpack.used_cells(), 10);
     }
 
     #[test]
     fn a_pocket_fills_up() {
         let mut pocket = Backpack::new(Carry::Pocket);
-        for _ in 0..5 {
+        for _ in 0..3 {
             pocket.put("can").unwrap();
         }
         assert_eq!(pocket.put("can"), Err(EconomyError::NoRoom));
-        assert_eq!(
-            Backpack::new(Carry::Pocket).put("bottle"),
-            Err(EconomyError::NoRoom),
-            "a bottle stands two cells tall"
-        );
+        let mut another = Backpack::new(Carry::Pocket);
+        assert_eq!(another.put("bottle").unwrap().y, 0);
+        assert_eq!(another.put("can").unwrap().y, 2);
+        assert_eq!(another.put("can"), Err(EconomyError::NoRoom));
     }
 
     #[test]
@@ -416,7 +429,7 @@ mod tests {
         let mut backpack = Backpack::new(Carry::Backpack);
         let first = backpack.put("cassette_player").unwrap();
         let second = backpack.put("cassette_player").unwrap();
-        assert_eq!((first.x, first.y, second.x, second.y), (0, 0, 2, 0));
+        assert_eq!((first.x, first.y, second.x, second.y), (0, 0, 0, 2));
     }
 
     #[test]
