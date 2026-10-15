@@ -136,8 +136,14 @@ const LAYOUT_VERSION: u8 = 2;
 /// repacking. Never turn an invalid old state into a valid one by accident.
 fn validate_legacy_grid(wire: &BackpackWire, carry: Carry) -> Result<(), &'static str> {
     let grid = match carry {
-        Carry::Pocket => Size { width: 5, height: 1 },
-        Carry::Backpack => Size { width: 8, height: 5 },
+        Carry::Pocket => Size {
+            width: 5,
+            height: 1,
+        },
+        Carry::Backpack => Size {
+            width: 8,
+            height: 5,
+        },
         Carry::Bag => Carry::Bag.grid(),
     };
     let mut occupied = std::collections::BTreeSet::new();
@@ -164,7 +170,9 @@ fn backpack_from_wire(wire: &BackpackWire, legacy: bool) -> Result<Backpack, &'s
     if !legacy {
         let mut backpack = Backpack::new(carry);
         for thing in &wire.things {
-            backpack.put_at(&thing.id, thing.x, thing.y).map_err(|_| INVALID)?;
+            backpack
+                .put_at(&thing.id, thing.x, thing.y)
+                .map_err(|_| INVALID)?;
         }
         return Ok(backpack);
     }
@@ -179,9 +187,11 @@ fn backpack_from_wire(wire: &BackpackWire, legacy: bool) -> Result<Backpack, &'s
     };
     for &candidate in candidates {
         let mut kept = Backpack::new(candidate);
-        if wire.things.iter().all(|thing| {
-            kept.put_at(&thing.id, thing.x, thing.y).is_ok()
-        }) {
+        if wire
+            .things
+            .iter()
+            .all(|thing| kept.put_at(&thing.id, thing.x, thing.y).is_ok())
+        {
             return Ok(kept);
         }
         let mut sorted: Vec<_> = wire.things.iter().collect();
@@ -227,9 +237,7 @@ fn read_state(state: &str) -> Result<Inventory, &'static str> {
     let mut avaia = backpack_from_wire(&wire.avaia, legacy)?;
     // A previously overfull Bond pocket already passed the old gift
     // threshold (4/5): honor that gift for both holders on migration.
-    let migrated_gift = legacy
-        && wire.bond.carry == "pocket"
-        && bond.carry() != Carry::Pocket;
+    let migrated_gift = legacy && wire.bond.carry == "pocket" && bond.carry() != Carry::Pocket;
     if migrated_gift && avaia.carry() == Carry::Pocket {
         avaia.switch_to(Carry::Backpack).map_err(|_| INVALID)?;
     }
@@ -642,7 +650,6 @@ mod tests {
         assert_eq!(super::backpack_gift_due_wire(old, 9), "no");
     }
 
-
     #[test]
     fn old_pockets_repack_and_preserve_three_items() {
         let old = r#"{"bond":{"carry":"pocket","things":[{"id":"can","x":0,"y":0},{"id":"can","x":1,"y":0},{"id":"can","x":2,"y":0}]},"avaia":{"carry":"pocket","things":[]},"seeds":"15","craft":null}"#;
@@ -650,10 +657,16 @@ mod tests {
         assert_eq!(answer["ok"], true);
         assert_eq!(answer["state"]["layout_version"], 2);
         assert_eq!(answer["state"]["bond"]["carry"], "pocket");
-        assert_eq!(answer["state"]["bond"]["things"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            answer["state"]["bond"]["things"].as_array().unwrap().len(),
+            3
+        );
         assert_eq!(answer["state"]["bond"]["things"][2]["y"], 2);
         assert_eq!(answer["state"]["seeds"], "15");
-        assert_eq!(super::backpack_gift_due_wire(&answer["state"].to_string(), 1), "yes");
+        assert_eq!(
+            super::backpack_gift_due_wire(&answer["state"].to_string(), 1),
+            "yes"
+        );
     }
 
     #[test]
@@ -664,16 +677,22 @@ mod tests {
         assert_eq!(answer["state"]["bond"]["carry"], "backpack");
         assert_eq!(answer["state"]["avaia"]["carry"], "backpack");
         assert_eq!(answer["state"]["gifted"], true);
-        assert_eq!(answer["state"]["bond"]["things"].as_array().unwrap().len(), 5);
-        assert_eq!(answer["state"]["avaia"]["things"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            answer["state"]["bond"]["things"].as_array().unwrap().len(),
+            5
+        );
+        assert_eq!(
+            answer["state"]["avaia"]["things"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(answer["state"]["seeds"], "99");
     }
 
     #[test]
     fn legacy_backpack_overflow_is_compensated_with_a_bag() {
-        let things: Vec<_> = (0..13).map(|x| {
-            serde_json::json!({"id":"can","x": x % 8,"y": x / 8})
-        }).collect();
+        let things: Vec<_> = (0..13)
+            .map(|x| serde_json::json!({"id":"can","x": x % 8,"y": x / 8}))
+            .collect();
         let old = serde_json::json!({
             "bond":{"carry":"backpack","things":things},
             "avaia":{"carry":"pocket","things":[]},
@@ -682,8 +701,14 @@ mod tests {
         let answer = apply(&old.to_string(), r#"{"op":"normalize"}"#, 0);
         assert_eq!(answer["ok"], true);
         assert_eq!(answer["state"]["bond"]["carry"], "bag");
-        assert_eq!(answer["state"]["bond"]["things"].as_array().unwrap().len(), 13);
-        assert_eq!(answer["state"]["owned"]["bond"], serde_json::json!(["pocket","backpack","bag"]));
+        assert_eq!(
+            answer["state"]["bond"]["things"].as_array().unwrap().len(),
+            13
+        );
+        assert_eq!(
+            answer["state"]["owned"]["bond"],
+            serde_json::json!(["pocket", "backpack", "bag"])
+        );
     }
 
     #[test]

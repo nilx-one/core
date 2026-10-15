@@ -368,8 +368,20 @@ mod tests {
     fn grids_hold_3_12_and_120_cells() {
         let cells: Vec<_> = Carry::ALL.iter().map(|carry| carry.cells()).collect();
         assert_eq!(cells, [3, 12, 120]);
-        assert_eq!(Carry::Pocket.grid(), super::Size { width: 1, height: 3 });
-        assert_eq!(Carry::Backpack.grid(), super::Size { width: 3, height: 4 });
+        assert_eq!(
+            Carry::Pocket.grid(),
+            super::Size {
+                width: 1,
+                height: 3
+            }
+        );
+        assert_eq!(
+            Carry::Backpack.grid(),
+            super::Size {
+                width: 3,
+                height: 4
+            }
+        );
         assert_eq!(Carry::from_code("bag"), Some(Carry::Bag));
     }
 
