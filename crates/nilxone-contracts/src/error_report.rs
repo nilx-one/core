@@ -3,17 +3,22 @@
 
 //! `errors.v1` projection for Core-owned failures.
 //!
-//! Core owns the failure taxonomy and the canonical event bytes. The host owns the
-//! clock, the event identifier and the transport to a 4x-errors reporter: it passes
+//! Core owns the failure taxonomy and the canonical bytes. The host owns the clock,
+//! the event identifier and the transport to a 4x-errors reporter: it passes
 //! `event_id` and `observed_at` in, so this module performs no I/O and reads no
 //! ambient state.
+//!
+//! Two forms are offered. [`errors_v1_event`] yields a complete `errors.v1` event
+//! for a producer that supplies its own identity and time. [`failure_report`] yields
+//! only the reporter input (`errorId`, `severity`, `message`, `context`, `tags`) for a
+//! browser host whose SDK generates `event_id` and `observed_at` itself.
 
 use crate::{
     AvaiaPubDressError, CanonicalJsonError, ContractVersion, CoreError, DriveError, PubDressError,
     PubDressLabelError, canonical_json,
 };
 use core::fmt;
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// Protocol version emitted by this projection.
 pub const ERRORS_PROTOCOL_VERSION: &str = "errors.v1";
@@ -26,12 +31,21 @@ pub trait Reportable {
     /// Stable surface segment of the `error_id`, lowercase and dot-separated.
     const SURFACE: &'static str;
 
+    /// Every failure code the surface can produce, as stable `snake_case` strings.
+    const CODES: &'static [&'static str];
+
     /// Stable `snake_case` failure code owned by the surface.
     fn failure_code(&self) -> &'static str;
 }
 
 impl Reportable for PubDressError {
     const SURFACE: &'static str = "registration.pubdress";
+    const CODES: &'static [&'static str] = &[
+        "invalid_prefix",
+        "invalid_discriminator",
+        "invalid_length",
+        "invalid_character",
+    ];
 
     fn failure_code(&self) -> &'static str {
         self.code()
@@ -40,6 +54,16 @@ impl Reportable for PubDressError {
 
 impl Reportable for PubDressLabelError {
     const SURFACE: &'static str = "registration.label";
+    const CODES: &'static [&'static str] = &[
+        "not_a_pub_dress",
+        "invalid_character",
+        "disallowed_scalar",
+        "bidi_rule",
+        "not_encodable",
+        "boundary_hyphen",
+        "too_long",
+        "suffix_too_long",
+    ];
 
     fn failure_code(&self) -> &'static str {
         self.code()
@@ -48,6 +72,12 @@ impl Reportable for PubDressLabelError {
 
 impl Reportable for AvaiaPubDressError {
     const SURFACE: &'static str = "avaia.pubdress";
+    const CODES: &'static [&'static str] = &[
+        "invalid_discriminator",
+        "invalid_length",
+        "invalid_character",
+        "missing_ai_suffix",
+    ];
 
     fn failure_code(&self) -> &'static str {
         self.code()
@@ -56,6 +86,7 @@ impl Reportable for AvaiaPubDressError {
 
 impl Reportable for DriveError {
     const SURFACE: &'static str = "avaia.drive";
+    const CODES: &'static [&'static str] = &["invalid"];
 
     fn failure_code(&self) -> &'static str {
         "invalid"
@@ -64,11 +95,35 @@ impl Reportable for DriveError {
 
 impl Reportable for CoreError {
     const SURFACE: &'static str = "contract";
+    const CODES: &'static [&'static str] = &[
+        "malformed_envelope",
+        "unsupported_contract_version",
+        "unknown_variant",
+        "invalid_identifier",
+        "invalid_participants",
+        "state_revision_mismatch",
+        "invalid_transition",
+        "terminal_bond_chain",
+        "history_rollback",
+        "history_divergence",
+        "invalid_history",
+        "unknown_authority",
+        "missing_context",
+    ];
 
     fn failure_code(&self) -> &'static str {
         self.code().as_str()
     }
 }
+
+/// Every surface core reports, with the codes it owns. Drives [`failure_report`].
+const SURFACES: &[(&str, &[&str])] = &[
+    (PubDressError::SURFACE, PubDressError::CODES),
+    (PubDressLabelError::SURFACE, PubDressLabelError::CODES),
+    (AvaiaPubDressError::SURFACE, AvaiaPubDressError::CODES),
+    (DriveError::SURFACE, DriveError::CODES),
+    (CoreError::SURFACE, CoreError::CODES),
+];
 
 /// Returns the stable `errors.v1` `error_id` for a Core-owned failure.
 ///
@@ -76,20 +131,38 @@ impl Reportable for CoreError {
 /// protocol pattern, for example `core.registration.pubdress.invalid.prefix`.
 #[must_use]
 pub fn error_id<T: Reportable>(failure: &T) -> String {
-    format!(
-        "core.{}.{}",
-        T::SURFACE,
-        failure.failure_code().replace('_', ".")
-    )
+    error_id_for(T::SURFACE, failure.failure_code())
 }
 
-/// Failure to project a Core failure into an `errors.v1` event.
+fn error_id_for(surface: &str, code: &str) -> String {
+    format!("core.{surface}.{}", code.replace('_', "."))
+}
+
+fn message_for(surface: &str, code: &str) -> String {
+    format!("Core rejected {surface} input: {code}.")
+}
+
+fn context_for(surface: &str, code: &str) -> Value {
+    json!({
+        "contract_version": ContractVersion::CURRENT.to_string(),
+        "surface": surface,
+        "code": code,
+    })
+}
+
+fn tags() -> Value {
+    json!(["core", format!("contract.{}", ContractVersion::CURRENT)])
+}
+
+/// Failure to project a Core failure into `errors.v1` or reporter input.
 #[derive(Debug)]
 pub enum ReportError {
     /// `event_id` is not a UUID in canonical 8-4-4-4-12 hexadecimal form.
     InvalidEventId,
     /// `observed_at` is not an RFC 3339 date-time.
     InvalidObservedAt,
+    /// The surface or code is not part of Core's closed failure taxonomy.
+    UnknownFailure,
     /// Canonical JSON production failed.
     Canonical(CanonicalJsonError),
     /// The canonical bytes were not valid UTF-8.
@@ -103,6 +176,7 @@ impl fmt::Display for ReportError {
             Self::InvalidObservedAt => {
                 formatter.write_str("errors.v1 observed_at must be an RFC 3339 date-time")
             }
+            Self::UnknownFailure => formatter.write_str("unknown Core failure surface or code"),
             Self::Canonical(error) => write!(formatter, "{error}"),
             Self::Encoding => formatter.write_str("canonical errors.v1 bytes are not UTF-8"),
         }
@@ -110,6 +184,11 @@ impl fmt::Display for ReportError {
 }
 
 impl std::error::Error for ReportError {}
+
+fn canonical_string(value: &Value) -> Result<String, ReportError> {
+    let bytes = canonical_json(value).map_err(ReportError::Canonical)?;
+    String::from_utf8(bytes).map_err(|_| ReportError::Encoding)
+}
 
 /// Projects a Core-owned failure into canonical `errors.v1` event JSON.
 ///
@@ -134,29 +213,49 @@ pub fn errors_v1_event<T: Reportable>(
     let code = failure.failure_code();
     let surface = T::SURFACE;
     let contract = ContractVersion::CURRENT.to_string();
-    let event = json!({
+    canonical_string(&json!({
         "protocol_version": ERRORS_PROTOCOL_VERSION,
         "event_id": event_id,
-        "error_id": error_id(failure),
+        "error_id": error_id_for(surface, code),
         "project": ERRORS_PROJECT,
         "source": "nilxone-contracts",
         "severity": "error",
-        "message": format!("Core rejected {surface} input: {code}."),
+        "message": message_for(surface, code),
         "full_text": format!("{surface} failed with code {code} under Core contract {contract}."),
         "observed_at": observed_at,
-        "context": {
-            "contract_version": contract,
-            "surface": surface,
-            "code": code,
-        },
-        "tags": ["core", format!("contract.{contract}")],
+        "context": context_for(surface, code),
+        "tags": tags(),
         "family_id": null,
         "caused_by_event_id": null,
         "correlation_id": null,
-    });
+    }))
+}
 
-    let bytes = canonical_json(&event).map_err(ReportError::Canonical)?;
-    String::from_utf8(bytes).map_err(|_| ReportError::Encoding)
+/// Returns the reporter input for a Core failure named by its surface and code.
+///
+/// The JSON object carries `errorId`, `severity`, `message`, `context` and `tags`,
+/// the fields a browser reporter's `report()` accepts. The reporter generates
+/// `event_id` and `observed_at`, so none is produced here.
+///
+/// # Errors
+///
+/// Returns [`ReportError::UnknownFailure`] unless the surface and code are both in
+/// Core's closed taxonomy.
+pub fn failure_report(surface: &str, code: &str) -> Result<String, ReportError> {
+    let known = SURFACES
+        .iter()
+        .any(|(name, codes)| *name == surface && codes.contains(&code));
+    if !known {
+        return Err(ReportError::UnknownFailure);
+    }
+
+    canonical_string(&json!({
+        "errorId": error_id_for(surface, code),
+        "severity": "error",
+        "message": message_for(surface, code),
+        "context": context_for(surface, code),
+        "tags": tags(),
+    }))
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -234,6 +333,98 @@ mod tests {
             })
     }
 
+    /// Every variant of each failure enum, matched exhaustively so that adding a
+    /// variant without updating `CODES` fails to compile or fails the test below.
+    fn every_failure_code() -> Vec<(&'static str, &'static str)> {
+        let mut codes = Vec::new();
+        for error in [
+            PubDressError::InvalidPrefix,
+            PubDressError::InvalidDiscriminator,
+            PubDressError::InvalidLength,
+            PubDressError::InvalidCharacter,
+        ] {
+            match error {
+                PubDressError::InvalidPrefix
+                | PubDressError::InvalidDiscriminator
+                | PubDressError::InvalidLength
+                | PubDressError::InvalidCharacter => {}
+            }
+            codes.push((PubDressError::SURFACE, error.code()));
+        }
+        for error in [
+            PubDressLabelError::NotAPubDress,
+            PubDressLabelError::InvalidCharacter,
+            PubDressLabelError::DisallowedScalar,
+            PubDressLabelError::BidiRule,
+            PubDressLabelError::NotEncodable,
+            PubDressLabelError::BoundaryHyphen,
+            PubDressLabelError::TooLong,
+            PubDressLabelError::SuffixTooLong,
+        ] {
+            match error {
+                PubDressLabelError::NotAPubDress
+                | PubDressLabelError::InvalidCharacter
+                | PubDressLabelError::DisallowedScalar
+                | PubDressLabelError::BidiRule
+                | PubDressLabelError::NotEncodable
+                | PubDressLabelError::BoundaryHyphen
+                | PubDressLabelError::TooLong
+                | PubDressLabelError::SuffixTooLong => {}
+            }
+            codes.push((PubDressLabelError::SURFACE, error.code()));
+        }
+        for error in [
+            AvaiaPubDressError::InvalidDiscriminator,
+            AvaiaPubDressError::InvalidLength,
+            AvaiaPubDressError::InvalidCharacter,
+            AvaiaPubDressError::MissingAiSuffix,
+        ] {
+            match error {
+                AvaiaPubDressError::InvalidDiscriminator
+                | AvaiaPubDressError::InvalidLength
+                | AvaiaPubDressError::InvalidCharacter
+                | AvaiaPubDressError::MissingAiSuffix => {}
+            }
+            codes.push((AvaiaPubDressError::SURFACE, error.code()));
+        }
+        codes.push((DriveError::SURFACE, DriveError.failure_code()));
+        for code in [
+            ErrorCode::MalformedEnvelope,
+            ErrorCode::UnsupportedContractVersion,
+            ErrorCode::UnknownVariant,
+            ErrorCode::InvalidIdentifier,
+            ErrorCode::InvalidParticipants,
+            ErrorCode::StateRevisionMismatch,
+            ErrorCode::InvalidTransition,
+            ErrorCode::TerminalBondChain,
+            ErrorCode::HistoryRollback,
+            ErrorCode::HistoryDivergence,
+            ErrorCode::InvalidHistory,
+            ErrorCode::UnknownAuthority,
+            ErrorCode::MissingContext,
+        ] {
+            match code {
+                ErrorCode::MalformedEnvelope
+                | ErrorCode::UnsupportedContractVersion
+                | ErrorCode::UnknownVariant
+                | ErrorCode::InvalidIdentifier
+                | ErrorCode::InvalidParticipants
+                | ErrorCode::StateRevisionMismatch
+                | ErrorCode::InvalidTransition
+                | ErrorCode::TerminalBondChain
+                | ErrorCode::HistoryRollback
+                | ErrorCode::HistoryDivergence
+                | ErrorCode::InvalidHistory
+                | ErrorCode::UnknownAuthority
+                | ErrorCode::MissingContext => {}
+            }
+            let serde_code = serde_json::to_value(code).expect("serializes");
+            assert_eq!(serde_code, Value::String(code.as_str().to_owned()));
+            codes.push((CoreError::SURFACE, code.as_str()));
+        }
+        codes
+    }
+
     #[test]
     fn error_ids_follow_the_errors_v1_pattern() {
         assert_eq!(
@@ -250,31 +441,23 @@ mod tests {
         );
         assert_eq!(error_id(&DriveError), "core.avaia.drive.invalid");
 
-        for error in [
-            PubDressError::InvalidPrefix,
-            PubDressError::InvalidDiscriminator,
-            PubDressError::InvalidLength,
-            PubDressError::InvalidCharacter,
-        ] {
-            assert!(is_error_id(&error_id(&error)), "{}", error_id(&error));
+        for (surface, code) in every_failure_code() {
+            assert!(
+                is_error_id(&error_id_for(surface, code)),
+                "{surface} {code}"
+            );
         }
-        for code in [
-            ErrorCode::MalformedEnvelope,
-            ErrorCode::UnsupportedContractVersion,
-            ErrorCode::UnknownVariant,
-            ErrorCode::InvalidIdentifier,
-            ErrorCode::InvalidParticipants,
-            ErrorCode::StateRevisionMismatch,
-            ErrorCode::InvalidTransition,
-            ErrorCode::TerminalBondChain,
-            ErrorCode::HistoryRollback,
-            ErrorCode::HistoryDivergence,
-            ErrorCode::InvalidHistory,
-            ErrorCode::UnknownAuthority,
-            ErrorCode::MissingContext,
-        ] {
-            let serde_code = serde_json::to_value(code).expect("serializes");
-            assert_eq!(serde_code, Value::String(code.as_str().to_owned()));
+    }
+
+    #[test]
+    fn declared_codes_cover_every_variant() {
+        for (surface, code) in every_failure_code() {
+            let declared = SURFACES
+                .iter()
+                .find(|(name, _)| *name == surface)
+                .expect("surface is declared")
+                .1;
+            assert!(declared.contains(&code), "{surface} must declare {code}");
         }
     }
 
@@ -330,5 +513,43 @@ mod tests {
             );
         }
         assert!(errors_v1_event(&DriveError, EVENT_ID, "2026-10-14T16:34:00Z").is_ok());
+    }
+
+    #[test]
+    fn failure_report_is_the_reporter_input_for_a_known_failure() {
+        let report = failure_report("registration.pubdress", "invalid_prefix").expect("known");
+        let value: Value = serde_json::from_str(&report).expect("json");
+
+        assert_eq!(
+            value,
+            json!({
+                "errorId": "core.registration.pubdress.invalid.prefix",
+                "severity": "error",
+                "message": "Core rejected registration.pubdress input: invalid_prefix.",
+                "context": {
+                    "contract_version": "0.1.0",
+                    "surface": "registration.pubdress",
+                    "code": "invalid_prefix"
+                },
+                "tags": ["core", "contract.0.1.0"]
+            })
+        );
+        assert!(!report.contains("event_id") && !report.contains("observed_at"));
+    }
+
+    #[test]
+    fn failure_report_rejects_anything_outside_the_taxonomy() {
+        assert!(matches!(
+            failure_report("registration.pubdress", "no_such_code"),
+            Err(ReportError::UnknownFailure)
+        ));
+        assert!(matches!(
+            failure_report("avaia.drive", "invalid_prefix"),
+            Err(ReportError::UnknownFailure)
+        ));
+        assert!(matches!(
+            failure_report("cutscene.render", "invalid"),
+            Err(ReportError::UnknownFailure)
+        ));
     }
 }

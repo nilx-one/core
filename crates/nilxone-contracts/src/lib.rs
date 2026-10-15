@@ -56,6 +56,7 @@ pub use envelope::{
 pub use error::{CoreError, ErrorCode, ErrorShapeError, InvalidHistoryReason, MissingContextPort};
 pub use error_report::{
     ERRORS_PROJECT, ERRORS_PROTOCOL_VERSION, ReportError, Reportable, error_id, errors_v1_event,
+    failure_report,
 };
 pub use find_item::{
     CATALOG as FIND_CATALOG, City, Condition, FIND_CATALOG_VERSION, FindItem, FindItemError,
