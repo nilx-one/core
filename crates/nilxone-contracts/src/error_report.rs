@@ -273,24 +273,40 @@ fn is_rfc3339(value: &str) -> bool {
     let Some((date, time)) = value.split_once('T') else {
         return false;
     };
-    let date_ok = date.len() == 10
-        && date.bytes().enumerate().all(|(index, byte)| match index {
-            4 | 7 => byte == b'-',
-            _ => byte.is_ascii_digit(),
-        });
+    let date_bytes = date.as_bytes();
+    if date_bytes.len() != 10 || date_bytes[4] != b'-' || date_bytes[7] != b'-' {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day)) = (
+        number(&date[0..4]),
+        number(&date[5..7]),
+        number(&date[8..10]),
+    ) else {
+        return false;
+    };
+    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
+        return false;
+    }
+
     let Some(zone_start) = time.find(['Z', 'z', '+', '-']) else {
         return false;
     };
     let (clock, zone) = time.split_at(zone_start);
     let clock_bytes = clock.as_bytes();
-    let clock_ok = clock_bytes.len() >= 8
-        && clock_bytes[..8]
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| match index {
-                2 | 5 => *byte == b':',
-                _ => byte.is_ascii_digit(),
-            });
+    if clock_bytes.len() < 8 || clock_bytes[2] != b':' || clock_bytes[5] != b':' {
+        return false;
+    }
+    let (Some(hour), Some(minute), Some(second)) = (
+        number(&clock[0..2]),
+        number(&clock[3..5]),
+        number(&clock[6..8]),
+    ) else {
+        return false;
+    };
+    // RFC 3339 grammar allows a leap second (`60`); the leap-second table is not checked.
+    if hour > 23 || minute > 59 || second > 60 {
+        return false;
+    }
     let fraction_ok = match clock.get(8..) {
         Some("") => true,
         Some(fraction) => {
@@ -304,14 +320,28 @@ fn is_rfc3339(value: &str) -> bool {
         || (zone.len() == 6
             && matches!(zone.as_bytes()[0], b'+' | b'-')
             && zone.as_bytes()[3] == b':'
-            && zone[1..]
-                .bytes()
-                .enumerate()
-                .all(|(index, byte)| match index {
-                    2 => byte == b':',
-                    _ => byte.is_ascii_digit(),
-                }));
-    date_ok && clock_ok && fraction_ok && zone_ok
+            && number(&zone[1..3]).is_some_and(|offset_hour| offset_hour <= 23)
+            && number(&zone[4..6]).is_some_and(|offset_minute| offset_minute <= 59));
+    fraction_ok && zone_ok
+}
+
+/// Parses a non-empty run of ASCII digits; any other byte yields `None`.
+fn number(digits: &str) -> Option<u32> {
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +543,50 @@ mod tests {
             );
         }
         assert!(errors_v1_event(&DriveError, EVENT_ID, "2026-10-14T16:34:00Z").is_ok());
+    }
+
+    #[test]
+    fn rejects_out_of_range_rfc3339_components() {
+        for observed_at in [
+            "2026-99-99T99:99:99Z",
+            "2026-13-01T00:00:00Z",
+            "2026-00-10T00:00:00Z",
+            "2026-10-00T00:00:00Z",
+            "2026-02-30T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2100-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-10-14T24:00:00Z",
+            "2026-10-14T23:60:00Z",
+            "2026-10-14T23:59:61Z",
+            "2026-10-14T16:34:00+24:00",
+            "2026-10-14T16:34:00+01:60",
+            "2026-10-14T16:34:00-99:99",
+        ] {
+            assert!(
+                matches!(
+                    errors_v1_event(&DriveError, EVENT_ID, observed_at),
+                    Err(ReportError::InvalidObservedAt)
+                ),
+                "{observed_at} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_leap_days_and_boundary_components() {
+        for observed_at in [
+            "2028-02-29T00:00:00Z",
+            "2000-02-29T23:59:59Z",
+            "2026-12-31T23:59:59.999999-00:00",
+            "2026-01-01T00:00:00z",
+            "2026-10-14T23:59:60+23:59",
+        ] {
+            assert!(
+                errors_v1_event(&DriveError, EVENT_ID, observed_at).is_ok(),
+                "{observed_at} must be accepted"
+            );
+        }
     }
 
     #[test]
