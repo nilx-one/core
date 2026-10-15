@@ -8,7 +8,7 @@ import sys
 
 ACCOUNTS = {
     "0x0sky": "75973992+0x0sky@users.noreply.github.com",
-    "x0skai": "300452669+x0skai@users.noreply.github.com",
+    "x0skai": "x0skai@aiaiaiai.org",
 }
 ACCOUNT_BY_ADDRESS = {address.lower(): name for name, address in ACCOUNTS.items()}
 CLAUDE = "Claude <noreply@anthropic.com>"
