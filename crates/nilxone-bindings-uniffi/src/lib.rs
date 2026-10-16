@@ -28,6 +28,42 @@ pub fn validate_pub_dress(value: String) -> String {
     }
 }
 
+/// Returns `valid` when `value` is a station of the business `owner`, or a
+/// stable failure code (a `pub_dress` code, or `not_owners_address`).
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn validate_station_pub_dress(owner: String, value: String) -> String {
+    let Ok(owner) = owner.parse::<nilxone_contracts::PubDress>() else {
+        return "invalid_owner".to_owned();
+    };
+    match nilxone_contracts::StationPubDress::for_owner(&owner, &value) {
+        Ok(_) => "valid".to_owned(),
+        Err(error) => error.code().to_owned(),
+    }
+}
+
+/// Forms the station address a business's caption names: `station:<address>`
+/// or `error:<station_pub_dress_error_code>`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn station_pub_dress_from_caption(owner: String, caption: String) -> String {
+    let Ok(owner) = owner.parse::<nilxone_contracts::PubDress>() else {
+        return "error:invalid_owner".to_owned();
+    };
+    match nilxone_contracts::StationPubDress::from_caption(&owner, &caption) {
+        Ok(station) => format!("station:{}", station.address),
+        Err(error) => format!("error:{}", error.code()),
+    }
+}
+
 /// Derives the Core-owned DNS A-label.
 ///
 /// The stable wire form is `label:<a-label>` on success or
@@ -213,6 +249,39 @@ mod tests {
         assert_eq!(
             pub_dress_uts46_implementation(),
             "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
+        );
+    }
+
+    #[test]
+    fn uniffi_surface_exposes_business_stations() {
+        assert_eq!(
+            super::station_pub_dress_from_caption(
+                "0xda-market".to_owned(),
+                "xda-market Золоті Ворота".to_owned()
+            ),
+            "station:0xda-market-zoloti-vorota"
+        );
+        assert_eq!(
+            super::station_pub_dress_from_caption(
+                "0xda-market".to_owned(),
+                "xda-market".to_owned()
+            ),
+            "error:no_place"
+        );
+        assert_eq!(
+            super::validate_station_pub_dress(
+                "0xda-market".to_owned(),
+                "0xda-market-zoloti-vorota".to_owned()
+            ),
+            "valid"
+        );
+        assert_eq!(
+            super::validate_station_pub_dress("0xda-market".to_owned(), "0xdrival-shop".to_owned()),
+            "not_owners_address"
+        );
+        assert_eq!(
+            super::validate_station_pub_dress("nobody".to_owned(), "0xdrival-shop".to_owned()),
+            "invalid_owner"
         );
     }
 }
