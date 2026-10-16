@@ -12,6 +12,7 @@ mod avaia_life;
 mod avaia_proximity;
 mod avaia_pub_dress;
 mod backpack;
+mod business_station;
 mod canonical;
 mod economy;
 mod envelope;
@@ -44,6 +45,10 @@ pub use avaia_proximity::{
 };
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
+pub use business_station::{
+    MAX_STATION_CAPTION_SCALARS, StationCaption, StationPubDress, StationPubDressError,
+    normalize_station_caption,
+};
 pub use canonical::{CanonicalJsonError, canonical_json};
 pub use economy::{
     CRAFTED, ECONOMY_VERSION, EconomyError, ItemKind, Place, RECIPES, Recipe, SEED_CODE,

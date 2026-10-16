@@ -50,6 +50,36 @@ pub fn compose_pub_dress_label(value: &str, suffix: &str) -> String {
     label_wire(result)
 }
 
+/// Returns `valid` when `value` is a station of the business `owner`, or a
+/// stable failure code (a `pub_dress` code, or `not_owners_address`).
+#[must_use]
+#[wasm_bindgen]
+pub fn validate_station_pub_dress(owner: &str, value: &str) -> String {
+    let Ok(owner) = owner.parse::<nilxone_contracts::PubDress>() else {
+        return "invalid_owner".to_owned();
+    };
+    match nilxone_contracts::StationPubDress::for_owner(&owner, value) {
+        Ok(_) => "valid".to_owned(),
+        Err(error) => error.code().to_owned(),
+    }
+}
+
+/// Forms the station address a business's caption names.
+///
+/// The stable wire form is `station:<address>` on success or
+/// `error:<station_pub_dress_error_code>` on failure.
+#[must_use]
+#[wasm_bindgen]
+pub fn station_pub_dress_from_caption(owner: &str, caption: &str) -> String {
+    let Ok(owner) = owner.parse::<nilxone_contracts::PubDress>() else {
+        return "error:invalid_owner".to_owned();
+    };
+    match nilxone_contracts::StationPubDress::from_caption(&owner, caption) {
+        Ok(station) => format!("station:{}", station.address),
+        Err(error) => format!("error:{}", error.code()),
+    }
+}
+
 /// Returns the pinned Unicode version used by the `PubDress` scalar policy.
 #[must_use]
 #[wasm_bindgen]
@@ -297,6 +327,30 @@ mod tests {
         assert_eq!(
             pub_dress_uts46_implementation(),
             "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
+        );
+    }
+
+    #[test]
+    fn wasm_surface_exposes_business_stations() {
+        assert_eq!(
+            super::station_pub_dress_from_caption("0xda-market", "xda-market Золоті Ворота"),
+            "station:0xda-market-zoloti-vorota"
+        );
+        assert_eq!(
+            super::station_pub_dress_from_caption("0xda-market", "xda-market"),
+            "error:no_place"
+        );
+        assert_eq!(
+            super::validate_station_pub_dress("0xda-market", "0xda-market-zoloti-vorota"),
+            "valid"
+        );
+        assert_eq!(
+            super::validate_station_pub_dress("0xda-market", "0xdrival-shop"),
+            "not_owners_address"
+        );
+        assert_eq!(
+            super::validate_station_pub_dress("nobody", "0xdrival-shop"),
+            "invalid_owner"
         );
     }
 }
