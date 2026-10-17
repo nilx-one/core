@@ -80,6 +80,30 @@ pub fn station_pub_dress_from_caption(owner: &str, caption: &str) -> String {
     }
 }
 
+/// Applies one command to a stored `BusinessPoint` (the empty string before
+/// `create`). `now_s` is the service clock in seconds as a decimal string.
+/// Answers `{"ok":true,"state":…,"status":…}` or `{"ok":false,"error":…}`;
+/// see `docs/business-point.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn apply_business_point_command(state: &str, command: &str, now_s: &str) -> String {
+    match now_s.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::apply_business_point_command(state, command, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
+/// The effective status and map visibility of a stored `BusinessPoint` at
+/// `now_s`, given the host-asserted organization verification.
+#[must_use]
+#[wasm_bindgen]
+pub fn business_point_view(state: &str, now_s: &str, organization_verified: bool) -> String {
+    match now_s.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::business_point_view(state, now.get(), organization_verified),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 /// Returns the pinned Unicode version used by the `PubDress` scalar policy.
 #[must_use]
 #[wasm_bindgen]
@@ -327,6 +351,27 @@ mod tests {
         assert_eq!(
             pub_dress_uts46_implementation(),
             "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
+        );
+    }
+
+    #[test]
+    fn wasm_surface_exposes_business_points() {
+        let command = r#"{"op":"submit","organization_verified":true}"#;
+        assert_eq!(
+            super::apply_business_point_command("", command, "1800000000"),
+            nilxone_contracts::apply_business_point_command("", command, 1_800_000_000)
+        );
+        assert_eq!(
+            super::apply_business_point_command("", command, "01"),
+            r#"{"error":"invalid","ok":false}"#
+        );
+        assert_eq!(
+            super::business_point_view("{}", "1", true),
+            r#"{"error":"invalid","ok":false}"#
+        );
+        assert_eq!(
+            super::business_point_view("", "-1", true),
+            r#"{"error":"invalid","ok":false}"#
         );
     }
 

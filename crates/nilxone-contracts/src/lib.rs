@@ -49,7 +49,8 @@ pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
 pub use business_point::{
     BUSINESS_POINT_PENDING_SECONDS, BusinessPoint, BusinessPointAddress, BusinessPointDecision,
     BusinessPointError, BusinessPointIdentity, BusinessPointLocation, BusinessPointStatus,
-    BusinessPointVerification, BusinessPointVisibility,
+    BusinessPointVerification, BusinessPointVisibility, apply_business_point_command,
+    business_point_view,
 };
 pub use business_station::{
     MAX_STATION_CAPTION_SCALARS, StationCaption, StationPubDress, StationPubDressError,

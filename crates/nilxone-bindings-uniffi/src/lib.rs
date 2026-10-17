@@ -166,6 +166,36 @@ pub fn avaia_drive_step(state: String, input: String, now_ms: String, hour: u8) 
     }
 }
 
+/// The same `BusinessPoint` transition as the Wasm export: the stored state
+/// (or the empty string before `create`), one command and the service clock
+/// in seconds as a decimal string. See `docs/business-point.md`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn apply_business_point_command(state: String, command: String, now_s: String) -> String {
+    match now_s.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::apply_business_point_command(&state, &command, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
+/// The same `BusinessPoint` status and visibility read as the Wasm export.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn business_point_view(state: String, now_s: String, organization_verified: bool) -> String {
+    match now_s.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::business_point_view(&state, now.get(), organization_verified),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -249,6 +279,23 @@ mod tests {
         assert_eq!(
             pub_dress_uts46_implementation(),
             "idna=1.1.0;idna_adapter=1.1.0;idna_mapping=1.1.0"
+        );
+    }
+
+    #[test]
+    fn uniffi_surface_exposes_business_points() {
+        let command = r#"{"op":"submit","organization_verified":true}"#;
+        assert_eq!(
+            super::apply_business_point_command(
+                String::new(),
+                command.to_owned(),
+                "1800000000".to_owned()
+            ),
+            nilxone_contracts::apply_business_point_command("", command, 1_800_000_000)
+        );
+        assert_eq!(
+            super::business_point_view("{}".to_owned(), "01".to_owned(), true),
+            r#"{"error":"invalid","ok":false}"#
         );
     }
 
