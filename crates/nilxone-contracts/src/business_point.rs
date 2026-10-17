@@ -83,17 +83,47 @@ pub enum BusinessPointDecision {
 /// `decided_at` records the verification outcome (or the expiry deadline);
 /// `withdrawn_at` records an authorized withdrawal and never overwrites it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "BusinessPointVerificationWire")]
 pub struct BusinessPointVerification {
     status: BusinessPointStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     submitted_at: Option<DecimalU64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     deadline_at: Option<DecimalU64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     decided_at: Option<DecimalU64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     withdrawn_at: Option<DecimalU64>,
+}
+
+// Input is decoded separately so even standalone deserialization enforces
+// the same lifecycle invariants as BusinessPoint's persisted wire boundary.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BusinessPointVerificationWire {
+    status: BusinessPointStatus,
+    submitted_at: Option<DecimalU64>,
+    deadline_at: Option<DecimalU64>,
+    decided_at: Option<DecimalU64>,
+    withdrawn_at: Option<DecimalU64>,
+}
+
+impl TryFrom<BusinessPointVerificationWire> for BusinessPointVerification {
+    type Error = BusinessPointError;
+
+    fn try_from(raw: BusinessPointVerificationWire) -> Result<Self, Self::Error> {
+        let verification = Self {
+            status: raw.status,
+            submitted_at: raw.submitted_at,
+            deadline_at: raw.deadline_at,
+            decided_at: raw.decided_at,
+            withdrawn_at: raw.withdrawn_at,
+        };
+        if !verification.valid() {
+            return Err(BusinessPointError::InvalidState);
+        }
+        Ok(verification)
+    }
 }
 
 impl BusinessPointVerification {
@@ -189,6 +219,7 @@ impl TryFrom<BusinessPointWire> for BusinessPoint {
     fn try_from(raw: BusinessPointWire) -> Result<Self, Self::Error> {
         Self::validate_identity(&raw.identity)?;
         Self::validate_location(&raw.location)?;
+        // Retain this aggregate-boundary guard if verification input paths change.
         if !raw.verification.valid() {
             return Err(BusinessPointError::InvalidState);
         }
@@ -701,6 +732,57 @@ mod tests {
 
     fn pending() -> BusinessPoint {
         draft().submit(at(START), true).unwrap()
+    }
+
+    #[test]
+    fn standalone_verification_rejects_invalid_lifecycle_states() {
+        assert!(
+            serde_json::from_str::<BusinessPointVerification>(r#"{"status":"verified"}"#).is_err()
+        );
+
+        let mut wrong_deadline = serde_json::to_value(pending().verification()).unwrap();
+        wrong_deadline["deadline_at"] = serde_json::json!((START + 1).to_string());
+        assert!(serde_json::from_value::<BusinessPointVerification>(wrong_deadline).is_err());
+
+        let mut missing_withdrawal = serde_json::to_value(pending().verification()).unwrap();
+        missing_withdrawal["status"] = serde_json::json!("withdrawn");
+        assert!(serde_json::from_value::<BusinessPointVerification>(missing_withdrawal).is_err());
+
+        let mut forged_withdrawal = serde_json::to_value(pending().verification()).unwrap();
+        forged_withdrawal["withdrawn_at"] = serde_json::json!((START + 1).to_string());
+        assert!(serde_json::from_value::<BusinessPointVerification>(forged_withdrawal).is_err());
+
+        let mut extra_field = serde_json::to_value(pending().verification()).unwrap();
+        extra_field["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<BusinessPointVerification>(extra_field).is_err());
+    }
+
+    #[test]
+    fn standalone_verification_roundtrips_reachable_states() {
+        let cases = [
+            draft(),
+            pending(),
+            pending()
+                .decide(BusinessPointDecision::Verified, at(START + 1))
+                .unwrap(),
+            pending()
+                .decide(BusinessPointDecision::Rejected, at(START + 1))
+                .unwrap(),
+            pending()
+                .expire(at(START + BUSINESS_POINT_PENDING_SECONDS))
+                .unwrap(),
+            pending().withdraw(at(START + 1)).unwrap(),
+            pending()
+                .decide(BusinessPointDecision::Verified, at(START + 1))
+                .unwrap()
+                .withdraw(at(START + 2))
+                .unwrap(),
+        ];
+        for point in cases {
+            let serialized = serde_json::to_value(point.verification()).unwrap();
+            let parsed: BusinessPointVerification = serde_json::from_value(serialized).unwrap();
+            assert_eq!(&parsed, point.verification());
+        }
     }
 
     #[test]
