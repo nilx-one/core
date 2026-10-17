@@ -15,5 +15,13 @@ struct NilxoneCoreBindingSmoke {
             fixtureCorpusDigest()
                 == "sha256_d8524ee7a22aa07164362afb4098cf37404f61ab45fcfd48aab2de2fe9016009"
         )
+        precondition(
+            businessPointView(state: "{}", nowS: "1", organizationVerified: true)
+                == "{\"error\":\"invalid\",\"ok\":false}"
+        )
+        precondition(
+            applyBusinessPointCommand(state: "", command: "{\"op\":\"withdraw\"}", nowS: "1")
+                == "{\"error\":\"invalid\",\"ok\":false}"
+        )
     }
 }

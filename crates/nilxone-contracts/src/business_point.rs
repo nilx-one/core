@@ -62,7 +62,8 @@ pub enum BusinessPointStatus {
 
 /// What an application map may discover for this point. A listing is not a
 /// physical/digital presence right and is not inserted into `map.registry`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BusinessPointVisibility {
     Hidden,
     PendingPreview,
@@ -70,7 +71,8 @@ pub enum BusinessPointVisibility {
 }
 
 /// A manual decision is provided by an authorized host, never invented by Core.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BusinessPointDecision {
     Verified,
     Rejected,
@@ -543,6 +545,123 @@ impl fmt::Display for BusinessPointError {
 
 impl std::error::Error for BusinessPointError {}
 
+/// One host-requested transition at the binding boundary. The host has
+/// already authenticated the representative and the verification authority.
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum BusinessPointCommand {
+    Create {
+        owner: String,
+        identity: BusinessPointIdentity,
+        location: BusinessPointLocation,
+    },
+    Submit {
+        organization_verified: bool,
+    },
+    Resubmit {
+        organization_verified: bool,
+    },
+    Decide {
+        decision: BusinessPointDecision,
+    },
+    Expire,
+    Withdraw,
+    AmendLocation {
+        location: BusinessPointLocation,
+    },
+    Rename {
+        name: String,
+    },
+}
+
+const INVALID: &str = "invalid";
+
+fn wire_failure(code: &str) -> String {
+    serde_json::json!({ "ok": false, "error": code }).to_string()
+}
+
+fn read_point(state: &str) -> Result<BusinessPoint, &'static str> {
+    serde_json::from_str(state).map_err(|_| INVALID)
+}
+
+/// Applies one command to a stored `BusinessPoint`; `state` is empty only
+/// for `create`. `now_s` is the service clock in seconds.
+///
+/// The answer is `{"ok":true,"state":…,"status":…}` with the next state to
+/// store and its effective status, or `{"ok":false,"error":"<code>"}` with a
+/// [`BusinessPointError`] code or `invalid` for a malformed state or command.
+/// A refused command leaves the stored state as it was.
+#[must_use]
+pub fn apply_business_point_command(state: &str, command: &str, now_s: u64) -> String {
+    let Ok(command) = serde_json::from_str::<BusinessPointCommand>(command) else {
+        return wire_failure(INVALID);
+    };
+    let now = DecimalU64::new(now_s);
+    let next = match command {
+        BusinessPointCommand::Create {
+            owner,
+            identity,
+            location,
+        } => {
+            if !state.is_empty() {
+                return wire_failure(BusinessPointError::InvalidTransition.code());
+            }
+            owner
+                .parse()
+                .map_err(|_| BusinessPointError::InvalidIdentity)
+                .and_then(|owner| BusinessPoint::new_draft(owner, identity, location))
+        }
+        command => {
+            let point = match read_point(state) {
+                Ok(point) => point,
+                Err(code) => return wire_failure(code),
+            };
+            match command {
+                BusinessPointCommand::Create { .. } => unreachable!("handled above"),
+                BusinessPointCommand::Submit {
+                    organization_verified,
+                } => point.submit(now, organization_verified),
+                BusinessPointCommand::Resubmit {
+                    organization_verified,
+                } => point.resubmit(now, organization_verified),
+                BusinessPointCommand::Decide { decision } => point.decide(decision, now),
+                BusinessPointCommand::Expire => point.expire(now),
+                BusinessPointCommand::Withdraw => point.withdraw(now),
+                BusinessPointCommand::AmendLocation { location } => point.amend_location(location),
+                BusinessPointCommand::Rename { name } => point.rename(name),
+            }
+        }
+    };
+    match next {
+        Ok(point) => serde_json::json!({
+            "ok": true,
+            "status": point.effective_status(now),
+            "state": point,
+        })
+        .to_string(),
+        Err(error) => wire_failure(error.code()),
+    }
+}
+
+/// What a stored `BusinessPoint` is and shows at `now_s` (seconds), given the
+/// host-asserted organization verification: `{"ok":true,"status":…,
+/// "visibility":…}` or `{"ok":false,"error":"invalid"}`.
+#[must_use]
+pub fn business_point_view(state: &str, now_s: u64, organization_verified: bool) -> String {
+    match read_point(state) {
+        Ok(point) => {
+            let now = DecimalU64::new(now_s);
+            serde_json::json!({
+                "ok": true,
+                "status": point.effective_status(now),
+                "visibility": point.visibility(now, organization_verified),
+            })
+            .to_string()
+        }
+        Err(code) => wire_failure(code),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,6 +955,102 @@ mod tests {
         assert_eq!(
             draft().submit(at(u64::MAX), true),
             Err(BusinessPointError::TimestampOverflow)
+        );
+    }
+
+    fn ok_state(answer: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(answer).unwrap();
+        assert_eq!(value["ok"], true, "{answer}");
+        value["state"].to_string()
+    }
+
+    #[test]
+    fn wire_drives_the_lifecycle() {
+        let create = serde_json::json!({
+            "op": "create",
+            "owner": "0xda-market",
+            "identity": { "id": "point-1", "name": "Zoloti Vorota" },
+            "location": serde_json::to_value(location()).unwrap(),
+        })
+        .to_string();
+        let created = apply_business_point_command("", &create, START);
+        assert!(created.contains(r#""status":"draft""#), "{created}");
+        let draft = ok_state(&created);
+        assert_eq!(
+            apply_business_point_command(&draft, &create, START),
+            r#"{"error":"invalid_transition","ok":false}"#
+        );
+        assert_eq!(
+            apply_business_point_command(
+                &draft,
+                r#"{"op":"submit","organization_verified":false}"#,
+                START
+            ),
+            r#"{"error":"unverified_organization","ok":false}"#
+        );
+        let pending = ok_state(&apply_business_point_command(
+            &draft,
+            r#"{"op":"submit","organization_verified":true}"#,
+            START,
+        ));
+        assert_eq!(
+            business_point_view(&pending, START + 1, true),
+            r#"{"ok":true,"status":"pending","visibility":"pending_preview"}"#
+        );
+        assert_eq!(
+            business_point_view(&pending, START + BUSINESS_POINT_PENDING_SECONDS, true),
+            r#"{"ok":true,"status":"expired","visibility":"hidden"}"#
+        );
+        let verified = ok_state(&apply_business_point_command(
+            &pending,
+            r#"{"op":"decide","decision":"verified"}"#,
+            START + 2,
+        ));
+        assert_eq!(
+            business_point_view(&verified, START + 3, true),
+            r#"{"ok":true,"status":"verified","visibility":"verified_listing"}"#
+        );
+        assert_eq!(
+            business_point_view(&verified, START + 3, false),
+            r#"{"ok":true,"status":"verified","visibility":"hidden"}"#
+        );
+        let withdrawn = apply_business_point_command(&verified, r#"{"op":"withdraw"}"#, START + 4);
+        assert!(withdrawn.contains(r#""status":"withdrawn""#), "{withdrawn}");
+        assert!(
+            withdrawn.contains(r#""decided_at":"1800000002""#),
+            "{withdrawn}"
+        );
+    }
+
+    #[test]
+    fn wire_rejects_malformed_and_forged_input() {
+        let invalid = r#"{"error":"invalid","ok":false}"#;
+        assert_eq!(
+            apply_business_point_command(
+                "",
+                r#"{"op":"submit","organization_verified":true}"#,
+                START
+            ),
+            invalid
+        );
+        assert_eq!(
+            apply_business_point_command("", r#"{"op":"verify"}"#, START),
+            invalid
+        );
+        assert_eq!(
+            apply_business_point_command("", r#"{"op":"expire","now":"1"}"#, START),
+            invalid
+        );
+        let pending = serde_json::to_string(&pending()).unwrap();
+        assert_eq!(
+            apply_business_point_command(&pending, r#"{"op":"decide","decision":"maybe"}"#, START),
+            invalid
+        );
+        let forged = pending.replace("\"pending\"", "\"verified\"");
+        assert_eq!(business_point_view(&forged, START, true), invalid);
+        assert_eq!(
+            apply_business_point_command(&pending, r#"{"op":"expire"}"#, START + 1),
+            r#"{"error":"not_expired","ok":false}"#
         );
     }
 }

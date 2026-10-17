@@ -78,3 +78,29 @@ assert.deepEqual(JSON.parse(core.core_failure_report('avaia.drive', 'tick')), {
   error: 'unknown_failure',
   ok: false,
 });
+
+const pointCreate = JSON.parse(core.apply_business_point_command('', JSON.stringify({
+  op: 'create',
+  owner: '0xda-market',
+  identity: { id: 'point-1', name: 'Zoloti Vorota' },
+  location: {
+    address: { country: 'UA', locality: 'Kyiv', street: 'Volodymyrska', number: '40' },
+    coordinate: { longitude_e7: '305131000', latitude_e7: '504489000' },
+  },
+}), '1800000000'));
+assert.equal(pointCreate.ok, true);
+assert.equal(pointCreate.status, 'draft');
+const pointPending = JSON.parse(core.apply_business_point_command(
+  JSON.stringify(pointCreate.state),
+  '{"op":"submit","organization_verified":true}',
+  '1800000000',
+));
+assert.equal(pointPending.state.verification.deadline_at, '1800259200');
+assert.deepEqual(
+  JSON.parse(core.business_point_view(JSON.stringify(pointPending.state), '1800259200', true)),
+  { ok: true, status: 'expired', visibility: 'hidden' },
+);
+assert.equal(
+  core.apply_business_point_command('', '{"op":"withdraw"}', '01'),
+  '{"error":"invalid","ok":false}',
+);
