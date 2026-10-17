@@ -78,6 +78,8 @@ pub enum BusinessPointDecision {
 
 /// Timestamps use canonical decimal strings at JSON boundaries. Only the
 /// transition methods create new state; deserialized state is validated.
+/// `decided_at` records the verification outcome (or the expiry deadline);
+/// `withdrawn_at` records an authorized withdrawal and never overwrites it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BusinessPointVerification {
@@ -88,6 +90,8 @@ pub struct BusinessPointVerification {
     deadline_at: Option<DecimalU64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     decided_at: Option<DecimalU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    withdrawn_at: Option<DecimalU64>,
 }
 
 impl BusinessPointVerification {
@@ -97,6 +101,7 @@ impl BusinessPointVerification {
             submitted_at: None,
             deadline_at: None,
             decided_at: None,
+            withdrawn_at: None,
         }
     }
 
@@ -106,26 +111,38 @@ impl BusinessPointVerification {
             self.submitted_at,
             self.deadline_at,
             self.decided_at,
+            self.withdrawn_at,
         ) {
-            (BusinessPointStatus::Draft, None, None, None) => true,
-            (BusinessPointStatus::Pending, Some(start), Some(end), None) => {
-                end.get() == start.get().saturating_add(BUSINESS_POINT_PENDING_SECONDS)
-                    && start
-                        .get()
-                        .checked_add(BUSINESS_POINT_PENDING_SECONDS)
-                        .is_some()
+            (BusinessPointStatus::Draft, None, None, None, None) => true,
+            (BusinessPointStatus::Pending, Some(start), Some(end), None, None) => {
+                valid_window(start, end)
             }
             (
                 BusinessPointStatus::Verified | BusinessPointStatus::Rejected,
                 Some(start),
                 Some(end),
                 Some(decision),
+                None,
             ) => valid_window(start, end) && decision >= start && decision < end,
-            (BusinessPointStatus::Expired, Some(start), Some(end), Some(decision)) => {
+            (BusinessPointStatus::Expired, Some(start), Some(end), Some(decision), None) => {
                 valid_window(start, end) && decision == end
             }
-            (BusinessPointStatus::Withdrawn, Some(start), Some(end), Some(decision)) => {
-                valid_window(start, end) && decision >= start
+            // Withdrawn while pending: no outcome, withdrawn inside the window.
+            (BusinessPointStatus::Withdrawn, Some(start), Some(end), None, Some(withdrawn)) => {
+                valid_window(start, end) && withdrawn >= start && withdrawn < end
+            }
+            // Withdrawn after verification: the verified outcome is preserved.
+            (
+                BusinessPointStatus::Withdrawn,
+                Some(start),
+                Some(end),
+                Some(decision),
+                Some(withdrawn),
+            ) => {
+                valid_window(start, end)
+                    && decision >= start
+                    && decision < end
+                    && withdrawn >= decision
             }
             _ => false,
         }
@@ -330,7 +347,11 @@ impl BusinessPoint {
             BusinessPointStatus::Rejected
             | BusinessPointStatus::Expired
             | BusinessPointStatus::Withdrawn => {
-                if self.verification.decided_at.is_some_and(|last| now < last) {
+                let last = self
+                    .verification
+                    .withdrawn_at
+                    .or(self.verification.decided_at);
+                if last.is_some_and(|last| now < last) {
                     return Err(BusinessPointError::ClockReversal);
                 }
                 self.start_pending(now)
@@ -350,6 +371,7 @@ impl BusinessPoint {
             submitted_at: Some(now),
             deadline_at: Some(DecimalU64::new(deadline)),
             decided_at: None,
+            withdrawn_at: None,
         };
         Ok(next)
     }
@@ -397,7 +419,8 @@ impl BusinessPoint {
         Ok(next)
     }
 
-    /// Withdrawal does not erase past decisions or create a `BondChain`.
+    /// Withdrawal keeps any verified `decided_at`, records `withdrawn_at`, and
+    /// does not create a `BondChain`.
     ///
     /// # Errors
     ///
@@ -421,7 +444,7 @@ impl BusinessPoint {
         }
         let mut next = self.clone();
         next.verification.status = BusinessPointStatus::Withdrawn;
-        next.verification.decided_at = Some(now);
+        next.verification.withdrawn_at = Some(now);
         Ok(next)
     }
 
@@ -562,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_point_is_not_a_station_or_a_bond() {
+    fn new_draft_is_private_and_unsubmitted() {
         let point = draft();
         assert_eq!(point.identity().id, "point-1");
         assert_eq!(point.owner().as_str(), "0xda-market");
@@ -685,6 +708,42 @@ mod tests {
             BusinessPointVisibility::Hidden
         );
         assert!(withdrawn.resubmit(at(START + 4), true).is_ok());
+    }
+
+    #[test]
+    fn withdrawal_preserves_the_verified_decision() {
+        let verified = pending()
+            .decide(BusinessPointDecision::Verified, at(START + 1))
+            .unwrap();
+        let withdrawn = verified.withdraw(at(START + 5)).unwrap();
+        assert_eq!(withdrawn.verification().decided_at, Some(at(START + 1)));
+        assert_eq!(withdrawn.verification().withdrawn_at, Some(at(START + 5)));
+        assert_eq!(
+            withdrawn.resubmit(at(START + 4), true),
+            Err(BusinessPointError::ClockReversal)
+        );
+        let reparsed: BusinessPoint =
+            serde_json::from_value(serde_json::to_value(&withdrawn).unwrap()).unwrap();
+        assert_eq!(reparsed, withdrawn);
+
+        let from_pending = pending().withdraw(at(START + 2)).unwrap();
+        assert_eq!(from_pending.verification().decided_at, None);
+        assert_eq!(
+            from_pending.verification().withdrawn_at,
+            Some(at(START + 2))
+        );
+
+        let serialized = serde_json::to_value(&from_pending).unwrap();
+        let mut forged = serialized.clone();
+        forged["verification"]["withdrawn_at"] =
+            serde_json::json!((START + BUSINESS_POINT_PENDING_SECONDS).to_string());
+        assert!(serde_json::from_value::<BusinessPoint>(forged).is_err());
+        let mut forged = serialized;
+        forged["verification"]
+            .as_object_mut()
+            .unwrap()
+            .remove("withdrawn_at");
+        assert!(serde_json::from_value::<BusinessPoint>(forged).is_err());
     }
 
     #[test]
