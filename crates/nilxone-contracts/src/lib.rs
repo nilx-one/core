@@ -12,6 +12,7 @@ mod avaia_life;
 mod avaia_proximity;
 mod avaia_pub_dress;
 mod backpack;
+mod business_point;
 mod business_station;
 mod canonical;
 mod economy;
@@ -45,6 +46,11 @@ pub use avaia_proximity::{
 };
 pub use avaia_pub_dress::{AvaiaPubDress, AvaiaPubDressError};
 pub use backpack::{Backpack, Carries, Carry, Placed, Size, size_of};
+pub use business_point::{
+    BUSINESS_POINT_PENDING_SECONDS, BusinessPoint, BusinessPointAddress, BusinessPointDecision,
+    BusinessPointError, BusinessPointIdentity, BusinessPointLocation, BusinessPointStatus,
+    BusinessPointVerification, BusinessPointVisibility,
+};
 pub use business_station::{
     MAX_STATION_CAPTION_SCALARS, StationCaption, StationPubDress, StationPubDressError,
     normalize_station_caption,
