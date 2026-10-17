@@ -86,13 +86,13 @@ pub enum BusinessPointDecision {
 #[serde(try_from = "BusinessPointVerificationWire")]
 pub struct BusinessPointVerification {
     status: BusinessPointStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     submitted_at: Option<DecimalU64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     deadline_at: Option<DecimalU64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     decided_at: Option<DecimalU64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     withdrawn_at: Option<DecimalU64>,
 }
 
@@ -219,6 +219,7 @@ impl TryFrom<BusinessPointWire> for BusinessPoint {
     fn try_from(raw: BusinessPointWire) -> Result<Self, Self::Error> {
         Self::validate_identity(&raw.identity)?;
         Self::validate_location(&raw.location)?;
+        // Retain this aggregate-boundary guard if verification input paths change.
         if !raw.verification.valid() {
             return Err(BusinessPointError::InvalidState);
         }
