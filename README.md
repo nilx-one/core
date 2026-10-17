@@ -44,6 +44,8 @@ What an Avaia does next while it is at the wheel — strolling about after a poi
 
 The [xPing flyover](docs/xping-flyover.md), started by Agreed in the Exclusive or Special subscription cutscene, is presentation only: xPing flies a drawn route from the Bond to a business station, and nothing is recorded.
 
+Which point it flies to is the [courier destination](docs/courier-destination.md) selector: the nearest of the BusinessPoints the host offers, by stable point id; it owns no tier, flight time or arrival.
+
 ## Error reporting
 
 Core-owned failures (registration handles, Avaia address and drive, and BondChain contract errors) project to canonical `errors.v1` event JSON through `nilxone_contracts::errors_v1_event`. Core owns the taxonomy and the `error_id` mapping; the host supplies the `event_id` (a fresh UUID per occurrence) and the RFC 3339 `observed_at`, then forwards the bytes to its 4x-errors reporter. Core performs no I/O and generates no identifiers or timestamps.

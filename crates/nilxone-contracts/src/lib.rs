@@ -15,6 +15,7 @@ mod backpack;
 mod business_point;
 mod business_station;
 mod canonical;
+mod courier_destination;
 mod economy;
 mod envelope;
 mod error;
@@ -57,6 +58,11 @@ pub use business_station::{
     normalize_station_caption,
 };
 pub use canonical::{CanonicalJsonError, canonical_json};
+pub use courier_destination::{
+    COURIER_DESTINATION_VERSION, CourierCandidate, CourierDestinationError,
+    CourierDestinationRequest, MAX_COURIER_CANDIDATES, MAX_COURIER_POINT_ID_SCALARS,
+    courier_destination, courier_destination_wire,
+};
 pub use economy::{
     CRAFTED, ECONOMY_VERSION, EconomyError, ItemKind, Place, RECIPES, Recipe, SEED_CODE,
     SEED_EMBLEM, found_things, item_kind, recipe,

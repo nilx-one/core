@@ -185,6 +185,16 @@ pub fn orb_world(world: &str, now_ms: &str) -> String {
     }
 }
 
+/// Where a courier such as xPing goes: the nearest of the offered points.
+/// `request` is a `CourierDestinationRequest` as JSON. Answers
+/// `{"ok":true,"point_id":…}` or `{"ok":false,"error":…}`; see
+/// `docs/courier-destination.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn courier_destination(request: &str) -> String {
+    nilxone_contracts::courier_destination_wire(request)
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[wasm_bindgen]
