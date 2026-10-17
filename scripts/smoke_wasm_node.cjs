@@ -63,6 +63,16 @@ assert.equal(orbWorld.view.orbs[0].lands_at, '1070');
 assert.equal(orbWorld.view.next_expiry, '1801000');
 assert.deepEqual(JSON.parse(core.orb_world('{}', '1000')), { error: 'invalid', ok: false });
 
+const destination = JSON.parse(core.courier_destination(JSON.stringify({
+  origin: { longitude_e7: '305130000', latitude_e7: '504490000' },
+  candidates: [
+    { point_id: 'far', coordinate: { longitude_e7: '306000000', latitude_e7: '505000000' } },
+    { point_id: 'near', coordinate: { longitude_e7: '305131000', latitude_e7: '504491000' } },
+  ],
+})));
+assert.deepEqual(destination, { ok: true, point_id: 'near' });
+assert.deepEqual(JSON.parse(core.courier_destination('{}')), { error: 'invalid', ok: false });
+
 const report = JSON.parse(core.core_failure_report('registration.pubdress', 'invalid_prefix'));
 assert.deepEqual(report, {
   ok: true,
