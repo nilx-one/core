@@ -735,7 +735,9 @@ mod tests {
 
     #[test]
     fn standalone_verification_rejects_invalid_lifecycle_states() {
-        assert!(serde_json::from_str::<BusinessPointVerification>(r#"{"status":"verified"}"#).is_err());
+        assert!(
+            serde_json::from_str::<BusinessPointVerification>(r#"{"status":"verified"}"#).is_err()
+        );
 
         let mut wrong_deadline = serde_json::to_value(pending().verification()).unwrap();
         wrong_deadline["deadline_at"] = serde_json::json!((START + 1).to_string());
