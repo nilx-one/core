@@ -116,6 +116,24 @@ pub fn orb_spill_version() -> u32 {
     nilxone_contracts::ORB_SPILL_VERSION
 }
 
+/// Orb spill layout through the same Core wire as Web/Wasm. The optional
+/// `via` landmark is navigation only; the find and the orb identities remain
+/// unchanged. `now_ms` is canonical decimal milliseconds.
+///
+/// Returns `{"ok":true,"view":…}` or `{"ok":false,"error":"invalid"}`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn orb_world(world: String, now_ms: String) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::orb_world_wire(&world, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[uniffi::export]
