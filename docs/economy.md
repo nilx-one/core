@@ -10,10 +10,11 @@ The name always appears together with the emblem: "Seed ₴€£", never a bare 
 
 Seeds come from:
 
+- **the starter Seeds:** every Bond is given 10,000 Seeds once (`STARTER_SEEDS`, `{"op":"grant_starter_seeds"}`). A state records it as `starter`; a state from before has not had them;
 - **picking up money:** small change (a tier 1 find) credits 15 Seeds and is never kept as a thing;
 - **selling** a thing.
 
-Seeds are spent on repairs.
+Seeds are spent on repairs, including xPing's engine: `xping_repair(engine, inventory, now_ms)` pays 50 Seeds for an empty or broken engine, in proportion to what is missing, rounded up, priced from the engine itself (see [xPing engine](xping-engine.md)).
 
 ## Selling
 

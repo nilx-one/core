@@ -195,6 +195,44 @@ pub fn courier_destination(request: &str) -> String {
     nilxone_contracts::courier_destination_wire(request)
 }
 
+/// xPing's engine at `now_ms`: energy, smoke, whether it is broken, when
+/// it is full and what a repair costs. `state` is the stored engine (the
+/// empty string is a new one), `now_ms` a decimal string. Answers
+/// `{"ok":true,"view":…}` or `{"ok":false,"error":"invalid"}`; see
+/// `docs/xping-engine.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn xping_engine_view(state: &str, now_ms: &str) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::xping_engine_view_wire(state, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
+/// Applies one engine command (`force` or `repaired`) at `now_ms`.
+/// Answers `{"ok":true,"state":…,"view":…}` or `{"ok":false,"error":…}`;
+/// see `docs/xping-engine.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn xping_engine_command(state: &str, command: &str, now_ms: &str) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::xping_engine_command_wire(state, command, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
+/// Pays for an xPing engine repair from the inventory at the engine's own
+/// price at `now_ms`. Answers `{"ok":true,"inventory":…,"engine":…,
+/// "outcome":…}` or `{"ok":false,"error":…}`; see `docs/xping-engine.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn xping_repair(engine: &str, inventory: &str, now_ms: &str) -> String {
+    match now_ms.parse::<nilxone_contracts::DecimalU64>() {
+        Ok(now) => nilxone_contracts::xping_repair_wire(engine, inventory, now.get()),
+        Err(_) => r#"{"error":"invalid","ok":false}"#.to_owned(),
+    }
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[wasm_bindgen]

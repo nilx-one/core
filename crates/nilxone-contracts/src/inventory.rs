@@ -75,7 +75,11 @@ pub struct Inventory {
     job: Option<CraftJob>,
     owned: [Carries; 2],
     gifted: bool,
+    starter: bool,
 }
+
+/// The Seeds ₴€£ every Bond is given once, to start with.
+pub const STARTER_SEEDS: u64 = 10_000;
 
 /// The Bond level by which the backpack gift is due, even if nothing was
 /// ever too much for the pockets.
@@ -99,6 +103,7 @@ impl Inventory {
             job: None,
             owned: [Carries::POCKETS.with(bond), Carries::POCKETS.with(avaia)],
             gifted: false,
+            starter: false,
         }
     }
 
@@ -121,7 +126,72 @@ impl Inventory {
             job: None,
             owned,
             gifted,
+            starter: false,
         }
+    }
+
+    /// The same inventory, recording whether the starter Seeds were given.
+    #[must_use]
+    pub const fn with_starter(mut self, given: bool) -> Self {
+        self.starter = given;
+        self
+    }
+
+    /// Whether the starter Seeds were given.
+    #[must_use]
+    pub const fn starter_given(&self) -> bool {
+        self.starter
+    }
+
+    /// Gives [`STARTER_SEEDS`], once.
+    ///
+    /// # Errors
+    ///
+    /// [`EconomyError::NotDue`] when already given, and
+    /// [`EconomyError::Overflow`] if the balance cannot hold them.
+    pub fn grant_starter_seeds(&mut self) -> Result<Outcome, EconomyError> {
+        if self.starter {
+            return Err(EconomyError::NotDue);
+        }
+        self.seeds = self
+            .seeds
+            .checked_add(STARTER_SEEDS)
+            .ok_or(EconomyError::Overflow)?;
+        self.starter = true;
+        Ok(Outcome {
+            seeds_gained: STARTER_SEEDS,
+            ..Outcome::default()
+        })
+    }
+
+    /// Pays for a repair of `engine` at `now_ms`, at the price the engine
+    /// itself has then, and answers the repaired engine with the payment.
+    /// The two belong together: the host stores both or neither.
+    ///
+    /// # Errors
+    ///
+    /// [`EconomyError::NotDue`] when nothing is missing, and
+    /// [`EconomyError::NotEnoughSeeds`].
+    pub fn pay_xping_repair(
+        &mut self,
+        engine: &crate::XpingEngine,
+        now_ms: u64,
+    ) -> Result<(Outcome, crate::XpingEngine), EconomyError> {
+        let price = engine.repair_seeds(now_ms);
+        let repaired = engine
+            .repaired(price, now_ms)
+            .map_err(|_| EconomyError::NotDue)?;
+        if self.seeds < price {
+            return Err(EconomyError::NotEnoughSeeds);
+        }
+        self.seeds -= price;
+        Ok((
+            Outcome {
+                seeds_spent: price,
+                ..Outcome::default()
+            },
+            repaired,
+        ))
     }
 
     /// What `holder` owns to carry things in.

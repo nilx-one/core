@@ -60,6 +60,10 @@ struct InventoryWire {
     /// the gift: one that already carries a backpack had it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gifted: Option<bool>,
+    /// Whether the starter Seeds were given. A state from before them has
+    /// not had them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    starter: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,6 +112,7 @@ enum Command {
     GiftBackpacks {
         bond_level: u32,
     },
+    GrantStarterSeeds,
     /// Persist v1 -> v2 layout migration without changing items or currency.
     Normalize,
 }
@@ -252,7 +257,8 @@ fn read_state(state: &str) -> Result<Inventory, &'static str> {
         owned[1].with(Carry::from_code(&wire.avaia.carry).ok_or(INVALID)?),
     ];
     let gifted = migrated_gift || wire.gifted.unwrap_or(bond.carry() != Carry::Pocket);
-    let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted);
+    let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted)
+        .with_starter(wire.starter.unwrap_or(false));
     if let Some(craft) = wire.craft {
         inventory
             .resume_craft(&craft.recipe, craft.started_ms.get(), craft.ready_ms.get())
@@ -289,6 +295,7 @@ fn write_state(inventory: &Inventory) -> Value {
             avaia: carry_codes(inventory.owned(Holder::Avaia)),
         }),
         gifted: Some(inventory.gifted()),
+        starter: Some(inventory.starter_given()),
     };
     serde_json::to_value(wire).unwrap_or(Value::Null)
 }
@@ -305,6 +312,34 @@ fn outcome_value(outcome: Outcome) -> Value {
         "gifted": outcome.gifted,
         "left_behind": outcome.left_behind.map(EconomyError::code),
     })
+}
+
+/// Pays for a repair of xPing's engine from the inventory, at the price the
+/// engine has at `now_ms`, in one transition: `engine` and `inventory` are
+/// the stored states (the empty string is a new one). Answers
+/// `{"ok":true,"inventory":…,"engine":…,"outcome":…}` with both next states,
+/// or `{"ok":false,"error":"not_due"|"not_enough_seeds"|"invalid"}`. The
+/// host stores both or neither; the storing service records the engine's
+/// half with `{"op":"repaired","paid_seeds":…}` from the same outcome.
+#[must_use]
+pub fn xping_repair_wire(engine: &str, inventory: &str, now_ms: u64) -> String {
+    let Some(engine) = crate::xping_engine::read_engine(engine, now_ms) else {
+        return failure(INVALID);
+    };
+    let mut inventory = match read_state(inventory) {
+        Ok(inventory) => inventory,
+        Err(code) => return failure(code),
+    };
+    match inventory.pay_xping_repair(&engine, now_ms) {
+        Ok((outcome, repaired)) => json!({
+            "ok": true,
+            "inventory": write_state(&inventory),
+            "engine": repaired,
+            "outcome": outcome_value(outcome),
+        })
+        .to_string(),
+        Err(error) => failure(error.code()),
+    }
 }
 
 /// Applies one command to a stored inventory at `now_ms`.
@@ -379,6 +414,7 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> Strin
             .gift_backpacks(bond_level)
             .map(|()| Outcome::default())
             .map_err(Ok),
+        Command::GrantStarterSeeds => inventory.grant_starter_seeds().map_err(Ok),
         Command::Normalize => Ok(Outcome::default()),
     })();
     match result {
@@ -545,7 +581,7 @@ mod tests {
         let state = picked["state"].to_string();
         assert_eq!(
             state,
-            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"layout_version":2,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0"}"#
+            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"layout_version":2,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0","starter":false}"#
         );
         let handed = apply(
             &state,
@@ -771,5 +807,57 @@ mod tests {
         let catalog: Value = serde_json::from_str(&economy_catalog_json()).unwrap();
         assert_eq!(catalog["carries"][1]["price"], "1500");
         assert_eq!(catalog["carries"][0]["price"], Value::Null);
+    }
+
+    #[test]
+    fn starter_seeds_come_once_and_pay_for_an_xping_repair() {
+        let granted = apply("", r#"{"op":"grant_starter_seeds"}"#, 0);
+        assert_eq!(granted["ok"], true, "{granted}");
+        assert_eq!(granted["state"]["seeds"], "10000");
+        assert_eq!(granted["state"]["starter"], true);
+        assert_eq!(granted["outcome"]["seeds_gained"], "10000");
+        let again = apply(
+            &granted["state"].to_string(),
+            r#"{"op":"grant_starter_seeds"}"#,
+            0,
+        );
+        assert_eq!(again["error"], "not_due");
+        // A state from before the starter Seeds still gets them.
+        let old = r#"{"bond":{"carry":"pocket","things":[]},"avaia":{"carry":"pocket","things":[]},"seeds":"7","craft":null}"#;
+        let late = apply(old, r#"{"op":"grant_starter_seeds"}"#, 0);
+        assert_eq!(late["state"]["seeds"], "10007");
+
+        // A repair is priced from the engine, not from the host.
+        let rich = granted["state"].to_string();
+        let half = crate::XpingEngine::new(0).force(15_000, 0).unwrap();
+        let half_state = serde_json::to_string(&half).unwrap();
+        let paid: serde_json::Value =
+            serde_json::from_str(&super::xping_repair_wire(&half_state, &rich, 0)).unwrap();
+        assert_eq!(paid["outcome"]["seeds_spent"], "25");
+        assert_eq!(paid["inventory"]["seeds"], "9975");
+        assert_eq!(paid["engine"]["energy_permille"], 1000);
+        let empty = crate::XpingEngine::new(0).force(30_000, 0).unwrap();
+        let empty_state = serde_json::to_string(&empty).unwrap();
+        let whole: serde_json::Value =
+            serde_json::from_str(&super::xping_repair_wire(&empty_state, &rich, 0)).unwrap();
+        assert_eq!(whole["outcome"]["seeds_spent"], "50");
+        // Replaying the repair on the repaired engine charges nothing.
+        let replay: serde_json::Value = serde_json::from_str(&super::xping_repair_wire(
+            &whole["engine"].to_string(),
+            &whole["inventory"].to_string(),
+            0,
+        ))
+        .unwrap();
+        assert_eq!(replay["error"], "not_due");
+        let poor: serde_json::Value =
+            serde_json::from_str(&super::xping_repair_wire(&empty_state, "", 0)).unwrap();
+        assert_eq!(poor["error"], "not_enough_seeds");
+        // The old host-priced command is gone.
+        let host_priced = apply(
+            &rich,
+            r#"{"op":"pay_xping_repair","missing_permille":1}"#,
+            0,
+        );
+        assert_eq!(host_priced["error"], "invalid");
     }
 }
