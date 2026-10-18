@@ -172,6 +172,14 @@ pub fn avaia_drive_step(state: &str, input: &str, now_ms: &str, hour: u8) -> Str
     }
 }
 
+/// Active orb placement wire version. Hosts must not send a `via` waypoint
+/// until this value is at least 2.
+#[must_use]
+#[wasm_bindgen]
+pub fn orb_spill_version() -> u32 {
+    nilxone_contracts::ORB_SPILL_VERSION
+}
+
 /// The orbs around a Bond: what lies where and when it lands, and what the
 /// Bond and the Avaia reach now. `world` is an `OrbWorld` as JSON and
 /// `now_ms` a decimal string. Answers `{"ok":true,"view":…}` or
