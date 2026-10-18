@@ -164,27 +164,34 @@ impl Inventory {
         })
     }
 
-    /// Pays for a repair of xPing's engine with `missing_permille` of its
-    /// energy missing: [`crate::repair_seeds_for`] Seeds. The engine's own
-    /// state is the host's to update ([`crate::XpingEngine::repaired`]).
+    /// Pays for a repair of `engine` at `now_ms`, at the price the engine
+    /// itself has then, and answers the repaired engine with the payment.
+    /// The two belong together: the host stores both or neither.
     ///
     /// # Errors
     ///
     /// [`EconomyError::NotDue`] when nothing is missing, and
     /// [`EconomyError::NotEnoughSeeds`].
-    pub fn pay_xping_repair(&mut self, missing_permille: u16) -> Result<Outcome, EconomyError> {
-        let price = crate::repair_seeds_for(missing_permille);
-        if price == 0 {
-            return Err(EconomyError::NotDue);
-        }
+    pub fn pay_xping_repair(
+        &mut self,
+        engine: &crate::XpingEngine,
+        now_ms: u64,
+    ) -> Result<(Outcome, crate::XpingEngine), EconomyError> {
+        let price = engine.repair_seeds(now_ms);
+        let repaired = engine
+            .repaired(price, now_ms)
+            .map_err(|_| EconomyError::NotDue)?;
         if self.seeds < price {
             return Err(EconomyError::NotEnoughSeeds);
         }
         self.seeds -= price;
-        Ok(Outcome {
-            seeds_spent: price,
-            ..Outcome::default()
-        })
+        Ok((
+            Outcome {
+                seeds_spent: price,
+                ..Outcome::default()
+            },
+            repaired,
+        ))
     }
 
     /// What `holder` owns to carry things in.

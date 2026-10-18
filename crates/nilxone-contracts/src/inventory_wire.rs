@@ -113,9 +113,6 @@ enum Command {
         bond_level: u32,
     },
     GrantStarterSeeds,
-    PayXpingRepair {
-        missing_permille: u16,
-    },
     /// Persist v1 -> v2 layout migration without changing items or currency.
     Normalize,
 }
@@ -317,6 +314,34 @@ fn outcome_value(outcome: Outcome) -> Value {
     })
 }
 
+/// Pays for a repair of xPing's engine from the inventory, at the price the
+/// engine has at `now_ms`, in one transition: `engine` and `inventory` are
+/// the stored states (the empty string is a new one). Answers
+/// `{"ok":true,"inventory":…,"engine":…,"outcome":…}` with both next states,
+/// or `{"ok":false,"error":"not_due"|"not_enough_seeds"|"invalid"}`. The
+/// host stores both or neither; the storing service records the engine's
+/// half with `{"op":"repaired","paid_seeds":…}` from the same outcome.
+#[must_use]
+pub fn xping_repair_wire(engine: &str, inventory: &str, now_ms: u64) -> String {
+    let Some(engine) = crate::xping_engine::read_engine(engine, now_ms) else {
+        return failure(INVALID);
+    };
+    let mut inventory = match read_state(inventory) {
+        Ok(inventory) => inventory,
+        Err(code) => return failure(code),
+    };
+    match inventory.pay_xping_repair(&engine, now_ms) {
+        Ok((outcome, repaired)) => json!({
+            "ok": true,
+            "inventory": write_state(&inventory),
+            "engine": repaired,
+            "outcome": outcome_value(outcome),
+        })
+        .to_string(),
+        Err(error) => failure(error.code()),
+    }
+}
+
 /// Applies one command to a stored inventory at `now_ms`.
 ///
 /// `state` is the stored JSON, or the empty string for a new inventory.
@@ -390,9 +415,6 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> Strin
             .map(|()| Outcome::default())
             .map_err(Ok),
         Command::GrantStarterSeeds => inventory.grant_starter_seeds().map_err(Ok),
-        Command::PayXpingRepair { missing_permille } => {
-            inventory.pay_xping_repair(missing_permille).map_err(Ok)
-        }
         Command::Normalize => Ok(Outcome::default()),
     })();
     match result {
@@ -805,31 +827,37 @@ mod tests {
         let late = apply(old, r#"{"op":"grant_starter_seeds"}"#, 0);
         assert_eq!(late["state"]["seeds"], "10007");
 
-        let state = granted["state"].to_string();
-        let half = apply(
-            &state,
-            r#"{"op":"pay_xping_repair","missing_permille":500}"#,
-            0,
-        );
-        assert_eq!(half["outcome"]["seeds_spent"], "25");
-        assert_eq!(half["state"]["seeds"], "9975");
-        let whole = apply(
-            &state,
-            r#"{"op":"pay_xping_repair","missing_permille":1000}"#,
-            0,
-        );
+        // A repair is priced from the engine, not from the host.
+        let rich = granted["state"].to_string();
+        let half = crate::XpingEngine::new(0).force(15_000, 0).unwrap();
+        let half_state = serde_json::to_string(&half).unwrap();
+        let paid: serde_json::Value =
+            serde_json::from_str(&super::xping_repair_wire(&half_state, &rich, 0)).unwrap();
+        assert_eq!(paid["outcome"]["seeds_spent"], "25");
+        assert_eq!(paid["inventory"]["seeds"], "9975");
+        assert_eq!(paid["engine"]["energy_permille"], 1000);
+        let empty = crate::XpingEngine::new(0).force(30_000, 0).unwrap();
+        let empty_state = serde_json::to_string(&empty).unwrap();
+        let whole: serde_json::Value =
+            serde_json::from_str(&super::xping_repair_wire(&empty_state, &rich, 0)).unwrap();
         assert_eq!(whole["outcome"]["seeds_spent"], "50");
-        let nothing = apply(
-            &state,
-            r#"{"op":"pay_xping_repair","missing_permille":0}"#,
+        // Replaying the repair on the repaired engine charges nothing.
+        let replay: serde_json::Value = serde_json::from_str(&super::xping_repair_wire(
+            &whole["engine"].to_string(),
+            &whole["inventory"].to_string(),
             0,
-        );
-        assert_eq!(nothing["error"], "not_due");
-        let poor = apply(
-            "",
-            r#"{"op":"pay_xping_repair","missing_permille":1000}"#,
-            0,
-        );
+        ))
+        .unwrap();
+        assert_eq!(replay["error"], "not_due");
+        let poor: serde_json::Value =
+            serde_json::from_str(&super::xping_repair_wire(&empty_state, "", 0)).unwrap();
         assert_eq!(poor["error"], "not_enough_seeds");
+        // The old host-priced command is gone.
+        let host_priced = apply(
+            &rich,
+            r#"{"op":"pay_xping_repair","missing_permille":1}"#,
+            0,
+        );
+        assert_eq!(host_priced["error"], "invalid");
     }
 }

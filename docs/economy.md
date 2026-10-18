@@ -14,7 +14,7 @@ Seeds come from:
 - **picking up money:** small change (a tier 1 find) credits 15 Seeds and is never kept as a thing;
 - **selling** a thing.
 
-Seeds are spent on repairs, including xPing's engine (`{"op":"pay_xping_repair","missing_permille":N}`: 50 Seeds for an empty or broken engine, in proportion, rounded up; see [xPing engine](xping-engine.md)).
+Seeds are spent on repairs, including xPing's engine: `xping_repair(engine, inventory, now_ms)` pays 50 Seeds for an empty or broken engine, in proportion to what is missing, rounded up, priced from the engine itself (see [xPing engine](xping-engine.md)).
 
 ## Selling
 

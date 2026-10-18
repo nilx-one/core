@@ -90,7 +90,7 @@ pub use identifier::{
 pub use inventory::{CraftJob, GIFT_LEVEL, Holder, Inventory, Outcome, STARTER_SEEDS};
 pub use inventory_wire::{
     apply_inventory_command, backpack_gift_due_wire, economy_catalog_json, find_item_wire,
-    picks_up_wire,
+    picks_up_wire, xping_repair_wire,
 };
 pub use orb_spill::{
     DrawnOrb, KnownSpill, MIN_TRAIL_METERS, ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN,
@@ -119,6 +119,6 @@ pub const FIXTURE_CORPUS_DIGEST: &str =
 pub use xping_engine::{
     XPING_BREAK_AFTER_EMPTY_MS, XPING_BROKEN_MS, XPING_ENGINE_VERSION, XPING_FORCE_FULL_MS,
     XPING_FULL_ENERGY, XPING_FULL_REPAIR_SEEDS, XPING_RECHARGE_FULL_MS, XpingEngine,
-    XpingEngineError, XpingEngineView, repair_seeds_for, xping_engine_command_wire,
-    xping_engine_view, xping_engine_view_wire,
+    XpingEngineError, XpingEngineView, xping_engine_command_wire, xping_engine_view,
+    xping_engine_view_wire,
 };

@@ -79,6 +79,11 @@ assert.equal(engine.view.energy_permille, 500);
 assert.equal(engine.view.repair_seeds, '25');
 assert.equal(JSON.parse(core.xping_engine_view(JSON.stringify(engine.state), '1000')).view.smoke_permille, 500);
 assert.deepEqual(JSON.parse(core.xping_engine_view('', 'x')), { error: 'invalid', ok: false });
+const starter = JSON.parse(core.apply_inventory_command('', '{"op":"grant_starter_seeds"}', '1000'));
+const repair = JSON.parse(core.xping_repair(JSON.stringify(engine.state), JSON.stringify(starter.state), '1000'));
+assert.equal(repair.outcome.seeds_spent, '25');
+assert.equal(repair.inventory.seeds, '9975');
+assert.equal(repair.engine.energy_permille, 1000);
 
 const report = JSON.parse(core.core_failure_report('registration.pubdress', 'invalid_prefix'));
 assert.deepEqual(report, {
