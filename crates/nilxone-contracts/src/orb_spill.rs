@@ -498,8 +498,7 @@ mod tests {
     fn a_landmark_waypoint_bends_the_trail_without_moving_the_find_goal() {
         let waypoint = point(304_470_000, 504_665_000);
         let direct = orb_trail(KYIV, cell_middle(), find()).expect("direct");
-        let guided =
-            orb_trail_via(KYIV, cell_middle(), Some(waypoint), find()).expect("guided");
+        let guided = orb_trail_via(KYIV, cell_middle(), Some(waypoint), find()).expect("guided");
         assert_eq!(guided.len(), direct.len());
         assert_ne!(guided, direct);
         assert_eq!(
