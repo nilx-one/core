@@ -95,7 +95,7 @@ pub use inventory_wire::{
 pub use orb_spill::{
     DrawnOrb, KnownSpill, MIN_TRAIL_METERS, ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN,
     ORB_PICKUP_METERS, ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView,
-    OrbWorld, orb_count, orb_id, orb_trail, orb_world, orb_world_wire, trail_start,
+    OrbWorld, orb_count, orb_id, orb_trail, orb_trail_via, orb_world, orb_world_wire, trail_start,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
