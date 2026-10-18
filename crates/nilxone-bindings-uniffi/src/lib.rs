@@ -248,6 +248,26 @@ mod tests {
     }
 
     #[test]
+    fn uniffi_surface_matches_the_v2_orb_world_contract() {
+        assert_eq!(super::orb_spill_version(), nilxone_contracts::ORB_SPILL_VERSION);
+        assert_eq!(super::orb_spill_version(), 2);
+
+        let world = r#"{"spills":[{"artifact_id":"art:seg:312346:298243:e2908:1:0","from":{"longitude_e7":"304461000","latitude_e7":"504650000"},"via":{"longitude_e7":"304470000","latitude_e7":"504665000"},"to":{"longitude_e7":"304469000","latitude_e7":"504655000"},"appeared_at":"1000","expires_at":"1801000","count":20,"taken":[]}],"picked":[],"bond":null,"avaia":null}"#;
+        assert_eq!(
+            super::orb_world(world.to_owned(), "2000".to_owned()),
+            nilxone_contracts::orb_world_wire(world, 2_000)
+        );
+        assert_eq!(
+            super::orb_world(world.to_owned(), "01".to_owned()),
+            r#"{"error":"invalid","ok":false}"#
+        );
+        assert_eq!(
+            super::orb_world(r#"{"spills":[{"via":{"latitude_e7":1}}]}"#.to_owned(), "2000".to_owned()),
+            r#"{"error":"invalid","ok":false}"#
+        );
+    }
+
+    #[test]
     fn uniffi_surface_exposes_the_avaia_drive() {
         let answer = super::avaia_drive_step(
             String::new(),
