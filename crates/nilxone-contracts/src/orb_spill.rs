@@ -539,6 +539,57 @@ mod tests {
     }
 
     #[test]
+    fn v2_waypoints_preserve_legacy_wire_ids_and_the_original_goal() {
+        let legacy = serde_json::json!({
+            "spills": [{
+                "artifact_id": KYIV,
+                "from": { "longitude_e7": "304461000", "latitude_e7": "504650000" },
+                "to": { "longitude_e7": "304469000", "latitude_e7": "504655000" },
+                "appeared_at": "1000",
+                "expires_at": "1801000",
+                "count": 20,
+                "taken": []
+            }],
+            "picked": [],
+            "bond": null,
+            "avaia": null
+        });
+        let direct: serde_json::Value = serde_json::from_str(
+            &orb_world_wire(&legacy.to_string(), 2_000),
+        )
+        .expect("legacy JSON");
+        let mut explicit_null = legacy.clone();
+        explicit_null["spills"][0]["via"] = serde_json::Value::Null;
+        let null_wire: serde_json::Value = serde_json::from_str(
+            &orb_world_wire(&explicit_null.to_string(), 2_000),
+        )
+        .expect("null waypoint JSON");
+        assert_eq!(direct, null_wire, "omitting via retains exact legacy layout");
+
+        let mut guided = legacy;
+        guided["spills"][0]["via"] = serde_json::json!({
+            "longitude_e7": "304470000",
+            "latitude_e7": "504665000"
+        });
+        let via_wire: serde_json::Value = serde_json::from_str(
+            &orb_world_wire(&guided.to_string(), 2_000),
+        )
+        .expect("guided JSON");
+        let direct_orbs = direct["view"]["orbs"].as_array().expect("direct orbs");
+        let guided_orbs = via_wire["view"]["orbs"].as_array().expect("guided orbs");
+        assert_eq!(direct_orbs.len(), guided_orbs.len());
+        assert!(direct_orbs.iter().zip(guided_orbs).any(|(a, b)| a["at"] != b["at"]));
+        for (a, b) in direct_orbs.iter().zip(guided_orbs) {
+            assert_eq!(a["id"], b["id"]);
+            assert_eq!(a["kind"], b["kind"]);
+            assert_eq!(a["lands_at"], b["lands_at"]);
+            if a["kind"] == "goal" {
+                assert_eq!(a["at"], b["at"]);
+            }
+        }
+    }
+
+    #[test]
     fn a_short_trail_is_stretched_back_from_the_find() {
         let start = trail_start(find(), find());
         assert!((29..=31).contains(&distance_meters(start, find())));
