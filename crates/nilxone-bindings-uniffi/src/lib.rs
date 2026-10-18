@@ -109,6 +109,13 @@ pub fn pub_dress_uts46_implementation() -> String {
     nilxone_contracts::PUB_DRESS_UTS46_IMPLEMENTATION.to_owned()
 }
 
+/// Active orb placement wire version.
+#[must_use]
+#[uniffi::export]
+pub fn orb_spill_version() -> u32 {
+    nilxone_contracts::ORB_SPILL_VERSION
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[uniffi::export]
