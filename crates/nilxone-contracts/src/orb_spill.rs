@@ -237,8 +237,8 @@ pub fn orb_trail_via(
             // advances 88% of the second leg toward the original find.
             // A one-clump trail stops at the landmark, with its actual find
             // still drawn separately as the goal.
-            let approach_clumps = ((clumps * LANDMARK_WAYPOINT_PERCENT + 99) / 100)
-                .min((clumps - 1).max(1));
+            let approach_clumps =
+                ((clumps * LANDMARK_WAYPOINT_PERCENT + 99) / 100).min((clumps - 1).max(1));
             let step = i64::from(clump) + 1;
             if step <= approach_clumps {
                 between(start, waypoint, step, approach_clumps)
