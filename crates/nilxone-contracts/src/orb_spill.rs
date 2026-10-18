@@ -26,7 +26,7 @@ use crate::spoken_line::{CENTIMETERS_PER_DEGREE, cosine_millionths};
 use crate::{DecimalU64, GEO_COORDINATE_E7_SCALE, GeoCoordinate, distance_meters};
 
 /// Version of the orb rules below; any change to a number raises it.
-pub const ORB_SPILL_VERSION: u32 = 1;
+pub const ORB_SPILL_VERSION: u32 = 2;
 /// What one orb pays whoever picks it up.
 pub const ORB_EXPERIENCE: u32 = 10;
 /// How long a spill lies before it is gone.
@@ -51,6 +51,8 @@ const CLUMP_MAX: u8 = 6;
 const SCATTER_CM: i64 = 300;
 /// The last clump stops short of the find, in percent of the trail.
 const TRAIL_REACH_PERCENT: i64 = 88;
+/// Share of the trail spent approaching a landmark waypoint, when present.
+const LANDMARK_WAYPOINT_PERCENT: i64 = 75;
 const E7: i128 = GEO_COORDINATE_E7_SCALE as i128;
 const COSINE_SCALE: i128 = 1_000_000;
 
@@ -206,19 +208,49 @@ pub fn orb_trail(
     from: GeoCoordinate,
     to: GeoCoordinate,
 ) -> Result<Vec<OrbSpot>, OrbError> {
+    orb_trail_via(artifact_id, from, None, to)
+}
+
+/// Draw a find's orbs through an optional, real landmark waypoint before
+/// ending at the same find. Without a waypoint this is exactly the v1 trail,
+/// preserving every old artifact and orb id. The goal remains the find.
+pub fn orb_trail_via(
+    artifact_id: &str,
+    from: GeoCoordinate,
+    via: Option<GeoCoordinate>,
+    to: GeoCoordinate,
+) -> Result<Vec<OrbSpot>, OrbError> {
     let count = orb_count(artifact_id)?;
-    let start = trail_start(from, to);
+    let start = trail_start(from, via.unwrap_or(to));
     let sizes = clump_sizes(artifact_id, count);
     let clumps = i64::try_from(sizes.len()).unwrap_or(1);
     let mut spots = Vec::with_capacity(usize::from(count));
     let mut index: u8 = 0;
     for (clump, size) in (0_u8..).zip(sizes) {
-        let center = between(
-            start,
-            to,
-            TRAIL_REACH_PERCENT * (i64::from(clump) + 1),
-            100 * clumps,
-        );
+        let numerator = TRAIL_REACH_PERCENT * (i64::from(clump) + 1);
+        let denominator = 100 * clumps;
+        let center = if let Some(waypoint) = via {
+            // The first 75% of the visible trail approaches the landmark;
+            // the rest points from that landmark towards the actual find.
+            // No goal or claim is relocated to the landmark.
+            if numerator * 100 <= denominator * LANDMARK_WAYPOINT_PERCENT {
+                between(
+                    start,
+                    waypoint,
+                    numerator * 100,
+                    denominator * LANDMARK_WAYPOINT_PERCENT,
+                )
+            } else {
+                between(
+                    waypoint,
+                    to,
+                    numerator * 100 - denominator * LANDMARK_WAYPOINT_PERCENT,
+                    denominator * (100 - LANDMARK_WAYPOINT_PERCENT),
+                )
+            }
+        } else {
+            between(start, to, numerator, denominator)
+        };
         for _ in 0..size {
             spots.push(OrbSpot {
                 index,
@@ -242,6 +274,9 @@ pub fn orb_trail(
 pub struct KnownSpill {
     pub artifact_id: String,
     pub from: GeoCoordinate,
+    /// Optional archived landmark waypoint. It never replaces the real find.
+    #[serde(default)]
+    pub via: Option<GeoCoordinate>,
     pub to: GeoCoordinate,
     pub appeared_at: DecimalU64,
     pub expires_at: DecimalU64,
@@ -306,7 +341,7 @@ pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
         if now_ms >= expires || orb_count(&spill.artifact_id) != Ok(spill.count) {
             continue;
         }
-        let Ok(trail) = orb_trail(&spill.artifact_id, spill.from, spill.to) else {
+        let Ok(trail) = orb_trail_via(&spill.artifact_id, spill.from, spill.via, spill.to) else {
             continue;
         };
         next_expiry = Some(next_expiry.map_or(expires, |soonest| soonest.min(expires)));
@@ -456,6 +491,48 @@ mod tests {
     }
 
     #[test]
+    fn a_landmark_waypoint_bends_the_trail_without_moving_the_find_goal() {
+        let waypoint = point(304_470_000, 504_665_000);
+        let direct = orb_trail(KYIV, cell_middle(), find()).expect("direct");
+        let guided =
+            orb_trail_via(KYIV, cell_middle(), Some(waypoint), find()).expect("guided");
+        assert_eq!(guided.len(), direct.len());
+        assert_ne!(guided, direct);
+        assert_eq!(
+            orb_trail_via(KYIV, cell_middle(), None, find()).expect("legacy"),
+            direct
+        );
+        assert!(
+            guided
+                .iter()
+                .any(|orb| distance_meters(orb.at, waypoint) < 18),
+            "a landmark must have a visible trail clump nearby"
+        );
+        let world = OrbWorld {
+            spills: vec![KnownSpill {
+                artifact_id: KYIV.to_owned(),
+                from: cell_middle(),
+                via: Some(waypoint),
+                to: find(),
+                appeared_at: DecimalU64::new(1_000),
+                expires_at: DecimalU64::new(1_801_000),
+                count: orb_count(KYIV).expect("count"),
+                taken: Vec::new(),
+            }],
+            picked: Vec::new(),
+            bond: None,
+            avaia: None,
+        };
+        let view = orb_world(&world, 2_000);
+        let goal = view
+            .orbs
+            .iter()
+            .find(|orb| orb.kind == OrbKind::Goal)
+            .expect("real find goal");
+        assert_eq!(goal.at, find());
+    }
+
+    #[test]
     fn a_short_trail_is_stretched_back_from_the_find() {
         let start = trail_start(find(), find());
         assert!((29..=31).contains(&distance_meters(start, find())));
@@ -470,6 +547,7 @@ mod tests {
             spills: vec![KnownSpill {
                 artifact_id: KYIV.to_owned(),
                 from: cell_middle(),
+                via: None,
                 to: find(),
                 appeared_at: DecimalU64::new(1_000),
                 expires_at: DecimalU64::new(1_000 + ORB_LIFETIME_MS),
