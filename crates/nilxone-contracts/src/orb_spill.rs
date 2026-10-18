@@ -214,6 +214,10 @@ pub fn orb_trail(
 /// Draw a find's orbs through an optional, real landmark waypoint before
 /// ending at the same find. Without a waypoint this is exactly the v1 trail,
 /// preserving every old artifact and orb id. The goal remains the find.
+///
+/// # Errors
+///
+/// Returns [`OrbError::ArtifactId`] for a noncanonical artifact id.
 pub fn orb_trail_via(
     artifact_id: &str,
     from: GeoCoordinate,
