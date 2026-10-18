@@ -44,7 +44,7 @@ What an Avaia does next while it is at the wheel — strolling about after a poi
 
 The [xPing flyover](docs/xping-flyover.md), started by Agreed in the Exclusive or Special subscription cutscene, is presentation only: xPing flies a drawn route from the Bond to a business station, and nothing is recorded.
 
-Which point it flies to is the [courier destination](docs/courier-destination.md) selector: the nearest of the BusinessPoints the host offers, by stable point id; it owns no tier, flight time or arrival.
+Forcing a flight spends the [xPing engine](docs/xping-engine.md)'s energy, which can break it. Which point it flies to is the [courier destination](docs/courier-destination.md) selector: the nearest of the BusinessPoints the host offers, by stable point id; it owns no tier, flight time or arrival.
 
 ## Error reporting
 

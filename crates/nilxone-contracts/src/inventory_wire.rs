@@ -60,6 +60,10 @@ struct InventoryWire {
     /// the gift: one that already carries a backpack had it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gifted: Option<bool>,
+    /// Whether the starter Seeds were given. A state from before them has
+    /// not had them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    starter: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -107,6 +111,10 @@ enum Command {
     },
     GiftBackpacks {
         bond_level: u32,
+    },
+    GrantStarterSeeds,
+    PayXpingRepair {
+        missing_permille: u16,
     },
     /// Persist v1 -> v2 layout migration without changing items or currency.
     Normalize,
@@ -252,7 +260,8 @@ fn read_state(state: &str) -> Result<Inventory, &'static str> {
         owned[1].with(Carry::from_code(&wire.avaia.carry).ok_or(INVALID)?),
     ];
     let gifted = migrated_gift || wire.gifted.unwrap_or(bond.carry() != Carry::Pocket);
-    let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted);
+    let mut inventory = Inventory::restore(bond, avaia, wire.seeds.get(), owned, gifted)
+        .with_starter(wire.starter.unwrap_or(false));
     if let Some(craft) = wire.craft {
         inventory
             .resume_craft(&craft.recipe, craft.started_ms.get(), craft.ready_ms.get())
@@ -289,6 +298,7 @@ fn write_state(inventory: &Inventory) -> Value {
             avaia: carry_codes(inventory.owned(Holder::Avaia)),
         }),
         gifted: Some(inventory.gifted()),
+        starter: Some(inventory.starter_given()),
     };
     serde_json::to_value(wire).unwrap_or(Value::Null)
 }
@@ -379,6 +389,10 @@ pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> Strin
             .gift_backpacks(bond_level)
             .map(|()| Outcome::default())
             .map_err(Ok),
+        Command::GrantStarterSeeds => inventory.grant_starter_seeds().map_err(Ok),
+        Command::PayXpingRepair { missing_permille } => {
+            inventory.pay_xping_repair(missing_permille).map_err(Ok)
+        }
         Command::Normalize => Ok(Outcome::default()),
     })();
     match result {
@@ -545,7 +559,7 @@ mod tests {
         let state = picked["state"].to_string();
         assert_eq!(
             state,
-            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"layout_version":2,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0"}"#
+            r#"{"avaia":{"carry":"pocket","things":[{"id":"bottle_cap","x":0,"y":0}]},"bond":{"carry":"pocket","things":[]},"craft":null,"gifted":false,"layout_version":2,"owned":{"avaia":["pocket"],"bond":["pocket"]},"seeds":"0","starter":false}"#
         );
         let handed = apply(
             &state,
@@ -771,5 +785,51 @@ mod tests {
         let catalog: Value = serde_json::from_str(&economy_catalog_json()).unwrap();
         assert_eq!(catalog["carries"][1]["price"], "1500");
         assert_eq!(catalog["carries"][0]["price"], Value::Null);
+    }
+
+    #[test]
+    fn starter_seeds_come_once_and_pay_for_an_xping_repair() {
+        let granted = apply("", r#"{"op":"grant_starter_seeds"}"#, 0);
+        assert_eq!(granted["ok"], true, "{granted}");
+        assert_eq!(granted["state"]["seeds"], "10000");
+        assert_eq!(granted["state"]["starter"], true);
+        assert_eq!(granted["outcome"]["seeds_gained"], "10000");
+        let again = apply(
+            &granted["state"].to_string(),
+            r#"{"op":"grant_starter_seeds"}"#,
+            0,
+        );
+        assert_eq!(again["error"], "not_due");
+        // A state from before the starter Seeds still gets them.
+        let old = r#"{"bond":{"carry":"pocket","things":[]},"avaia":{"carry":"pocket","things":[]},"seeds":"7","craft":null}"#;
+        let late = apply(old, r#"{"op":"grant_starter_seeds"}"#, 0);
+        assert_eq!(late["state"]["seeds"], "10007");
+
+        let state = granted["state"].to_string();
+        let half = apply(
+            &state,
+            r#"{"op":"pay_xping_repair","missing_permille":500}"#,
+            0,
+        );
+        assert_eq!(half["outcome"]["seeds_spent"], "25");
+        assert_eq!(half["state"]["seeds"], "9975");
+        let whole = apply(
+            &state,
+            r#"{"op":"pay_xping_repair","missing_permille":1000}"#,
+            0,
+        );
+        assert_eq!(whole["outcome"]["seeds_spent"], "50");
+        let nothing = apply(
+            &state,
+            r#"{"op":"pay_xping_repair","missing_permille":0}"#,
+            0,
+        );
+        assert_eq!(nothing["error"], "not_due");
+        let poor = apply(
+            "",
+            r#"{"op":"pay_xping_repair","missing_permille":1000}"#,
+            0,
+        );
+        assert_eq!(poor["error"], "not_enough_seeds");
     }
 }

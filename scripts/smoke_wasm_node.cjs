@@ -73,6 +73,13 @@ const destination = JSON.parse(core.courier_destination(JSON.stringify({
 assert.deepEqual(destination, { ok: true, point_id: 'near' });
 assert.deepEqual(JSON.parse(core.courier_destination('{}')), { error: 'invalid', ok: false });
 
+const engine = JSON.parse(core.xping_engine_command('', '{"op":"force","forced_ms":"15000"}', '1000'));
+assert.equal(engine.ok, true);
+assert.equal(engine.view.energy_permille, 500);
+assert.equal(engine.view.repair_seeds, '25');
+assert.equal(JSON.parse(core.xping_engine_view(JSON.stringify(engine.state), '1000')).view.smoke_permille, 500);
+assert.deepEqual(JSON.parse(core.xping_engine_view('', 'x')), { error: 'invalid', ok: false });
+
 const report = JSON.parse(core.core_failure_report('registration.pubdress', 'invalid_prefix'));
 assert.deepEqual(report, {
   ok: true,
