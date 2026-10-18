@@ -338,7 +338,10 @@ mod tests {
 
     #[test]
     fn wasm_surface_exposes_the_orb_world() {
-        assert_eq!(super::orb_spill_version(), nilxone_contracts::ORB_SPILL_VERSION);
+        assert_eq!(
+            super::orb_spill_version(),
+            nilxone_contracts::ORB_SPILL_VERSION
+        );
         assert_eq!(super::orb_spill_version(), 2);
         let guided = r#"{"spills":[{"artifact_id":"art:seg:312346:298243:e2908:1:0","from":{"longitude_e7":"304461000","latitude_e7":"504650000"},"via":{"longitude_e7":"304470000","latitude_e7":"504665000"},"to":{"longitude_e7":"304469000","latitude_e7":"504655000"},"appeared_at":"1000","expires_at":"1801000","count":20,"taken":[]}],"picked":[],"bond":null,"avaia":null}"#;
         assert_eq!(
