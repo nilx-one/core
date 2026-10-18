@@ -231,29 +231,32 @@ pub fn orb_trail_via(
     let mut spots = Vec::with_capacity(usize::from(count));
     let mut index: u8 = 0;
     for (clump, size) in (0_u8..).zip(sizes) {
-        let numerator = TRAIL_REACH_PERCENT * (i64::from(clump) + 1);
-        let denominator = 100 * clumps;
         let center = if let Some(waypoint) = via {
-            // The first 75% of the visible trail approaches the landmark;
-            // the rest points from that landmark towards the actual find.
-            // No goal or claim is relocated to the landmark.
-            if numerator * 100 <= denominator * LANDMARK_WAYPOINT_PERCENT {
-                between(
-                    start,
-                    waypoint,
-                    numerator * 100,
-                    denominator * LANDMARK_WAYPOINT_PERCENT,
-                )
+            // Reserve roughly three quarters of the clumps for the first
+            // leg, including one landing ON the waypoint; the remainder
+            // advances 88% of the second leg toward the original find.
+            // A one-clump trail stops at the landmark, with its actual find
+            // still drawn separately as the goal.
+            let approach_clumps = ((clumps * LANDMARK_WAYPOINT_PERCENT + 99) / 100)
+                .min((clumps - 1).max(1));
+            let step = i64::from(clump) + 1;
+            if step <= approach_clumps {
+                between(start, waypoint, step, approach_clumps)
             } else {
                 between(
                     waypoint,
                     to,
-                    numerator * 100 - denominator * LANDMARK_WAYPOINT_PERCENT,
-                    denominator * (100 - LANDMARK_WAYPOINT_PERCENT),
+                    TRAIL_REACH_PERCENT * (step - approach_clumps),
+                    100 * (clumps - approach_clumps),
                 )
             }
         } else {
-            between(start, to, numerator, denominator)
+            between(
+                start,
+                to,
+                TRAIL_REACH_PERCENT * (i64::from(clump) + 1),
+                100 * clumps,
+            )
         };
         for _ in 0..size {
             spots.push(OrbSpot {
