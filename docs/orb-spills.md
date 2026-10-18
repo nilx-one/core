@@ -3,7 +3,8 @@
 When a fog cell opens, each find in it spills a short trail of **orbs** that
 leads to the find, optionally visiting a real landmark in that same cell on
 the way. The optional landmark is a navigation waypoint, not a collectible,
-not an artifact placement, and not proof that either Bond visited it. Core owns every rule about them; a host only draws what
+not an artifact placement, and not proof that either Bond visited it.
+Core owns every rule about them; a host only draws what
 Core answers, reports where its Bond and Avaia are, and asks its claiming
 service who was first.
 
@@ -54,9 +55,9 @@ strings for times and coordinates):
   `via` is an optional verified-local-landmark coordinate, and `to` always
   remains where the actual find lies. Omitting `via` retains the exact v1
   geometry. A legacy Core rejecting unknown fields must receive no `via`
-  until its v2 runtime is deployed;
-  `count` and `taken` remain unchanged; `count` and `taken` are the claiming service's
-  answer; `picked` what this device already picked up.
+  until its v2 runtime is deployed. `count` and `taken` remain the
+  claiming service's answer; `picked` records what the device already picked
+  up. Neither a waypoint nor a new Core runtime creates a new orb identity.
 - `bond` is the Bond's own observation, given only while it may pick up; a
   declared point is never given. `avaia` is the Avaia's body while it walks.
 
@@ -65,6 +66,23 @@ each drawn orb (`kind` `orb`, or `goal` for the find) with its point and
 `lands_at`, the orb ids each of them reaches now, nearest first, and when the
 soonest live spill is gone. A spill that is gone, an orb taken or picked, and
 a spill whose `count` is not its find's are not drawn.
+
+## Runtime compatibility and rollout
+
+- **Core v1:** omitted `via` is mandatory. Legacy orb positions, IDs, counts,
+  stagger, reach, and the unchanged Artifact goal must remain identical.
+- **Core v2:** `ORB_SPILL_VERSION = 2`; optional `via` guides the geometry
+  without changing identity, reward, or goal. Both `orb_spill_version()` and
+  `orb_world(...)` are exported through **Wasm and UniFFI**. The latter uses
+  canonical decimal-string `now_ms` and the same JSON success/error envelope.
+- **Web and iOS:** discover the *actually loaded* Core runtime version before
+  serializing `via`. A newer Web bundle running older Core must omit the field.
+  No deployment status is inferred from merging a Core PR, and a newer Core
+  library is not proof that all installed hosts have upgraded.
+- **Evidence:** compare the same v2 fixture through native Core, Wasm, and
+  UniFFI, and verify that absent versus explicitly null `via` preserves the
+  legacy output. The host still obtains real same-cell waypoints from verified
+  map archives; Core does not invent landmarks or authenticate their source.
 
 ## Claims
 
