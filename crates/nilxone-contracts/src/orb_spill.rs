@@ -554,31 +554,34 @@ mod tests {
             "bond": null,
             "avaia": null
         });
-        let direct: serde_json::Value = serde_json::from_str(
-            &orb_world_wire(&legacy.to_string(), 2_000),
-        )
-        .expect("legacy JSON");
+        let direct: serde_json::Value =
+            serde_json::from_str(&orb_world_wire(&legacy.to_string(), 2_000)).expect("legacy JSON");
         let mut explicit_null = legacy.clone();
         explicit_null["spills"][0]["via"] = serde_json::Value::Null;
-        let null_wire: serde_json::Value = serde_json::from_str(
-            &orb_world_wire(&explicit_null.to_string(), 2_000),
-        )
-        .expect("null waypoint JSON");
-        assert_eq!(direct, null_wire, "omitting via retains exact legacy layout");
+        let null_wire: serde_json::Value =
+            serde_json::from_str(&orb_world_wire(&explicit_null.to_string(), 2_000))
+                .expect("null waypoint JSON");
+        assert_eq!(
+            direct, null_wire,
+            "omitting via retains exact legacy layout"
+        );
 
         let mut guided = legacy;
         guided["spills"][0]["via"] = serde_json::json!({
             "longitude_e7": "304470000",
             "latitude_e7": "504665000"
         });
-        let via_wire: serde_json::Value = serde_json::from_str(
-            &orb_world_wire(&guided.to_string(), 2_000),
-        )
-        .expect("guided JSON");
+        let via_wire: serde_json::Value =
+            serde_json::from_str(&orb_world_wire(&guided.to_string(), 2_000)).expect("guided JSON");
         let direct_orbs = direct["view"]["orbs"].as_array().expect("direct orbs");
         let guided_orbs = via_wire["view"]["orbs"].as_array().expect("guided orbs");
         assert_eq!(direct_orbs.len(), guided_orbs.len());
-        assert!(direct_orbs.iter().zip(guided_orbs).any(|(a, b)| a["at"] != b["at"]));
+        assert!(
+            direct_orbs
+                .iter()
+                .zip(guided_orbs)
+                .any(|(a, b)| a["at"] != b["at"])
+        );
         for (a, b) in direct_orbs.iter().zip(guided_orbs) {
             assert_eq!(a["id"], b["id"]);
             assert_eq!(a["kind"], b["kind"]);
