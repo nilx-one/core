@@ -495,6 +495,9 @@ pub struct DriveState {
     pub described: Vec<DriveRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub describing: Option<Describing>,
+    /// Monotonic nonce binding a model answer to the exact request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_seq: Option<u32>,
 }
 
 impl DriveState {
@@ -521,6 +524,7 @@ impl DriveState {
             undescribed: Vec::new(),
             described: Vec::new(),
             describing: None,
+            description_seq: None,
         }
     }
 }
@@ -574,6 +578,64 @@ pub struct Describing {
     /// An answer after this is not shown.
     #[serde(with = "ms")]
     pub until_ms: u64,
+    /// None while Core is awaiting the archive's facts; Some when AI is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<u32>,
+}
+
+/// The only archived facts Core may pass to AI. The host resolves the world,
+/// but cannot write a prompt or decide what the AI says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandmarkDescriptionRequest {
+    pub locale: String,
+    pub kind: DriveKind,
+    pub kind_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub facts: BTreeMap<String, String>,
+}
+
+impl LandmarkDescriptionRequest {
+    fn admissible(&self) -> bool {
+        fn plain(value: &str) -> bool {
+            let length = value.chars().count();
+            (1..=80).contains(&length)
+                && !value.chars().any(char::is_control)
+                && !value.contains(['<', '>', '{', '}', '`', '|'])
+        }
+        matches!(self.locale.as_str(), "uk" | "en" | "ru")
+            && plain(&self.kind_label)
+            && self.name.as_deref().is_none_or(plain)
+            && self.facts.len() <= 5
+            && self.facts.iter().all(|(key, value)| {
+                matches!(key.as_str(), "start_date" | "artist_name" | "architect" | "height" | "material")
+                    && plain(value)
+            })
+    }
+}
+
+/// AI's output as returned to Core. Only Core may authorize presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandmarkDescriptionResult {
+    pub text: String,
+    pub produced_by: String,
+    pub template_version: u16,
+}
+
+impl LandmarkDescriptionResult {
+    fn admissible(&self) -> bool {
+        let chars = self.text.chars().count();
+        let producer = self.produced_by.chars().count();
+        (1..=240).contains(&chars)
+            && (1..=80).contains(&producer)
+            && self.template_version == 1
+            && !self.text.chars().any(char::is_control)
+            && !self.text.contains(['<', '>', '{', '}', '`', '|'])
+            && self.produced_by.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+    }
 }
 
 /// How a description is shown, in a closed vocabulary every host carries out.
@@ -670,9 +732,17 @@ pub enum DriveInput {
         #[serde(default)]
         index: Option<usize>,
     },
-    /// The host has a description of `at` ready, as asked by
-    /// [`DriveCommand::Describe`].
-    Described { at: DriveRef },
+    /// World adapter returned archive facts in response to `describe`.
+    DescriptionFacts {
+        at: DriveRef,
+        request: LandmarkDescriptionRequest,
+    },
+    /// AI answered the request issued by Core, not the host.
+    AiDescribed {
+        at: DriveRef,
+        request_id: u32,
+        result: LandmarkDescriptionResult,
+    },
 }
 
 /// A line the Avaia says, in the host's per-study voice.
@@ -729,18 +799,24 @@ pub enum DriveCommand {
     Study { at: DriveRef },
     /// Look at something on the way and say what it is.
     Glance { at: DriveRef },
-    /// Ready a description of the landmark at `at`, and answer with
-    /// `described`. The text is the host's; the drive never sees it.
+    /// Ask the world adapter for the archive facts of `at`, not a description.
     Describe { at: DriveRef },
-    /// Show the description of `at`, as `how`, for `ms`.
+    /// Core's explicit, bounded AI task; the host only transports it to AI.
+    AiDescribe {
+        at: DriveRef,
+        request_id: u32,
+        request: LandmarkDescriptionRequest,
+    },
+    /// Core forwards AI's actual result to the host for presentation.
     Show {
         at: DriveRef,
         how: Presentation,
         #[serde(with = "ms")]
         ms: u64,
+        result: LandmarkDescriptionResult,
     },
-    /// Keep the description of `at` in the notebook.
-    Keep { at: DriveRef },
+    /// Core forwards the same result for device-local notebook storage.
+    Keep { at: DriveRef, result: LandmarkDescriptionResult },
     /// Pick a find up.
     PickUp { at: DriveRef },
     /// A visit is over: the host records how it felt.
@@ -1003,7 +1079,8 @@ impl Step<'_> {
                 home,
             } => self.life(intent, energy, home),
             DriveInput::Chosen { index } => self.chosen(index),
-            DriveInput::Described { at } => self.described(at),
+            DriveInput::DescriptionFacts { at, request } => self.description_facts(at, request),
+            DriveInput::AiDescribed { at, request_id, result } => self.ai_described(at, request_id, result),
         }
     }
 
@@ -1030,20 +1107,41 @@ impl Step<'_> {
         }
         self.state.describing = Some(Describing {
             at: at.clone(),
-            until_ms: self.now + DESCRIBE_MS,
+            until_ms: self.now.saturating_add(DESCRIBE_MS),
+            request_id: None,
         });
         self.out.push(DriveCommand::Describe { at: at.clone() });
     }
 
-    /// The host has the description it was asked for: shown, and kept. A late
-    /// answer, or one nobody asked for, is not shown.
-    fn described(&mut self, at: DriveRef) {
-        let asked = self
-            .state
-            .describing
-            .as_ref()
-            .is_some_and(|describing| describing.at == at && self.now <= describing.until_ms);
-        if !asked {
+    /// The world supplies plain archive facts, never an AI prompt or text.
+    /// Core assembles the only AI request and binds it to a nonce.
+    fn description_facts(&mut self, at: DriveRef, request: LandmarkDescriptionRequest) {
+        let pending = self.state.describing.as_ref().is_some_and(|d| {
+            d.at == at && d.request_id.is_none() && self.now <= d.until_ms
+        });
+        if !pending || !request.admissible() {
+            return;
+        }
+        let request_id = self.state.description_seq.unwrap_or(0).saturating_add(1);
+        self.state.description_seq = Some(request_id);
+        if let Some(describing) = &mut self.state.describing {
+            describing.request_id = Some(request_id);
+        }
+        self.out.push(DriveCommand::AiDescribe { at, request_id, request });
+    }
+
+    /// Accept a timely AI answer for the exact request and forward the same
+    /// text to presentation and storage. Wrong, stale or replayed answers do nothing.
+    fn ai_described(
+        &mut self,
+        at: DriveRef,
+        request_id: u32,
+        result: LandmarkDescriptionResult,
+    ) {
+        let asked = self.state.describing.as_ref().is_some_and(|d| {
+            d.at == at && d.request_id == Some(request_id) && self.now <= d.until_ms
+        });
+        if !asked || !result.admissible() {
             return;
         }
         self.state.describing = None;
@@ -1056,8 +1154,9 @@ impl Step<'_> {
             at: at.clone(),
             how: Presentation::Speech,
             ms: SHOW_MS,
+            result: result.clone(),
         });
-        self.out.push(DriveCommand::Keep { at });
+        self.out.push(DriveCommand::Keep { at, result });
     }
 
     /// Its needs changed. Going home outranks everything it does on its own,
