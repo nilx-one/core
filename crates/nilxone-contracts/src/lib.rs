@@ -34,11 +34,11 @@ mod version;
 mod xping_engine;
 
 pub use avaia_drive::{
-    AVAIA_DRIVE_VERSION, Action, Activity, Choice, Curious, Detour, DriveCommand, DriveError,
-    DriveInput, DriveKind, DriveRef, DriveState, Entry, Feeling, Group, Home, Line, MenuOption,
-    Obstacle, Passing, Pending, Purpose, Reach, Resolve, Resume, Stand, Target, WalkMemory,
-    avaia_drive_step_wire, next_due, outing_budget_meters, restless_ms, restlessness,
-    step as step_drive,
+    AVAIA_DRIVE_VERSION, Action, Activity, Choice, Curious, Describing, Detour, DriveCommand,
+    DriveError, DriveInput, DriveKind, DriveRef, DriveState, Entry, Feeling, Group, Home, Line,
+    MenuOption, Obstacle, Passing, Pending, Presentation, Purpose, Reach, Resolve, Resume, Stand,
+    Target, WalkMemory, avaia_drive_step_wire, next_due, outing_budget_meters, restless_ms,
+    restlessness, step as step_drive,
 };
 pub use avaia_life::{AvaiaLife, LifeActivity, LifeIntent, apply_avaia_life};
 pub use avaia_proximity::{

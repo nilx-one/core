@@ -13,11 +13,19 @@ LandmarkNotebook {
   noticed: NoticedLandmark[]
   studied: StudiedLandmark[]
   seen:    SeenLandmark[]     // absent in a notebook written before it; read as []
+  descriptions: DescribedLandmark[]   // one per landmark, written on the drive's `keep`; absent reads as []
 }
 
 NoticedLandmark { landmark: Landmark, noticedAt: u64 }
 StudiedLandmark { landmark: Landmark, studiedAt: u64, by: AvaiaAddress }
 SeenLandmark    { landmark: Landmark, seenAt:    u64, by: AvaiaAddress }
+DescribedLandmark {
+  landmarkId:      string                 // a Landmark.id
+  text:            string                 // at most 240 characters
+  producedBy:      "template" | ModelId   // what worded it
+  templateVersion: u32                    // the faculty's template it was worded from
+  describedAt:     u64
+}
 
 Landmark {
   id:        string            // stable for the same basemap feature
@@ -34,7 +42,7 @@ Times are Unix epoch milliseconds. A list holds at most one entry per landmark (
 ## Semantics
 
 - **Three ways in, one each.** `noticed` is written from the owner's own device observation: an accurate fix close to a landmark the basemap draws. The one exception is a Bond the service grants the administrator capability, whose declared position notices too. Such a notice pays no experience (nilx-one/ai MWL15), and for any other Bond a declared position writes nothing. `studied` is written only when an Avaia's study of a noticed landmark completes. `seen` is written when the [Avaia drive](avaia-drive.md)'s `glance` lands on a landmark: the Avaia stepped aside for it on its walk and said what it is.
-- **A description is its facts.** What a `seen` or `studied` entry keeps is the landmark as the archive gives it. No line, wording or model output is stored, so an entry means the same on every device and with any model, or none.
+- **A description is its facts.** What a `seen` or `studied` entry keeps is the landmark as the archive gives it. The short `description` kept on the drive's `keep` is worded from those facts ([`nilx-one/ai`](https://github.com/nilx-one/ai)'s `docs/landmark-description.md`). A model's retelling is a cache, marked with the model that produced it, which a device may drop and word again from the template.
 - **Seen is not studied.** A `seen` entry earns no experience, and it never makes a landmark a curiosity candidate: the drive's `curiosity_options` come from `noticed` only. A landmark both seen and noticed is studyable for being noticed.
 - **Local.** Entries stay on the device. They are not synchronized, transmitted to a service, analytics pipeline, error collector or another Bond, and are never training signal without a separate governance contract.
 - **Not BondChain, not presence.** No entry says anyone was anywhere. A `seen` entry is where an Avaia's walk went, which is presentation, and `noticed` is a passing fix, not a visit. None of them completes an Interaction or establishes proximity, attendance or any Relationship interpretation.

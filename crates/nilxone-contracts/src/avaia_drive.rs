@@ -66,6 +66,15 @@ pub const GLANCE_MS: u64 = 6_000;
 pub const PICK_UP_MS: u64 = 2_400;
 /// How long a choice waits for a model before the drive's own pick stands.
 pub const CHOOSE_MS: u64 = 4_000;
+/// How long a description is waited for once asked: an answer later than
+/// this is not shown, the moment it was for has passed.
+pub const DESCRIBE_MS: u64 = 10_000;
+/// How long a description stays shown.
+pub const SHOW_MS: u64 = 9_000;
+/// How many landmarks the host said are not described yet are remembered.
+pub const UNDESCRIBED_KEPT: usize = 32;
+/// How many landmarks described while the state lasts are remembered.
+pub const DESCRIBED_KEPT: usize = 64;
 /// How long the drive waits for the world layer to resolve what is around.
 pub const RESOLVE_MS: u64 = 30_000;
 
@@ -477,6 +486,15 @@ pub struct DriveState {
     pub walk: Option<WalkMemory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
+    /// Landmarks the host said it holds no description of, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undescribed: Vec<DriveRef>,
+    /// Landmarks described while this state lasted, oldest first: never
+    /// asked about twice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub described: Vec<DriveRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub describing: Option<Describing>,
 }
 
 impl DriveState {
@@ -500,6 +518,9 @@ impl DriveState {
             curiosity_asked: false,
             walk: None,
             pending: None,
+            undescribed: Vec::new(),
+            described: Vec::new(),
+            describing: None,
         }
     }
 }
@@ -516,6 +537,10 @@ pub struct Passing {
     pub off_route_m: u32,
     #[serde(default)]
     pub studyable: bool,
+    /// Whether the host's notebook holds a description of this landmark.
+    /// Absent, the host does not describe landmarks and is never asked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub described: Option<bool>,
 }
 
 /// A landmark curiosity may go to.
@@ -535,6 +560,28 @@ pub struct Curious {
     pub meters: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feeling: Option<Feeling>,
+    /// Whether the host's notebook holds a description of it, as for
+    /// [`Passing::described`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub described: Option<bool>,
+}
+
+/// A description asked of the host and not answered yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Describing {
+    pub at: DriveRef,
+    /// An answer after this is not shown.
+    #[serde(with = "ms")]
+    pub until_ms: u64,
+}
+
+/// How a description is shown, in a closed vocabulary every host carries out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Presentation {
+    /// In the Avaia's own speech, where she stands.
+    Speech,
 }
 
 /// A target an outing may go to, with what the host's record of places says
@@ -623,6 +670,9 @@ pub enum DriveInput {
         #[serde(default)]
         index: Option<usize>,
     },
+    /// The host has a description of `at` ready, as asked by
+    /// [`DriveCommand::Describe`].
+    Described { at: DriveRef },
 }
 
 /// A line the Avaia says, in the host's per-study voice.
@@ -679,6 +729,18 @@ pub enum DriveCommand {
     Study { at: DriveRef },
     /// Look at something on the way and say what it is.
     Glance { at: DriveRef },
+    /// Ready a description of the landmark at `at`, and answer with
+    /// `described`. The text is the host's; the drive never sees it.
+    Describe { at: DriveRef },
+    /// Show the description of `at`, as `how`, for `ms`.
+    Show {
+        at: DriveRef,
+        how: Presentation,
+        #[serde(with = "ms")]
+        ms: u64,
+    },
+    /// Keep the description of `at` in the notebook.
+    Keep { at: DriveRef },
     /// Pick a find up.
     PickUp { at: DriveRef },
     /// A visit is over: the host records how it felt.
@@ -890,6 +952,7 @@ impl Step<'_> {
         match input {
             DriveInput::Tap { to } => {
                 self.state.pending = None;
+                self.state.describing = None;
                 self.state.walk = Some(WalkMemory::default());
                 self.walk(Purpose::Tap, to);
                 self.say(Line::Walk, None);
@@ -898,13 +961,24 @@ impl Step<'_> {
             DriveInput::Blocked { by } => self.blocked(by),
             DriveInput::Stopped {} => {
                 self.state.pending = None;
+                self.state.describing = None;
                 self.state.walk = None;
                 self.settle(None);
                 self.state.acted = false;
             }
             DriveInput::Tick {} => self.tick(),
-            DriveInput::Passing { things } => self.passing(things),
+            DriveInput::Passing { things } => {
+                for thing in &things {
+                    if thing.group == Group::Landmark {
+                        self.note_described(&thing.thing, thing.described);
+                    }
+                }
+                self.passing(things);
+            }
             DriveInput::CuriosityOptions { to } => {
+                for landmark in &to {
+                    self.note_described(&landmark.thing, landmark.described);
+                }
                 if self.resolved(Resolve::Curiosity) {
                     self.curious(to);
                 }
@@ -929,7 +1003,61 @@ impl Step<'_> {
                 home,
             } => self.life(intent, energy, home),
             DriveInput::Chosen { index } => self.chosen(index),
+            DriveInput::Described { at } => self.described(at),
         }
+    }
+
+    /// What the host says its notebook holds about a landmark.
+    fn note_described(&mut self, at: &DriveRef, described: Option<bool>) {
+        let undescribed = &mut self.state.undescribed;
+        match described {
+            Some(false) if !undescribed.contains(at) => {
+                if undescribed.len() >= UNDESCRIBED_KEPT {
+                    undescribed.remove(0);
+                }
+                undescribed.push(at.clone());
+            }
+            Some(true) => undescribed.retain(|known| known != at),
+            _ => {}
+        }
+    }
+
+    /// Standing in front of a landmark: asks the host to describe it, once,
+    /// when the host said it holds no description of it.
+    fn ask_description(&mut self, at: &DriveRef) {
+        if !self.state.undescribed.contains(at) || self.state.described.contains(at) {
+            return;
+        }
+        self.state.describing = Some(Describing {
+            at: at.clone(),
+            until_ms: self.now + DESCRIBE_MS,
+        });
+        self.out.push(DriveCommand::Describe { at: at.clone() });
+    }
+
+    /// The host has the description it was asked for: shown, and kept. A late
+    /// answer, or one nobody asked for, is not shown.
+    fn described(&mut self, at: DriveRef) {
+        let asked = self
+            .state
+            .describing
+            .as_ref()
+            .is_some_and(|describing| describing.at == at && self.now <= describing.until_ms);
+        if !asked {
+            return;
+        }
+        self.state.describing = None;
+        self.state.undescribed.retain(|known| known != &at);
+        if self.state.described.len() >= DESCRIBED_KEPT {
+            self.state.described.remove(0);
+        }
+        self.state.described.push(at.clone());
+        self.out.push(DriveCommand::Show {
+            at: at.clone(),
+            how: Presentation::Speech,
+            ms: SHOW_MS,
+        });
+        self.out.push(DriveCommand::Keep { at });
     }
 
     /// Its needs changed. Going home outranks everything it does on its own,
@@ -1056,7 +1184,8 @@ impl Step<'_> {
             }
             Purpose::Curiosity => {
                 self.stand(Stand::Study, to.clone(), STUDY_MS);
-                self.out.push(DriveCommand::Study { at: to });
+                self.out.push(DriveCommand::Study { at: to.clone() });
+                self.ask_description(&to);
             }
             Purpose::Home => {
                 self.state.walk = None;
@@ -1094,11 +1223,13 @@ impl Step<'_> {
                 studyable: true, ..
             }) => {
                 self.stand(Stand::Study, at.clone(), STUDY_MS);
-                self.out.push(DriveCommand::Study { at });
+                self.out.push(DriveCommand::Study { at: at.clone() });
+                self.ask_description(&at);
             }
             _ => {
                 self.stand(Stand::Glance, at.clone(), GLANCE_MS);
-                self.out.push(DriveCommand::Glance { at });
+                self.out.push(DriveCommand::Glance { at: at.clone() });
+                self.ask_description(&at);
             }
         }
     }
@@ -1748,6 +1879,7 @@ mod tests {
             group,
             off_route_m,
             studyable: false,
+            described: None,
         }
     }
 
@@ -2497,6 +2629,7 @@ mod tests {
             kind: None,
             meters: None,
             feeling: None,
+            described: None,
         }
     }
 
@@ -2872,5 +3005,166 @@ mod tests {
         assert!(DriveKind::new("Monument").is_err());
         assert!(DriveKind::new("_x").is_err());
         assert_eq!(Reach::Near, super::reach(1_000));
+    }
+
+    /// Stepped aside for a statue on the way to B, the host saying whether
+    /// its notebook describes it: arrived and glancing.
+    fn glancing_at_statue(described: Option<bool>) -> (DriveState, Vec<DriveCommand>) {
+        let (state, _) = run(
+            &walking_to_b(),
+            DriveInput::Passing {
+                things: vec![Passing {
+                    described,
+                    ..passing("statue", Group::Landmark, 12)
+                }],
+            },
+            T0 + 60_000,
+        );
+        let (state, _) = run(&state, DriveInput::Chosen { index: None }, T0 + 61_000);
+        run(&state, DriveInput::Arrived {}, T0 + 70_000)
+    }
+
+    #[test]
+    fn a_landmark_with_no_description_is_described_shown_and_kept_once() {
+        let (state, commands) = glancing_at_statue(Some(false));
+        assert_eq!(
+            without_wake(commands),
+            vec![
+                DriveCommand::Glance { at: r("statue") },
+                DriveCommand::Describe { at: r("statue") },
+            ]
+        );
+        let (state, commands) = run(
+            &state,
+            DriveInput::Described { at: r("statue") },
+            T0 + 72_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![
+                DriveCommand::Show {
+                    at: r("statue"),
+                    how: super::Presentation::Speech,
+                    ms: super::SHOW_MS,
+                },
+                DriveCommand::Keep { at: r("statue") },
+            ]
+        );
+        assert_eq!(state.described, vec![r("statue")]);
+        assert!(state.undescribed.is_empty());
+        assert_eq!(state.describing, None);
+
+        // Answered twice, it is shown once.
+        let (_, again) = run(
+            &state,
+            DriveInput::Described { at: r("statue") },
+            T0 + 73_000,
+        );
+        assert!(without_wake(again).is_empty());
+
+        // Passing it again, even with a host that forgot, it is not asked
+        // about again.
+        let (state, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 100_000);
+        let (state, _) = run(
+            &state,
+            DriveInput::Passing {
+                things: vec![Passing {
+                    described: Some(false),
+                    ..passing("statue", Group::Landmark, 12)
+                }],
+            },
+            T0 + 101_000,
+        );
+        let (state, _) = run(&state, DriveInput::Chosen { index: None }, T0 + 102_000);
+        let (_, commands) = run(&state, DriveInput::Arrived {}, T0 + 110_000);
+        assert_eq!(
+            without_wake(commands),
+            vec![DriveCommand::Glance { at: r("statue") }]
+        );
+    }
+
+    #[test]
+    fn a_described_landmark_or_a_host_that_does_not_describe_is_never_asked() {
+        for described in [Some(true), None] {
+            let (state, commands) = glancing_at_statue(described);
+            assert_eq!(
+                without_wake(commands),
+                vec![DriveCommand::Glance { at: r("statue") }],
+                "{described:?}"
+            );
+            assert_eq!(state.describing, None);
+        }
+    }
+
+    #[test]
+    fn a_late_or_unasked_description_is_not_shown() {
+        let (state, _) = glancing_at_statue(Some(false));
+        let (_, other) = run(
+            &state,
+            DriveInput::Described { at: r("fountain") },
+            T0 + 71_000,
+        );
+        assert!(without_wake(other).is_empty());
+        let (late, commands) = run(
+            &state,
+            DriveInput::Described { at: r("statue") },
+            T0 + 70_000 + super::DESCRIBE_MS + 1,
+        );
+        assert!(
+            !without_wake(commands)
+                .iter()
+                .any(|command| matches!(command, DriveCommand::Show { .. })),
+        );
+        assert!(late.described.is_empty());
+
+        // A tap drops the description in flight.
+        let (tapped, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 71_000);
+        let (_, commands) = run(
+            &tapped,
+            DriveInput::Described { at: r("statue") },
+            T0 + 72_000,
+        );
+        assert!(
+            !without_wake(commands)
+                .iter()
+                .any(|command| matches!(command, DriveCommand::Show { .. })),
+        );
+    }
+
+    #[test]
+    fn curiosity_describes_what_it_studies_when_it_has_no_description() {
+        let (state, _) = curiosity_offered(vec![super::Curious {
+            described: Some(false),
+            ..curious("statue", false)
+        }]);
+        let (state, _) = run(&state, DriveInput::Chosen { index: None }, T0 + 30_000);
+        let (_, commands) = run(&state, DriveInput::Arrived {}, T0 + 60_000);
+        assert_eq!(
+            without_wake(commands),
+            vec![
+                DriveCommand::Study { at: r("statue") },
+                DriveCommand::Describe { at: r("statue") },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_wire_carries_the_describe_loop_and_reads_an_older_state() {
+        let state = DriveState::new(T0);
+        let stored = serde_json::to_string(&state).expect("state");
+        assert!(!stored.contains("describ"), "{stored}");
+        let answer =
+            avaia_drive_step_wire(&stored, r#"{"type":"described","at":"statue"}"#, T0, NOON);
+        let value: serde_json::Value = serde_json::from_str(&answer).expect("json");
+        assert_eq!(value["ok"], true, "{answer}");
+        assert_eq!(
+            serde_json::to_value(DriveCommand::Show {
+                at: r("statue"),
+                how: super::Presentation::Speech,
+                ms: 9_000,
+            })
+            .expect("show"),
+            serde_json::json!({"do":"show","at":"statue","how":"speech","ms":"9000"})
+        );
     }
 }
