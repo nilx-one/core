@@ -40,7 +40,7 @@ The boundary is intentional:
 
 Core may expose typed contracts needed to transport or project derived state, but the learning algorithm and model-specific latent representation belong to `nilx-one/ai`.
 
-What an Avaia does next while it is at the wheel — strolling about after a point B, going out, stepping aside for something on the way — is the deterministic [Avaia drive](docs/avaia-drive.md): the host's world layer reports what happened and carries out the commands, and a local model may only pick from the closed menus the drive offers.
+What an Avaia does next while it is at the wheel — strolling about after a point B, going out, stepping aside for something on the way — is the deterministic [Avaia drive](docs/avaia-drive.md): the host's world layer reports what happened and carries out the commands, and a local model may only pick from the closed menus the drive offers. What it noticed, studied and described is kept on the device, in the [landmark notebook](docs/landmark-notebook.md): a registered client shape that Core does not own.
 
 The [xPing flyover](docs/xping-flyover.md), started by Agreed in the Exclusive or Special subscription cutscene, is presentation only: xPing flies a drawn route from the Bond to a business station, and nothing is recorded.
 
