@@ -50,7 +50,7 @@ host world layer ──input──▶ Core drive ──commands──▶ host ex
 | `walk` | `to`, `purpose`, `grass` | walks there; only a tap (`grass: true`) may cross the grass the whole way, its own walks keep to the paths. Then sends `arrived` or `blocked`. |
 | `look` | `ms` | plays the look-around for `ms`. |
 | `study` | `at` | studies the landmark: notebook entry, experience, its line. |
-| `glance` | `at` | looks at what it stepped aside for and says what it is: the archive's own name, kind and facts. |
+| `glance` | `at` | looks at what it stepped aside for and says what it is: the archive's own name, kind and facts. A landmark it glanced at is kept in the [landmark notebook](landmark-notebook.md) as seen. |
 | `pick_up` | `at` | picks the find up. |
 | `visited` | `at` | records how the visit felt. |
 | `say` | `line`, `about?` | says a line in the study's voice: `walk`, `stroll`, `landmark.spotted`, `landmark.longing`, `blocked.building`, `blocked.water`, `blocked.fog`. |
