@@ -37,11 +37,12 @@ host world layer ──input──▶ Core drive ──commands──▶ host ex
 | `stopped` | — | The Avaia left the wheel, or the world opened again. It settles where it is. |
 | `tick` | — | Time passed. |
 | `life` | `intent` (`explore` / `return_home` / `recover`), `energy` (decimal string, 0–10000), `home?` | Avaia life's latest report, whenever it changes. `home` names home for the way back. |
-| `passing` | `things`: `ref`, `kind`, `group` (`landmark` / `area` / `find`), `off_route_m`, `studyable` | Things within reach of the walk under way. The host may report the same thing again; the drive remembers what it saw. |
-| `curiosity_options` | `to`: `ref`, `longing`, `kind?`, `meters?`, `feeling?` | Answers `resolve` `curiosity`: notebook landmarks, most wanted first. `kind`, `meters` and `feeling` are for a model's menu; the drive's own pick does not read them. |
+| `passing` | `things`: `ref`, `kind`, `group` (`landmark` / `area` / `find`), `off_route_m`, `studyable`, `described?` | Things within reach of the walk under way. The host may report the same thing again; the drive remembers what it saw. `described` says whether the notebook holds a description of a landmark; a host that never sends it is never asked to describe. |
+| `curiosity_options` | `to`: `ref`, `longing`, `kind?`, `meters?`, `feeling?`, `described?` | Answers `resolve` `curiosity`: notebook landmarks, most wanted first. `kind`, `meters` and `feeling` are for a model's menu; the drive's own pick does not read them. |
 | `stroll_options` | `to`: refs | Answers `resolve` `stroll`: graph nodes in a fixed order. |
 | `outing_options` | `targets`: `ref`, `kind`, `meters`, `appeal?`, `feeling?`, `stay_ms?`, `revisit_ms?`; `wander`: refs; `home?`: `ref`, `meters` | Answers `resolve` `outing`. |
 | `chosen` | `index`: a menu index or `null` | Answers `choose`. |
+| `described` | `at` | Answers `describe`: the host has a description of `at` ready. |
 
 ### Commands
 
@@ -51,6 +52,9 @@ host world layer ──input──▶ Core drive ──commands──▶ host ex
 | `look` | `ms` | plays the look-around for `ms`. |
 | `study` | `at` | studies the landmark: notebook entry, experience, its line. |
 | `glance` | `at` | looks at what it stepped aside for and says what it is: the archive's own name, kind and facts. A landmark it glanced at is kept in the [landmark notebook](landmark-notebook.md) as seen. |
+| `describe` | `at` | readies a description of the landmark from the archive's facts (`nilx-one/ai`'s faculty: tier 0, or a local model's retelling it admits), then sends `described`. |
+| `show` | `at`, `how` (`speech`), `ms` | shows that description, in the Avaia's own speech where she stands, for `ms`. |
+| `keep` | `at` | keeps that description in the [landmark notebook](landmark-notebook.md), with what produced it. |
 | `pick_up` | `at` | picks the find up. |
 | `visited` | `at` | records how the visit felt. |
 | `say` | `line`, `about?` | says a line in the study's voice: `walk`, `stroll`, `landmark.spotted`, `landmark.longing`, `blocked.building`, `blocked.water`, `blocked.fog`. |
@@ -92,6 +96,8 @@ On any walk except a detour or the way home, and only while life says `explore`,
 - studies a landmark the owner walked past and it has not studied (`studyable`, 3.2 s);
 - glances at anything else (6 s).
 
+Standing in front of a landmark, studying it or glancing at it, it asks for a description when the host said its notebook has none and it has not been described while this state lasted: `describe`. When `described` comes back within 10 s, it emits `show` (in its speech, 9 s) and `keep` together, and never asks about that landmark again. A later answer, an answer it did not ask for, or one after a tap or `stopped` is not shown. The same holds for a landmark curiosity walked to. The drive never sees the text: it decides when, and how it is shown; the words are the host's and the faculty's.
+
 Then it carries on to where the walk was going, point B included, saying nothing. A walk is interrupted at most twice, the same thing never twice, and arriving while a distraction is being weighed drops it. A tap outranks everything, a pending choice and resolve included.
 
 ### Waiting
@@ -105,7 +111,7 @@ The same state, input, `now_ms` and `hour` give the same answer on every runtime
 ## What it deliberately does not do
 
 - It does not route, read tiles or know the fog: a candidate the host offers is reachable over open ground, or the host does not offer it.
-- It does not word lines, study notes, find rewards or feelings. `appeal`, `feeling`, `stay_ms` and `revisit_ms` are the host's record of places, read and never written here.
+- It does not word lines, descriptions, study notes, find rewards or feelings. `appeal`, `feeling`, `stay_ms` and `revisit_ms` are the host's record of places, read and never written here.
 - It does not keep needs: hunger, energy and recovery are [Avaia life](avaia-life.md)'s, and the drive only reads them.
 - It does not run while the Avaia is away from the wheel: `stopped` ends everything, and nothing walks in the background.
 
