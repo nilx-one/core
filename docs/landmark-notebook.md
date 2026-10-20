@@ -2,7 +2,7 @@
 
 Status: registered client shape; not owned by 0x1 Core. No Rust implementation.
 
-The landmark notebook is what one device remembers about the landmarks around a Bond: what its owner walked past, what its Avaia studied, and what its Avaia stepped aside for and described. It is device-local and is not protocol evidence. This document exists only so a future Core adoption does not silently invent a different shape. The direction it records is [`nilx-one/ai`](https://github.com/nilx-one/ai)'s `docs/map-walk-and-landmarks.md` (MWL4, MWL5, MWL14).
+The landmark notebook is what one device remembers about the landmarks around a Bond: what its owner walked past, what its Avaia studied, and what its Avaia stepped aside for and described. It is device-local and is not protocol evidence. This document exists only so a future Core adoption does not silently invent a different shape. The direction it records is [`nilx-one/ai`](https://github.com/nilx-one/ai)'s `docs/map-walk-and-landmarks.md` (MWL4, MWL5, MWL14, MWL15).
 
 ## Canonical client shape
 
@@ -33,7 +33,7 @@ Times are Unix epoch milliseconds. A list holds at most one entry per landmark (
 
 ## Semantics
 
-- **Three ways in, one each.** `noticed` is written only from the owner's own device observation: an accurate fix close to a landmark the basemap draws. `studied` is written only when an Avaia's study of a noticed landmark completes. `seen` is written when the [Avaia drive](avaia-drive.md)'s `glance` lands on a landmark: the Avaia stepped aside for it on its walk and said what it is.
+- **Three ways in, one each.** `noticed` is written from the owner's own device observation: an accurate fix close to a landmark the basemap draws. The one exception is a Bond the service grants the administrator capability, whose declared position notices too. Such a notice pays no experience (nilx-one/ai MWL15), and for any other Bond a declared position writes nothing. `studied` is written only when an Avaia's study of a noticed landmark completes. `seen` is written when the [Avaia drive](avaia-drive.md)'s `glance` lands on a landmark: the Avaia stepped aside for it on its walk and said what it is.
 - **A description is its facts.** What a `seen` or `studied` entry keeps is the landmark as the archive gives it. No line, wording or model output is stored, so an entry means the same on every device and with any model, or none.
 - **Seen is not studied.** A `seen` entry earns no experience, and it never makes a landmark a curiosity candidate: the drive's `curiosity_options` come from `noticed` only. A landmark both seen and noticed is studyable for being noticed.
 - **Local.** Entries stay on the device. They are not synchronized, transmitted to a service, analytics pipeline, error collector or another Bond, and are never training signal without a separate governance contract.
