@@ -3,6 +3,13 @@
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # basic-toml is unmaintained and has no release to move to. It reaches us
+    # only through askama_derive, a proc-macro uniffi_bindgen uses for its
+    # templates, so it runs at build time and never ships in a binding. Drop
+    # this once uniffi's askama moves off it.
+    { id = "RUSTSEC-2026-0374", reason = "build-time only, via uniffi_bindgen's askama; no maintained release" },
+]
 
 [licenses]
 confidence-threshold = 0.8
