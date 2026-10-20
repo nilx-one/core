@@ -13,14 +13,19 @@ LandmarkNotebook {
   noticed: NoticedLandmark[]
   studied: StudiedLandmark[]
   seen:    SeenLandmark[]     // absent in a notebook written before it; read as []
+  descriptions: DescribedLandmark[]   // one per landmark, written on the drive's `keep`; absent reads as []
 }
 
 NoticedLandmark { landmark: Landmark, noticedAt: u64 }
 StudiedLandmark { landmark: Landmark, studiedAt: u64, by: AvaiaAddress }
 SeenLandmark    { landmark: Landmark, seenAt:    u64, by: AvaiaAddress }
-
-// beside a seen or studied entry, once the drive's `keep` says so
-description?: { text: string, producedBy: "template" | ModelId, templateVersion: u32 }
+DescribedLandmark {
+  landmarkId:      string                 // a Landmark.id
+  text:            string                 // at most 240 characters
+  producedBy:      "template" | ModelId   // what worded it
+  templateVersion: u32                    // the faculty's template it was worded from
+  describedAt:     u64
+}
 
 Landmark {
   id:        string            // stable for the same basemap feature
