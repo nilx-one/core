@@ -3123,8 +3123,26 @@ mod tests {
         run(&state, DriveInput::Arrived {}, T0 + 70_000)
     }
 
+    fn archive_request() -> super::LandmarkDescriptionRequest {
+        super::LandmarkDescriptionRequest {
+            locale: "uk".into(),
+            kind: super::DriveKind::new("monument").expect("kind"),
+            kind_label: "пам'ятник".into(),
+            name: Some("Батьківщина-Мати".into()),
+            facts: [("height".into(), "102".into())].into(),
+        }
+    }
+
+    fn ai_result() -> super::LandmarkDescriptionResult {
+        super::LandmarkDescriptionResult {
+            text: "Батьківщина-Мати — пам'ятник. Висота — 102 м.".into(),
+            produced_by: "template".into(),
+            template_version: 1,
+        }
+    }
+
     #[test]
-    fn a_landmark_with_no_description_is_described_shown_and_kept_once() {
+    fn a_landmark_flows_from_core_to_ai_and_back_to_host_once() {
         let (state, commands) = glancing_at_statue(Some(false));
         assert_eq!(
             without_wake(commands),
@@ -3133,9 +3151,24 @@ mod tests {
                 DriveCommand::Describe { at: r("statue") },
             ]
         );
+        let request = archive_request();
         let (state, commands) = run(
             &state,
-            DriveInput::Described { at: r("statue") },
+            DriveInput::DescriptionFacts { at: r("statue"), request: request.clone() },
+            T0 + 71_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![DriveCommand::AiDescribe {
+                at: r("statue"),
+                request_id: 1,
+                request,
+            }]
+        );
+        let result = ai_result();
+        let (state, commands) = run(
+            &state,
+            DriveInput::AiDescribed { at: r("statue"), request_id: 1, result: result.clone() },
             T0 + 72_000,
         );
         assert_eq!(
@@ -3145,24 +3178,24 @@ mod tests {
                     at: r("statue"),
                     how: super::Presentation::Speech,
                     ms: super::SHOW_MS,
+                    result: result.clone(),
                 },
-                DriveCommand::Keep { at: r("statue") },
+                DriveCommand::Keep { at: r("statue"), result },
             ]
         );
         assert_eq!(state.described, vec![r("statue")]);
         assert!(state.undescribed.is_empty());
         assert_eq!(state.describing, None);
 
-        // Answered twice, it is shown once.
+        // Replaying a completed answer cannot show or store it again.
         let (_, again) = run(
             &state,
-            DriveInput::Described { at: r("statue") },
+            DriveInput::AiDescribed { at: r("statue"), request_id: 1, result: ai_result() },
             T0 + 73_000,
         );
         assert!(without_wake(again).is_empty());
 
-        // Passing it again, even with a host that forgot, it is not asked
-        // about again.
+        // Passing it again does not start a new description.
         let (state, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 100_000);
         let (state, _) = run(
             &state,
@@ -3196,38 +3229,69 @@ mod tests {
     }
 
     #[test]
-    fn a_late_or_unasked_description_is_not_shown() {
+    fn invalid_unasked_late_and_cancelled_ai_answers_are_never_forwarded() {
         let (state, _) = glancing_at_statue(Some(false));
-        let (_, other) = run(
+        let (_, unasked) = run(
             &state,
-            DriveInput::Described { at: r("fountain") },
+            DriveInput::AiDescribed { at: r("statue"), request_id: 1, result: ai_result() },
+            T0 + 70_500,
+        );
+        assert!(without_wake(unasked).is_empty());
+
+        let (_, foreign) = run(
+            &state,
+            DriveInput::DescriptionFacts { at: r("fountain"), request: archive_request() },
+            T0 + 70_500,
+        );
+        assert!(without_wake(foreign).is_empty());
+        let (state, _) = run(
+            &state,
+            DriveInput::DescriptionFacts { at: r("statue"), request: archive_request() },
             T0 + 71_000,
         );
-        assert!(without_wake(other).is_empty());
-        let (late, commands) = run(
+        let (_, wrong_id) = run(
             &state,
-            DriveInput::Described { at: r("statue") },
-            T0 + 70_000 + super::DESCRIBE_MS + 1,
-        );
-        assert!(
-            !without_wake(commands)
-                .iter()
-                .any(|command| matches!(command, DriveCommand::Show { .. })),
-        );
-        assert!(late.described.is_empty());
-
-        // A tap drops the description in flight.
-        let (tapped, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 71_000);
-        let (_, commands) = run(
-            &tapped,
-            DriveInput::Described { at: r("statue") },
+            DriveInput::AiDescribed { at: r("statue"), request_id: 2, result: ai_result() },
             T0 + 72_000,
         );
-        assert!(
-            !without_wake(commands)
-                .iter()
-                .any(|command| matches!(command, DriveCommand::Show { .. })),
+        assert!(without_wake(wrong_id).is_empty());
+
+        let (_, late) = run(
+            &state,
+            DriveInput::AiDescribed { at: r("statue"), request_id: 1, result: ai_result() },
+            T0 + 70_000 + super::DESCRIBE_MS + 1,
         );
+        assert!(without_wake(late).is_empty());
+
+        let mut poisoned = ai_result();
+        poisoned.text = "some <script>data</script>".into();
+        let (_, unsafe_output) = run(
+            &state,
+            DriveInput::AiDescribed { at: r("statue"), request_id: 1, result: poisoned },
+            T0 + 73_000,
+        );
+        assert!(without_wake(unsafe_output).is_empty());
+
+        let (tapped, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 71_500);
+        let (_, cancelled) = run(
+            &tapped,
+            DriveInput::AiDescribed { at: r("statue"), request_id: 1, result: ai_result() },
+            T0 + 72_000,
+        );
+        assert!(without_wake(cancelled).is_empty());
+    }
+
+    #[test]
+    fn core_rejects_unbounded_or_unknown_archive_facts() {
+        let (state, _) = glancing_at_statue(Some(false));
+        let mut request = archive_request();
+        request.facts.insert("email".into(), "personal@host.test".into());
+        let (_, commands) = run(
+            &state,
+            DriveInput::DescriptionFacts { at: r("statue"), request },
+            T0 + 71_000,
+        );
+        assert!(without_wake(commands).is_empty());
     }
 
     #[test]
@@ -3248,12 +3312,14 @@ mod tests {
     }
 
     #[test]
-    fn the_wire_carries_the_describe_loop_and_reads_an_older_state() {
+    fn the_wire_carries_the_typed_ai_loop_and_reads_an_older_state() {
         let state = DriveState::new(T0);
         let stored = serde_json::to_string(&state).expect("state");
         assert!(!stored.contains("describ"), "{stored}");
-        let answer =
-            avaia_drive_step_wire(&stored, r#"{"type":"described","at":"statue"}"#, T0, NOON);
+        let answer = avaia_drive_step_wire(
+            &stored, r#"{"type":"ai_described","at":"statue","request_id":1,"result":{"text":"ok.","produced_by":"template","template_version":1}}"#,
+            T0, NOON,
+        );
         let value: serde_json::Value = serde_json::from_str(&answer).expect("json");
         assert_eq!(value["ok"], true, "{answer}");
         assert_eq!(
@@ -3261,9 +3327,14 @@ mod tests {
                 at: r("statue"),
                 how: super::Presentation::Speech,
                 ms: 9_000,
+                result: ai_result(),
             })
             .expect("show"),
-            serde_json::json!({"do":"show","at":"statue","how":"speech","ms":"9000"})
+            serde_json::json!({
+                "do":"show","at":"statue","how":"speech","ms":"9000",
+                "result":{"text":"Батьківщина-Мати — пам'ятник. Висота — 102 м.","produced_by":"template","template_version":1}
+            })
         );
     }
+
 }
