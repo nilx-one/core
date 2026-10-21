@@ -1,9 +1,17 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Orbs: what spills out of a fog cell when it opens, and leads to a find the
-//! cell holds.
+//! Orbs: what spills out of a fog cell when it opens.
 //!
+//! Since v3, every cell that opens for a Bond spills its own orbs: five around
+//! the cell's centre and five around each landmark in it, `5 + 5 × landmarks`
+//! with no cap. The identity service answers a cell's spill (an opaque key,
+//! the centre and the landmarks) and keeps nothing; Core lays the orbs from
+//! that answer alone, so the service can recompute every orb id it is asked
+//! to pay. A cell spill lies until it is picked up, and only on that Bond's
+//! device. Between the Bond and its Avaia, the nearer one reaches an orb.
+//!
+//! The per-find spill below (v1, v2) stays readable for older hosts:
 //! Each find in an opened cell spills a short trail of orbs, in small clumps,
 //! from the point the host names (the middle of the cell) to where the find
 //! lies. How many is a function of the find alone, five to thirty, so the
@@ -26,13 +34,18 @@ use crate::spoken_line::{CENTIMETERS_PER_DEGREE, cosine_millionths};
 use crate::{DecimalU64, GEO_COORDINATE_E7_SCALE, GeoCoordinate, distance_meters};
 
 /// Version of the orb rules below; any change to a number raises it.
-pub const ORB_SPILL_VERSION: u32 = 2;
+pub const ORB_SPILL_VERSION: u32 = 3;
 /// What one orb pays whoever picks it up.
 pub const ORB_EXPERIENCE: u32 = 10;
 /// How long a spill lies before it is gone.
 pub const ORB_LIFETIME_MS: u64 = 30 * 60_000;
-/// An orb is picked up from strictly closer than this.
+/// A find's orb is picked up from strictly closer than this; a cell's orb
+/// from this close or closer.
 pub const ORB_PICKUP_METERS: u32 = 15;
+/// What a cell spills for itself, around its centre.
+pub const CELL_ORBS: u32 = 5;
+/// What a cell spills for each landmark in it, around that landmark.
+pub const LANDMARK_ORBS: u32 = 5;
 /// The fewest orbs one find spills.
 pub const ORB_MIN: u8 = 5;
 /// The most orbs one find spills.
@@ -45,6 +58,15 @@ pub const MIN_TRAIL_METERS: u32 = 30;
 const COUNT_DOMAIN: &str = "nilx-one.orbs.count.v1:";
 const CLUMP_DOMAIN: &str = "nilx-one.orbs.clump.v1:";
 const SCATTER_DOMAIN: &str = "nilx-one.orbs.scatter.v1:";
+const CELL_SCATTER_DOMAIN: &str = "nilx-one.orbs.cell.v1:";
+/// A cell's own orbs lie at most this far, in centimetres, from its centre
+/// on each axis.
+const CELL_SCATTER_CM: i64 = 2_500;
+/// A landmark's orbs lie at most this far, in centimetres, from it on each
+/// axis.
+const LANDMARK_SCATTER_CM: i64 = 800;
+/// A cell key: the service's opaque digest, lowercase hex.
+const CELL_KEY_HEX: usize = 64;
 const CLUMP_MIN: u8 = 3;
 const CLUMP_MAX: u8 = 6;
 /// An orb strays at most this far, in centimetres, from its clump's middle.
@@ -61,11 +83,16 @@ const COSINE_SCALE: i128 = 1_000_000;
 pub enum OrbError {
     /// Not a canonical artifact id.
     ArtifactId,
+    /// Not a cell key: 64 lowercase hex digits.
+    CellKey,
 }
 
 impl core::fmt::Display for OrbError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("not a canonical artifact id")
+        formatter.write_str(match self {
+            Self::ArtifactId => "not a canonical artifact id",
+            Self::CellKey => "not a cell key",
+        })
     }
 }
 
@@ -274,6 +301,100 @@ pub fn orb_trail_via(
     Ok(spots)
 }
 
+/// How many orbs a cell spills: five for itself and five for each landmark in
+/// it. No cap.
+#[must_use]
+pub fn cell_orb_count(landmarks: usize) -> u32 {
+    let landmarks = u32::try_from(landmarks).unwrap_or(u32::MAX);
+    CELL_ORBS.saturating_add(LANDMARK_ORBS.saturating_mul(landmarks))
+}
+
+/// The id of one of a cell's orbs: `orb:cell:`, the cell key, and which orb.
+///
+/// # Errors
+///
+/// Returns [`OrbError::CellKey`] for anything that is not a cell key.
+pub fn cell_orb_id(key: &str, index: u32) -> Result<String, OrbError> {
+    if !is_cell_key(key) {
+        return Err(OrbError::CellKey);
+    }
+    Ok(format!("orb:cell:{key}:{index}"))
+}
+
+fn is_cell_key(key: &str) -> bool {
+    key.len() == CELL_KEY_HEX
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A scatter in `[-limit, limit]` centimetres for one axis of a cell's orb.
+fn cell_scatter(key: &str, index: u32, axis: char, limit: i64) -> i64 {
+    let span = u32::try_from(2 * limit + 1).unwrap_or(1);
+    i64::from(fnv1a32(CELL_SCATTER_DOMAIN, &format!("{key}:{index}:{axis}")) % span) - limit
+}
+
+/// One orb a cell spilled: which, around which landmark (none for the cell's
+/// own five), and where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellOrbSpot {
+    pub index: u32,
+    pub landmark: Option<u32>,
+    pub at: GeoCoordinate,
+}
+
+/// Where a cell's orbs lie: the first [`CELL_ORBS`] around its centre, then
+/// [`LANDMARK_ORBS`] around each landmark, in the order the landmarks are
+/// given. The key alone seeds the scatter, so the same answer always lays
+/// the same orbs.
+///
+/// # Errors
+///
+/// Returns [`OrbError::CellKey`] for anything that is not a cell key.
+pub fn cell_orbs(
+    key: &str,
+    center: GeoCoordinate,
+    landmarks: &[GeoCoordinate],
+) -> Result<Vec<CellOrbSpot>, OrbError> {
+    if !is_cell_key(key) {
+        return Err(OrbError::CellKey);
+    }
+    let around = core::iter::once((None, center, CELL_SCATTER_CM, CELL_ORBS)).chain(
+        (0_u32..)
+            .zip(landmarks)
+            .map(|(landmark, at)| (Some(landmark), *at, LANDMARK_SCATTER_CM, LANDMARK_ORBS)),
+    );
+    let mut spots = Vec::new();
+    let mut index: u32 = 0;
+    for (landmark, middle, limit, count) in around {
+        for _ in 0..count {
+            spots.push(CellOrbSpot {
+                index,
+                landmark,
+                at: offset(
+                    middle,
+                    cell_scatter(key, index, 'n', limit),
+                    cell_scatter(key, index, 'e', limit),
+                ),
+            });
+            index = index.saturating_add(1);
+        }
+    }
+    Ok(spots)
+}
+
+/// One cell's spill as the service answered it: its key, its centre, its
+/// landmarks, and when this device first drew it. It lies until picked up.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellSpill {
+    pub key: String,
+    pub center: GeoCoordinate,
+    #[serde(default)]
+    pub landmarks: Vec<GeoCoordinate>,
+    pub appeared_at: DecimalU64,
+}
+
 /// One spill as the host knows it: the find, where its trail runs, when this
 /// device first drew it, when it is gone, and which orbs someone took.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -297,6 +418,9 @@ pub struct KnownSpill {
 #[serde(deny_unknown_fields)]
 pub struct OrbWorld {
     pub spills: Vec<KnownSpill>,
+    /// The cells that spilled for this Bond (v3).
+    #[serde(default)]
+    pub cells: Vec<CellSpill>,
     /// Orb ids this device already picked up, whatever the service said yet.
     #[serde(default)]
     pub picked: Vec<String>,
@@ -335,13 +459,22 @@ pub struct OrbView {
     pub next_expiry: Option<DecimalU64>,
 }
 
+/// One orb on the ground, for reach: its id, where, and whether it is a
+/// cell's (reached inclusively, by the nearer of the two) or a find's.
+struct Lying {
+    id: String,
+    at: GeoCoordinate,
+    cell: bool,
+}
+
 /// The orbs lying at `now_ms`, what each of the Bond and the Avaia reaches,
 /// nearest first. A spill that is gone, an orb someone took or this device
-/// picked up, and a spill whose count is not its find's lie nowhere.
+/// picked up, and a spill whose count is not its find's lie nowhere. A cell's
+/// orb within reach of both goes to the nearer, the Bond on a tie.
 #[must_use]
 pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
     let mut orbs = Vec::new();
-    let mut lying: Vec<(String, GeoCoordinate)> = Vec::new();
+    let mut lying: Vec<Lying> = Vec::new();
     let mut next_expiry: Option<u64> = None;
     for spill in &world.spills {
         let expires = spill.expires_at.get();
@@ -368,7 +501,11 @@ pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
                     appeared.saturating_add((u64::from(spot.index) + 1) * ORB_STAGGER_MS),
                 ),
             });
-            lying.push((id, spot.at));
+            lying.push(Lying {
+                id,
+                at: spot.at,
+                cell: false,
+            });
         }
         if any {
             orbs.push(DrawnOrb {
@@ -381,24 +518,86 @@ pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
             });
         }
     }
-    let reach = |point: Option<GeoCoordinate>| -> Vec<String> {
-        let Some(point) = point else {
-            return Vec::new();
-        };
-        let mut near: Vec<(u32, &String)> = lying
-            .iter()
-            .map(|(id, at)| (distance_meters(point, *at), id))
-            .filter(|(meters, _)| *meters < ORB_PICKUP_METERS)
-            .collect();
-        near.sort();
-        near.into_iter().map(|(_, id)| id.clone()).collect()
-    };
+    lay_cells(world, &mut orbs, &mut lying);
+    let (bond_reach, avaia_reach) = reach(world, &lying);
     OrbView {
-        bond_reach: reach(world.bond),
-        avaia_reach: reach(world.avaia),
+        bond_reach,
+        avaia_reach,
         orbs,
         next_expiry: next_expiry.map(DecimalU64::new),
     }
+}
+
+/// Lays the cells' orbs this device has not picked up yet.
+fn lay_cells(world: &OrbWorld, orbs: &mut Vec<DrawnOrb>, lying: &mut Vec<Lying>) {
+    for cell in &world.cells {
+        let Ok(spots) = cell_orbs(&cell.key, cell.center, &cell.landmarks) else {
+            continue;
+        };
+        let appeared = cell.appeared_at.get();
+        for spot in spots {
+            let id = format!("orb:cell:{}:{}", cell.key, spot.index);
+            if world.picked.contains(&id) {
+                continue;
+            }
+            orbs.push(DrawnOrb {
+                id: id.clone(),
+                kind: OrbKind::Orb,
+                at: spot.at,
+                lands_at: DecimalU64::new(
+                    appeared
+                        .saturating_add((u64::from(spot.index) + 1).saturating_mul(ORB_STAGGER_MS)),
+                ),
+            });
+            lying.push(Lying {
+                id,
+                at: spot.at,
+                cell: true,
+            });
+        }
+    }
+}
+
+/// What the Bond and the Avaia reach, nearest first. A cell's orb within
+/// reach of both goes to the nearer, the Bond on a tie.
+fn reach(world: &OrbWorld, lying: &[Lying]) -> (Vec<String>, Vec<String>) {
+    let within = |point: Option<GeoCoordinate>, orb: &Lying| -> Option<u32> {
+        let meters = distance_meters(point?, orb.at);
+        let reached = if orb.cell {
+            meters <= ORB_PICKUP_METERS
+        } else {
+            meters < ORB_PICKUP_METERS
+        };
+        reached.then_some(meters)
+    };
+    let mut bond_near: Vec<(u32, &String)> = Vec::new();
+    let mut avaia_near: Vec<(u32, &String)> = Vec::new();
+    for orb in lying {
+        let bond = within(world.bond, orb);
+        let avaia = within(world.avaia, orb);
+        match (bond, avaia) {
+            (Some(b), Some(a)) if orb.cell => {
+                if b <= a {
+                    bond_near.push((b, &orb.id));
+                } else {
+                    avaia_near.push((a, &orb.id));
+                }
+            }
+            _ => {
+                if let Some(b) = bond {
+                    bond_near.push((b, &orb.id));
+                }
+                if let Some(a) = avaia {
+                    avaia_near.push((a, &orb.id));
+                }
+            }
+        }
+    }
+    let nearest_first = |mut near: Vec<(u32, &String)>| -> Vec<String> {
+        near.sort();
+        near.into_iter().map(|(_, id)| id.clone()).collect()
+    };
+    (nearest_first(bond_near), nearest_first(avaia_near))
 }
 
 /// [`orb_world`] as JSON for Wasm and `UniFFI`: `{"ok":true,"view":…}`, or
@@ -525,6 +724,7 @@ mod tests {
                 count: orb_count(KYIV).expect("count"),
                 taken: Vec::new(),
             }],
+            cells: Vec::new(),
             picked: Vec::new(),
             bond: None,
             avaia: None,
@@ -614,6 +814,7 @@ mod tests {
                 count: orb_count(KYIV).expect("count"),
                 taken: vec![1],
             }],
+            cells: Vec::new(),
             picked: vec![orb_id(KYIV, 2)],
             bond,
             avaia,
@@ -689,6 +890,169 @@ mod tests {
         assert!(answer.contains(r#""lands_at":"1070""#), "{answer}");
         assert_eq!(
             orb_world_wire(r#"{"spills":[{"artifact_id":"x","appeared_at":1}]}"#, 0),
+            r#"{"error":"invalid","ok":false}"#
+        );
+    }
+
+    const KEY: &str = "5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f";
+
+    fn landmark_a() -> GeoCoordinate {
+        point(304_470_000, 504_665_000)
+    }
+
+    fn landmark_b() -> GeoCoordinate {
+        point(304_455_000, 504_645_000)
+    }
+
+    fn cell(landmarks: Vec<GeoCoordinate>) -> CellSpill {
+        CellSpill {
+            key: KEY.to_owned(),
+            center: cell_middle(),
+            landmarks,
+            appeared_at: DecimalU64::new(1_000),
+        }
+    }
+
+    fn cell_world(
+        landmarks: Vec<GeoCoordinate>,
+        bond: Option<GeoCoordinate>,
+        avaia: Option<GeoCoordinate>,
+    ) -> OrbWorld {
+        OrbWorld {
+            spills: Vec::new(),
+            cells: vec![cell(landmarks)],
+            picked: Vec::new(),
+            bond,
+            avaia,
+        }
+    }
+
+    #[test]
+    fn a_cell_spills_five_and_five_more_for_each_landmark_without_a_cap() {
+        assert_eq!(cell_orb_count(0), 5);
+        assert_eq!(cell_orb_count(2), 15);
+        assert_eq!(cell_orb_count(100), 505);
+        let many: Vec<GeoCoordinate> = (0..60).map(|_| landmark_a()).collect();
+        let spots = cell_orbs(KEY, cell_middle(), &many).expect("orbs");
+        assert_eq!(spots.len(), 305);
+        assert!(
+            spots
+                .iter()
+                .zip(0_u32..)
+                .all(|(spot, index)| spot.index == index)
+        );
+    }
+
+    #[test]
+    fn a_cells_orbs_lie_around_its_centre_and_each_landmark() {
+        let spots = cell_orbs(KEY, cell_middle(), &[landmark_a(), landmark_b()]).expect("orbs");
+        assert_eq!(spots.len(), 15);
+        for spot in &spots[..5] {
+            assert_eq!(spot.landmark, None);
+            assert!(distance_meters(spot.at, cell_middle()) <= 36);
+        }
+        for (spot, landmark) in spots[5..].iter().zip([0, 0, 0, 0, 0, 1, 1, 1, 1, 1]) {
+            assert_eq!(spot.landmark, Some(landmark));
+            let at = if landmark == 0 {
+                landmark_a()
+            } else {
+                landmark_b()
+            };
+            assert!(distance_meters(spot.at, at) <= 12);
+        }
+        assert_eq!(
+            cell_orbs(KEY, cell_middle(), &[landmark_a(), landmark_b()]),
+            Ok(spots)
+        );
+        let other = KEY.replace('5', "6");
+        assert_ne!(
+            cell_orbs(&other, cell_middle(), &[]).expect("orbs")[0].at,
+            cell_orbs(KEY, cell_middle(), &[]).expect("orbs")[0].at
+        );
+    }
+
+    #[test]
+    fn a_cell_key_is_sixty_four_lowercase_hex_digits() {
+        assert_eq!(cell_orb_id(KEY, 7), Ok(format!("orb:cell:{KEY}:7")));
+        for bad in [
+            "",
+            "abc",
+            &KEY.to_uppercase(),
+            &format!("{KEY}0"),
+            &KEY.replace('a', "g"),
+        ] {
+            assert_eq!(cell_orb_id(bad, 0), Err(OrbError::CellKey), "{bad}");
+            assert_eq!(cell_orbs(bad, cell_middle(), &[]), Err(OrbError::CellKey));
+        }
+        let mut world = cell_world(Vec::new(), None, None);
+        world.cells[0].key = "nope".to_owned();
+        assert!(orb_world(&world, 1_000).orbs.is_empty());
+    }
+
+    #[test]
+    fn a_cell_spill_lies_until_picked_and_lands_in_order() {
+        let mut world = cell_world(vec![landmark_a()], None, None);
+        world.picked.push(cell_orb_id(KEY, 3).expect("id"));
+        let view = orb_world(&world, u64::MAX);
+        assert_eq!(view.orbs.len(), 9);
+        assert!(view.orbs.iter().all(|orb| orb.kind == OrbKind::Orb));
+        assert!(!view.orbs.iter().any(|orb| orb.id.ends_with(":3")));
+        assert!(
+            view.orbs
+                .windows(2)
+                .all(|pair| pair[0].lands_at < pair[1].lands_at)
+        );
+        assert_eq!(view.orbs[0].lands_at, DecimalU64::new(1_070));
+        assert_eq!(view.next_expiry, None);
+    }
+
+    #[test]
+    fn a_cells_orb_is_reached_at_fifteen_metres_by_the_nearer_of_the_two() {
+        let spots = cell_orbs(KEY, cell_middle(), &[]).expect("orbs");
+        let at = spots[0].at;
+        let id = cell_orb_id(KEY, 0).expect("id");
+        // Both stand on it: the Bond takes the tie.
+        let view = orb_world(&cell_world(Vec::new(), Some(at), Some(at)), 1_000);
+        assert!(view.bond_reach.contains(&id));
+        assert!(!view.avaia_reach.contains(&id));
+        // The Avaia stands on it, the Bond a few metres off: the Avaia's.
+        let near = offset(at, 500, 0);
+        let view = orb_world(&cell_world(Vec::new(), Some(near), Some(at)), 1_000);
+        assert!(view.avaia_reach.contains(&id));
+        assert!(!view.bond_reach.contains(&id));
+        // Exactly fifteen metres still reaches; sixteen does not.
+        let reached = (1_400..1_700)
+            .map(|cm| offset(at, cm, 0))
+            .find(|point| distance_meters(*point, at) == ORB_PICKUP_METERS)
+            .expect("a point fifteen metres off");
+        let view = orb_world(&cell_world(Vec::new(), Some(reached), None), 1_000);
+        assert!(view.bond_reach.contains(&id));
+        let far = offset(at, 0, 5_000);
+        assert!(
+            !orb_world(&cell_world(Vec::new(), None, Some(far)), 1_000)
+                .avaia_reach
+                .contains(&id)
+        );
+    }
+
+    #[test]
+    fn the_v3_wire_reads_cells_beside_the_find_spills() {
+        let input = format!(
+            r#"{{"spills":[],"cells":[{{"key":"{KEY}","center":{{"longitude_e7":"304461000","latitude_e7":"504650000"}},"landmarks":[{{"longitude_e7":"304470000","latitude_e7":"504665000"}}],"appeared_at":"1000"}}],"picked":[],"bond":null,"avaia":null}}"#
+        );
+        let answer: serde_json::Value =
+            serde_json::from_str(&orb_world_wire(&input, 2_000)).expect("JSON");
+        assert_eq!(answer["ok"], true);
+        assert_eq!(answer["view"]["orbs"].as_array().expect("orbs").len(), 10);
+        assert_eq!(answer["view"]["orbs"][0]["id"], format!("orb:cell:{KEY}:0"));
+        assert_eq!(
+            orb_world_wire(
+                &input.replace(
+                    r#""appeared_at":"1000""#,
+                    r#""appeared_at":"1000","count":10"#
+                ),
+                2_000
+            ),
             r#"{"error":"invalid","ok":false}"#
         );
     }

@@ -173,7 +173,7 @@ pub fn avaia_drive_step(state: &str, input: &str, now_ms: &str, hour: u8) -> Str
 }
 
 /// Active orb placement wire version. Hosts must not send a `via` waypoint
-/// until this value is at least 2.
+/// until this value is at least 2, nor `cells` until it is at least 3.
 #[must_use]
 #[wasm_bindgen]
 pub fn orb_spill_version() -> u32 {
@@ -342,7 +342,13 @@ mod tests {
             super::orb_spill_version(),
             nilxone_contracts::ORB_SPILL_VERSION
         );
-        assert_eq!(super::orb_spill_version(), 2);
+        assert_eq!(super::orb_spill_version(), 3);
+        let cells = r#"{"spills":[],"cells":[{"key":"5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f","center":{"longitude_e7":"304461000","latitude_e7":"504650000"},"landmarks":[{"longitude_e7":"304470000","latitude_e7":"504665000"}],"appeared_at":"1000"}],"picked":[],"bond":null,"avaia":null}"#;
+        assert_eq!(
+            super::orb_world(cells, "2000"),
+            nilxone_contracts::orb_world_wire(cells, 2_000)
+        );
+        assert!(super::orb_world(cells, "2000").contains(r#""id":"orb:cell:"#));
         let guided = r#"{"spills":[{"artifact_id":"art:seg:312346:298243:e2908:1:0","from":{"longitude_e7":"304461000","latitude_e7":"504650000"},"via":{"longitude_e7":"304470000","latitude_e7":"504665000"},"to":{"longitude_e7":"304469000","latitude_e7":"504655000"},"appeared_at":"1000","expires_at":"1801000","count":20,"taken":[]}],"picked":[],"bond":null,"avaia":null}"#;
         assert_eq!(
             super::orb_world(guided, "2000"),
