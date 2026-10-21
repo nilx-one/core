@@ -15,8 +15,17 @@ hosts move to cells.
 | Lifetime | none: a cell's orbs lie until picked up |
 | Reach | 15 m or closer (`ORB_PICKUP_METERS`, inclusive) |
 | Between Bond and Avaia | an orb within reach of both goes to the nearer, the Bond on a tie |
-| Pays | 10 experience (`ORB_EXPERIENCE`) to whoever picks it up |
+| Rarity (v4) | the cell's own 5 are `common`; each landmark's 5 are rolled: at least rarity `r` with chance `1 / c(r)`, never rarer than the landmark |
+| Pays | `ORB_EXPERIENCE × c(rarity)`: 10, 20, 40, 80 or 160 (`orb_award`) to whoever picks it up |
 | Landing | orb `i` lands `70 × (i + 1)` ms after the host first drew the spill |
+
+Rarity is rarity v2 as a coefficient ([0x1 rarity as a coefficient](https://github.com/nilx-one/0x1/blob/master/documents/product-direction/rarity-coefficient.md)),
+`RarityV2`: `common` 1, `uncommon` 2, `rare` 4, `special` 8, `exclusive` 16.
+A roll takes the leading zero bits of an FNV-1a draw over the key and the
+orb's index, capped at the landmark's step, so one orb in sixteen around an
+Exclusive landmark is Exclusive, and the service recomputes every orb's
+rarity, and its award, from the key alone. Which landmark has which rarity
+is the service's answer; Core does not keep that registry here.
 
 The identity service answers a cell's spill when the cell opens: an opaque
 `key` (its keyed digest of the Bond and the cell), the cell's `center`, and
@@ -37,7 +46,12 @@ The host passes the answer as one entry of `cells` in the `orb_world` input:
     {
       "key": "5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
       "center": { "longitude_e7": "304461000", "latitude_e7": "504650000" },
-      "landmarks": [{ "longitude_e7": "304470000", "latitude_e7": "504665000" }],
+      "landmarks": [
+        {
+          "at": { "longitude_e7": "304470000", "latitude_e7": "504665000" },
+          "rarity": "exclusive"
+        }
+      ],
       "appeared_at": "1000"
     }
   ],
@@ -47,9 +61,11 @@ The host passes the answer as one entry of `cells` in the `orb_world` input:
 }
 ```
 
-A cell whose `key` is not a key lies nowhere. Cell orbs are drawn with
-`kind` `orb`; a cell has no `goal` and no expiry, so it never moves
-`next_expiry`.
+A landmark may also be a bare coordinate (the v3 form), which is `common`;
+an unknown rarity code makes the input invalid. A cell whose `key` is not a
+key lies nowhere. Cell orbs are drawn with `kind` `orb` and their `rarity`;
+a find's orbs carry no `rarity`, so their output is unchanged. A cell has no
+`goal` and no expiry, so it never moves `next_expiry`.
 
 ## Find spills (v1, v2)
 
@@ -126,14 +142,17 @@ a spill whose `count` is not its find's are not drawn.
   stagger, reach, and the unchanged Artifact goal must remain identical.
 - **Core v2:** optional `via` guides the geometry without changing identity,
   reward, or goal.
-- **Core v3:** `ORB_SPILL_VERSION = 3`; optional `cells` carries per-cell
-  spills. Find spills, their reach (strictly closer than 15 m) and their ids
-  are unchanged.
+- **Core v3:** optional `cells` carries per-cell spills. Find spills, their
+  reach (strictly closer than 15 m) and their ids are unchanged.
+- **Core v4:** `ORB_SPILL_VERSION = 4`; a cell's landmark may carry a
+  `rarity`, and each cell orb reports its own. Ids and placement are those
+  of v3.
 - Both `orb_spill_version()` and `orb_world(...)` are exported through
   **Wasm and UniFFI**. The latter uses canonical decimal-string `now_ms` and
   the same JSON success/error envelope.
 - **Web and iOS:** discover the *actually loaded* Core runtime version before
-  serializing `via` (2 or more) or `cells` (3 or more). A newer Web bundle
+  serializing `via` (2 or more), `cells` (3 or more) or a rated landmark
+  (4 or more). A newer Web bundle
   running older Core must omit them: older runtimes reject unknown fields.
   No deployment status is inferred from merging a Core PR, and a newer Core
   library is not proof that all installed hosts have upgraded.

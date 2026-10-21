@@ -28,6 +28,7 @@ mod inventory_wire;
 mod orb_spill;
 mod pub_dress;
 mod pub_dress_label;
+mod rarity_v2;
 mod scalar;
 mod spoken_line;
 mod version;
@@ -93,16 +94,18 @@ pub use inventory_wire::{
     picks_up_wire, xping_repair_wire,
 };
 pub use orb_spill::{
-    CELL_ORBS, CellOrbSpot, CellSpill, DrawnOrb, KnownSpill, LANDMARK_ORBS, MIN_TRAIL_METERS,
-    ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN, ORB_PICKUP_METERS, ORB_SPILL_VERSION,
-    ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld, cell_orb_count, cell_orb_id,
-    cell_orbs, orb_count, orb_id, orb_trail, orb_trail_via, orb_world, orb_world_wire, trail_start,
+    CELL_ORBS, CellLandmark, CellOrbSpot, CellSpill, DrawnOrb, KnownSpill, LANDMARK_ORBS,
+    MIN_TRAIL_METERS, ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN, ORB_PICKUP_METERS,
+    ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld,
+    cell_orb_count, cell_orb_id, cell_orbs, orb_award, orb_count, orb_id, orb_trail, orb_trail_via,
+    orb_world, orb_world_wire, trail_start,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
     PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PUB_DRESS_UNICODE_VERSION,
     PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel, PubDressLabelError, PubDressStem,
 };
+pub use rarity_v2::RarityV2;
 pub use scalar::{DecimalU64, DecimalU64Error};
 pub use spoken_line::{
     EARSHOT_MAX_METERS, EarshotRadius, EarshotRadiusError, SPOKEN_TEXT_MAX_SCALARS, SpokenLine,
