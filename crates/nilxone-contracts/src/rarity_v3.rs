@@ -8,7 +8,7 @@
 //! legacy tiers 1–3 all meant Common and tier 6 meant Legendary.
 //!
 //! Canonical product direction:
-//! https://github.com/nilx-one/0x1/blob/master/documents/product-direction/five-tier-rarity-economy.md
+//! <https://github.com/nilx-one/0x1/blob/master/documents/product-direction/five-tier-rarity-economy.md>
 
 use core::num::NonZeroU64;
 
