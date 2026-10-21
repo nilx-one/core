@@ -128,7 +128,10 @@ mod tests {
     #[test]
     fn one_distinct_rarity_per_tier_and_no_legacy_legendary() {
         for (position, rarity) in RarityV3::ALL.into_iter().enumerate() {
-            assert_eq!(rarity.tier(), (position + 1) as u8);
+            assert_eq!(
+                rarity.tier(),
+                u8::try_from(position + 1).expect("five tiers fit in u8")
+            );
             assert_eq!(RarityV3::from_v3_tier(rarity.tier()), Some(rarity));
             assert_ne!(rarity.code(), "legendary");
         }
@@ -167,7 +170,7 @@ mod tests {
             ((nominal + step / 2) / step) * step
         };
         for (n, rarity) in RarityV3::ALL.into_iter().enumerate() {
-            let nominal = 10 * 3_u32.pow(n as u32);
+            let nominal = 10 * 3_u32.pow(u32::try_from(n).expect("five tiers fit in u32"));
             assert_eq!(rarity.base_find_xp(), rounded(nominal));
         }
         assert_eq!(rounded(810), 800);
