@@ -26,6 +26,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::{DecimalU64, LifeIntent};
 
@@ -597,14 +598,24 @@ pub struct LandmarkDescriptionRequest {
     pub facts: BTreeMap<String, String>,
 }
 
+/// Text that reads the same wherever it is shown: no control or format
+/// characters (bidi overrides, zero-width marks) and no markup delimiters.
+fn plain_text(value: &str, max_chars: usize) -> bool {
+    (1..=max_chars).contains(&value.chars().count())
+        && !value.chars().any(|c| {
+            matches!(
+                get_general_category(c),
+                GeneralCategory::Control | GeneralCategory::Format
+            )
+        })
+        && !value.contains(['<', '>', '{', '}', '`', '|'])
+}
+
+/// The world adapter is the authority for what a landmark is, here as in
+/// `passing`: Core checks the facts' shape and vocabulary, not their truth.
 impl LandmarkDescriptionRequest {
     fn admissible(&self) -> bool {
-        fn plain(value: &str) -> bool {
-            let length = value.chars().count();
-            (1..=80).contains(&length)
-                && !value.chars().any(char::is_control)
-                && !value.contains(['<', '>', '{', '}', '`', '|'])
-        }
+        let plain = |value: &str| plain_text(value, 80);
         matches!(self.locale.as_str(), "uk" | "en" | "ru")
             && plain(&self.kind_label)
             && self.name.as_deref().is_none_or(plain)
@@ -629,13 +640,10 @@ pub struct LandmarkDescriptionResult {
 
 impl LandmarkDescriptionResult {
     fn admissible(&self) -> bool {
-        let chars = self.text.chars().count();
         let producer = self.produced_by.chars().count();
-        (1..=240).contains(&chars)
+        plain_text(&self.text, 240)
             && (1..=80).contains(&producer)
             && self.template_version == 1
-            && !self.text.chars().any(char::is_control)
-            && !self.text.contains(['<', '>', '{', '}', '`', '|'])
             && self
                 .produced_by
                 .chars()
@@ -1136,7 +1144,7 @@ impl Step<'_> {
         if !pending || !request.admissible() {
             return;
         }
-        let request_id = self.state.description_seq.unwrap_or(0).saturating_add(1);
+        let request_id = self.state.description_seq.unwrap_or(0).wrapping_add(1);
         self.state.description_seq = Some(request_id);
         if let Some(describing) = &mut self.state.describing {
             describing.request_id = Some(request_id);
@@ -3332,6 +3340,33 @@ mod tests {
             T0 + 72_000,
         );
         assert!(without_wake(cancelled).is_empty());
+
+        let (stopped, _) = run(&state, DriveInput::Stopped {}, T0 + 71_500);
+        let (_, cancelled) = run(
+            &stopped,
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: ai_result(),
+            },
+            T0 + 72_000,
+        );
+        assert!(without_wake(cancelled).is_empty());
+
+        for hidden in ["\u{202E}", "\u{200B}", "\u{2066}"] {
+            let mut spoofed = ai_result();
+            spoofed.text = format!("Батьківщина-Мати{hidden} — пам'ятник.");
+            let (_, commands) = run(
+                &state,
+                DriveInput::AiDescribed {
+                    at: r("statue"),
+                    request_id: 1,
+                    result: spoofed,
+                },
+                T0 + 73_000,
+            );
+            assert!(without_wake(commands).is_empty(), "{hidden:?}");
+        }
     }
 
     #[test]
@@ -3350,6 +3385,46 @@ mod tests {
             T0 + 71_000,
         );
         assert!(without_wake(commands).is_empty());
+
+        let mut request = archive_request();
+        request.name = Some("Батьківщина\u{202E}-Мати".into());
+        let (_, commands) = run(
+            &state,
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request,
+            },
+            T0 + 71_000,
+        );
+        assert!(without_wake(commands).is_empty());
+    }
+
+    #[test]
+    fn a_describing_state_stored_before_ai_routing_awaits_facts() {
+        let (state, _) = glancing_at_statue(Some(false));
+        let mut stored: serde_json::Value = serde_json::to_value(&state).expect("state");
+        assert!(stored["describing"].get("request_id").is_none(), "{stored}");
+        stored
+            .as_object_mut()
+            .expect("object")
+            .remove("description_seq");
+        let older: DriveState = serde_json::from_value(stored).expect("older state");
+        let (_, commands) = run(
+            &older,
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request: archive_request(),
+            },
+            T0 + 71_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![DriveCommand::AiDescribe {
+                at: r("statue"),
+                request_id: 1,
+                request: archive_request(),
+            }]
+        );
     }
 
     #[test]
