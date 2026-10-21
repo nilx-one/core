@@ -134,6 +134,8 @@ mod tests {
         }
         assert_eq!(RarityV3::from_v3_tier(0), None);
         assert_eq!(RarityV3::from_v3_tier(6), None);
+        assert_eq!(RarityV3::from_code("legendary"), None);
+        assert_eq!(RarityV3::from_code("special"), Some(RarityV3::Special));
     }
 
     #[test]
@@ -143,7 +145,10 @@ mod tests {
             .into_iter()
             .map(|rarity| rarity.find_sale_price(common_base))
             .collect();
-        assert_eq!(prices, [Some(50), Some(100), Some(200), Some(400), Some(800)]);
+        assert_eq!(
+            prices,
+            [Some(50), Some(100), Some(200), Some(400), Some(800)]
+        );
         assert_eq!(RarityV3::Special.price_multiplier(), 8);
         assert_eq!(RarityV3::Exclusive.price_multiplier(), 16);
         assert_eq!(RarityV3::Exclusive.find_sale_price(NonZeroU64::MAX), None);
