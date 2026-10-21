@@ -1,5 +1,58 @@
 # Orb spills
 
+Since v3, **every fog cell that opens for a Bond spills its own orbs**:
+five around the cell's centre and five around each landmark in it. The
+per-find trail below (v1, v2) stays readable for older hosts until the
+hosts move to cells.
+
+## Cell spills (v3)
+
+| Rule | Value |
+| --- | --- |
+| Orbs per cell | `5 + 5 × landmarks` (`cell_orb_count`), no cap |
+| Placement | orbs 0–4 within 25 m of the centre on each axis; then 5 per landmark, within 8 m of it on each axis, in the order the landmarks are given |
+| Identity | `orb:cell:<key>:<index>`; `key` is 64 lowercase hex digits |
+| Lifetime | none: a cell's orbs lie until picked up |
+| Reach | 15 m or closer (`ORB_PICKUP_METERS`, inclusive) |
+| Between Bond and Avaia | an orb within reach of both goes to the nearer, the Bond on a tie |
+| Pays | 10 experience (`ORB_EXPERIENCE`) to whoever picks it up |
+| Landing | orb `i` lands `70 × (i + 1)` ms after the host first drew the spill |
+
+The identity service answers a cell's spill when the cell opens: an opaque
+`key` (its keyed digest of the Bond and the cell), the cell's `center`, and
+the cell's `landmarks` as it counted them from the published archive. It
+keeps nothing. Core needs no secret and no cell geometry: it lays the orbs
+from that answer alone, the `key` seeding the scatter. So the same answer
+always lays the same orbs, and the service, which can recompute the `key`,
+can check any orb id it is asked to pay (`index < 5 + 5 × landmarks`)
+without having stored the spill. Which landmarks a cell holds, and what a
+landmark is, are not decided here; Core lays what it is given.
+
+The host passes the answer as one entry of `cells` in the `orb_world` input:
+
+```json
+{
+  "spills": [],
+  "cells": [
+    {
+      "key": "5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+      "center": { "longitude_e7": "304461000", "latitude_e7": "504650000" },
+      "landmarks": [{ "longitude_e7": "304470000", "latitude_e7": "504665000" }],
+      "appeared_at": "1000"
+    }
+  ],
+  "picked": [],
+  "bond": null,
+  "avaia": null
+}
+```
+
+A cell whose `key` is not a key lies nowhere. Cell orbs are drawn with
+`kind` `orb`; a cell has no `goal` and no expiry, so it never moves
+`next_expiry`.
+
+## Find spills (v1, v2)
+
 When a fog cell opens, each find in it spills a short trail of **orbs** that
 leads to the find, optionally visiting a real landmark in that same cell on
 the way. The optional landmark is a navigation waypoint, not a collectible,
@@ -71,22 +124,31 @@ a spill whose `count` is not its find's are not drawn.
 
 - **Core v1:** omitted `via` is mandatory. Legacy orb positions, IDs, counts,
   stagger, reach, and the unchanged Artifact goal must remain identical.
-- **Core v2:** `ORB_SPILL_VERSION = 2`; optional `via` guides the geometry
-  without changing identity, reward, or goal. Both `orb_spill_version()` and
-  `orb_world(...)` are exported through **Wasm and UniFFI**. The latter uses
-  canonical decimal-string `now_ms` and the same JSON success/error envelope.
+- **Core v2:** optional `via` guides the geometry without changing identity,
+  reward, or goal.
+- **Core v3:** `ORB_SPILL_VERSION = 3`; optional `cells` carries per-cell
+  spills. Find spills, their reach (strictly closer than 15 m) and their ids
+  are unchanged.
+- Both `orb_spill_version()` and `orb_world(...)` are exported through
+  **Wasm and UniFFI**. The latter uses canonical decimal-string `now_ms` and
+  the same JSON success/error envelope.
 - **Web and iOS:** discover the *actually loaded* Core runtime version before
-  serializing `via`. A newer Web bundle running older Core must omit the field.
+  serializing `via` (2 or more) or `cells` (3 or more). A newer Web bundle
+  running older Core must omit them: older runtimes reject unknown fields.
   No deployment status is inferred from merging a Core PR, and a newer Core
   library is not proof that all installed hosts have upgraded.
-- **Evidence:** compare the same v2 fixture through native Core, Wasm, and
-  UniFFI, and verify that absent versus explicitly null `via` preserves the
+- **Evidence:** compare the same v2 and v3 fixtures through native Core,
+  Wasm, and UniFFI, and verify that absent versus explicitly null `via` preserves the
   legacy output. The host still obtains real same-cell waypoints from verified
   map archives; Core does not invent landmarks or authenticate their source.
 
 ## Claims
 
-Who picked an orb up first is not Core's to decide: the host's service claims
+A cell's orbs are the Bond's own: nobody else sees them, and no service
+claims them first-wins. Between the Bond and its Avaia, the device picks up
+what Core reports in each one's reach, and records it in `picked`.
+
+For a find's orbs, who picked an orb up first is not Core's to decide: the host's service claims
 it, first come first served, and answers a later pick-up as taken ("crap!").
 An orb is a pick-up intent and presentation, never a `BondChain` interaction,
 a Relationship, or proof of presence.

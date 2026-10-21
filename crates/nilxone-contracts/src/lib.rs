@@ -93,9 +93,10 @@ pub use inventory_wire::{
     picks_up_wire, xping_repair_wire,
 };
 pub use orb_spill::{
-    DrawnOrb, KnownSpill, MIN_TRAIL_METERS, ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN,
-    ORB_PICKUP_METERS, ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView,
-    OrbWorld, orb_count, orb_id, orb_trail, orb_trail_via, orb_world, orb_world_wire, trail_start,
+    CELL_ORBS, CellOrbSpot, CellSpill, DrawnOrb, KnownSpill, LANDMARK_ORBS, MIN_TRAIL_METERS,
+    ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN, ORB_PICKUP_METERS, ORB_SPILL_VERSION,
+    ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld, cell_orb_count, cell_orb_id,
+    cell_orbs, orb_count, orb_id, orb_trail, orb_trail_via, orb_world, orb_world_wire, trail_start,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
