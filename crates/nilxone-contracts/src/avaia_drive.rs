@@ -26,6 +26,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use crate::{DecimalU64, LifeIntent};
 
@@ -495,6 +496,9 @@ pub struct DriveState {
     pub described: Vec<DriveRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub describing: Option<Describing>,
+    /// Monotonic nonce binding a model answer to the exact request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_seq: Option<u32>,
 }
 
 impl DriveState {
@@ -521,6 +525,7 @@ impl DriveState {
             undescribed: Vec::new(),
             described: Vec::new(),
             describing: None,
+            description_seq: None,
         }
     }
 }
@@ -574,6 +579,76 @@ pub struct Describing {
     /// An answer after this is not shown.
     #[serde(with = "ms")]
     pub until_ms: u64,
+    /// None while Core is awaiting the archive's facts; Some when AI is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<u32>,
+}
+
+/// The only archived facts Core may pass to AI. The host resolves the world,
+/// but cannot write a prompt or decide what the AI says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandmarkDescriptionRequest {
+    pub locale: String,
+    pub kind: DriveKind,
+    pub kind_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub facts: BTreeMap<String, String>,
+}
+
+/// Text that reads the same wherever it is shown: no control or format
+/// characters (bidi overrides, zero-width marks) and no markup delimiters.
+fn plain_text(value: &str, max_chars: usize) -> bool {
+    (1..=max_chars).contains(&value.chars().count())
+        && !value.chars().any(|c| {
+            matches!(
+                get_general_category(c),
+                GeneralCategory::Control | GeneralCategory::Format
+            )
+        })
+        && !value.contains(['<', '>', '{', '}', '`', '|'])
+}
+
+/// The world adapter is the authority for what a landmark is, here as in
+/// `passing`: Core checks the facts' shape and vocabulary, not their truth.
+impl LandmarkDescriptionRequest {
+    fn admissible(&self) -> bool {
+        let plain = |value: &str| plain_text(value, 80);
+        matches!(self.locale.as_str(), "uk" | "en" | "ru")
+            && plain(&self.kind_label)
+            && self.name.as_deref().is_none_or(plain)
+            && self.facts.len() <= 5
+            && self.facts.iter().all(|(key, value)| {
+                matches!(
+                    key.as_str(),
+                    "start_date" | "artist_name" | "architect" | "height" | "material"
+                ) && plain(value)
+            })
+    }
+}
+
+/// AI's output as returned to Core. Only Core may authorize presentation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LandmarkDescriptionResult {
+    pub text: String,
+    pub produced_by: String,
+    pub template_version: u16,
+}
+
+impl LandmarkDescriptionResult {
+    fn admissible(&self) -> bool {
+        let producer = self.produced_by.chars().count();
+        plain_text(&self.text, 240)
+            && (1..=80).contains(&producer)
+            && self.template_version == 1
+            && self
+                .produced_by
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+    }
 }
 
 /// How a description is shown, in a closed vocabulary every host carries out.
@@ -670,9 +745,17 @@ pub enum DriveInput {
         #[serde(default)]
         index: Option<usize>,
     },
-    /// The host has a description of `at` ready, as asked by
-    /// [`DriveCommand::Describe`].
-    Described { at: DriveRef },
+    /// World adapter returned archive facts in response to `describe`.
+    DescriptionFacts {
+        at: DriveRef,
+        request: LandmarkDescriptionRequest,
+    },
+    /// AI answered the request issued by Core, not the host.
+    AiDescribed {
+        at: DriveRef,
+        request_id: u32,
+        result: LandmarkDescriptionResult,
+    },
 }
 
 /// A line the Avaia says, in the host's per-study voice.
@@ -729,18 +812,27 @@ pub enum DriveCommand {
     Study { at: DriveRef },
     /// Look at something on the way and say what it is.
     Glance { at: DriveRef },
-    /// Ready a description of the landmark at `at`, and answer with
-    /// `described`. The text is the host's; the drive never sees it.
+    /// Ask the world adapter for the archive facts of `at`, not a description.
     Describe { at: DriveRef },
-    /// Show the description of `at`, as `how`, for `ms`.
+    /// Core's explicit, bounded AI task; the host only transports it to AI.
+    AiDescribe {
+        at: DriveRef,
+        request_id: u32,
+        request: LandmarkDescriptionRequest,
+    },
+    /// Core forwards AI's actual result to the host for presentation.
     Show {
         at: DriveRef,
         how: Presentation,
         #[serde(with = "ms")]
         ms: u64,
+        result: LandmarkDescriptionResult,
     },
-    /// Keep the description of `at` in the notebook.
-    Keep { at: DriveRef },
+    /// Core forwards the same result for device-local notebook storage.
+    Keep {
+        at: DriveRef,
+        result: LandmarkDescriptionResult,
+    },
     /// Pick a find up.
     PickUp { at: DriveRef },
     /// A visit is over: the host records how it felt.
@@ -1003,7 +1095,12 @@ impl Step<'_> {
                 home,
             } => self.life(intent, energy, home),
             DriveInput::Chosen { index } => self.chosen(index),
-            DriveInput::Described { at } => self.described(at),
+            DriveInput::DescriptionFacts { at, request } => self.description_facts(at, request),
+            DriveInput::AiDescribed {
+                at,
+                request_id,
+                result,
+            } => self.ai_described(at, request_id, result),
         }
     }
 
@@ -1030,20 +1127,42 @@ impl Step<'_> {
         }
         self.state.describing = Some(Describing {
             at: at.clone(),
-            until_ms: self.now + DESCRIBE_MS,
+            until_ms: self.now.saturating_add(DESCRIBE_MS),
+            request_id: None,
         });
         self.out.push(DriveCommand::Describe { at: at.clone() });
     }
 
-    /// The host has the description it was asked for: shown, and kept. A late
-    /// answer, or one nobody asked for, is not shown.
-    fn described(&mut self, at: DriveRef) {
-        let asked = self
+    /// The world supplies plain archive facts, never an AI prompt or text.
+    /// Core assembles the only AI request and binds it to a nonce.
+    fn description_facts(&mut self, at: DriveRef, request: LandmarkDescriptionRequest) {
+        let pending = self
             .state
             .describing
             .as_ref()
-            .is_some_and(|describing| describing.at == at && self.now <= describing.until_ms);
-        if !asked {
+            .is_some_and(|d| d.at == at && d.request_id.is_none() && self.now <= d.until_ms);
+        if !pending || !request.admissible() {
+            return;
+        }
+        let request_id = self.state.description_seq.unwrap_or(0).wrapping_add(1);
+        self.state.description_seq = Some(request_id);
+        if let Some(describing) = &mut self.state.describing {
+            describing.request_id = Some(request_id);
+        }
+        self.out.push(DriveCommand::AiDescribe {
+            at,
+            request_id,
+            request,
+        });
+    }
+
+    /// Accept a timely AI answer for the exact request and forward the same
+    /// text to presentation and storage. Wrong, stale or replayed answers do nothing.
+    fn ai_described(&mut self, at: DriveRef, request_id: u32, result: LandmarkDescriptionResult) {
+        let asked = self.state.describing.as_ref().is_some_and(|d| {
+            d.at == at && d.request_id == Some(request_id) && self.now <= d.until_ms
+        });
+        if !asked || !result.admissible() {
             return;
         }
         self.state.describing = None;
@@ -1056,8 +1175,9 @@ impl Step<'_> {
             at: at.clone(),
             how: Presentation::Speech,
             ms: SHOW_MS,
+            result: result.clone(),
         });
-        self.out.push(DriveCommand::Keep { at });
+        self.out.push(DriveCommand::Keep { at, result });
     }
 
     /// Its needs changed. Going home outranks everything it does on its own,
@@ -3024,8 +3144,26 @@ mod tests {
         run(&state, DriveInput::Arrived {}, T0 + 70_000)
     }
 
+    fn archive_request() -> super::LandmarkDescriptionRequest {
+        super::LandmarkDescriptionRequest {
+            locale: "uk".into(),
+            kind: super::DriveKind::new("monument").expect("kind"),
+            kind_label: "пам'ятник".into(),
+            name: Some("Батьківщина-Мати".into()),
+            facts: [("height".into(), "102".into())].into(),
+        }
+    }
+
+    fn ai_result() -> super::LandmarkDescriptionResult {
+        super::LandmarkDescriptionResult {
+            text: "Батьківщина-Мати — пам'ятник. Висота — 102 м.".into(),
+            produced_by: "template".into(),
+            template_version: 1,
+        }
+    }
+
     #[test]
-    fn a_landmark_with_no_description_is_described_shown_and_kept_once() {
+    fn a_landmark_flows_from_core_to_ai_and_back_to_host_once() {
         let (state, commands) = glancing_at_statue(Some(false));
         assert_eq!(
             without_wake(commands),
@@ -3034,9 +3172,31 @@ mod tests {
                 DriveCommand::Describe { at: r("statue") },
             ]
         );
+        let request = archive_request();
         let (state, commands) = run(
             &state,
-            DriveInput::Described { at: r("statue") },
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request: request.clone(),
+            },
+            T0 + 71_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![DriveCommand::AiDescribe {
+                at: r("statue"),
+                request_id: 1,
+                request,
+            }]
+        );
+        let result = ai_result();
+        let (state, commands) = run(
+            &state,
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: result.clone(),
+            },
             T0 + 72_000,
         );
         assert_eq!(
@@ -3046,24 +3206,31 @@ mod tests {
                     at: r("statue"),
                     how: super::Presentation::Speech,
                     ms: super::SHOW_MS,
+                    result: result.clone(),
                 },
-                DriveCommand::Keep { at: r("statue") },
+                DriveCommand::Keep {
+                    at: r("statue"),
+                    result
+                },
             ]
         );
         assert_eq!(state.described, vec![r("statue")]);
         assert!(state.undescribed.is_empty());
         assert_eq!(state.describing, None);
 
-        // Answered twice, it is shown once.
+        // Replaying a completed answer cannot show or store it again.
         let (_, again) = run(
             &state,
-            DriveInput::Described { at: r("statue") },
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: ai_result(),
+            },
             T0 + 73_000,
         );
         assert!(without_wake(again).is_empty());
 
-        // Passing it again, even with a host that forgot, it is not asked
-        // about again.
+        // Passing it again does not start a new description.
         let (state, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 100_000);
         let (state, _) = run(
             &state,
@@ -3097,37 +3264,166 @@ mod tests {
     }
 
     #[test]
-    fn a_late_or_unasked_description_is_not_shown() {
+    fn invalid_unasked_late_and_cancelled_ai_answers_are_never_forwarded() {
         let (state, _) = glancing_at_statue(Some(false));
-        let (_, other) = run(
+        let (_, unasked) = run(
             &state,
-            DriveInput::Described { at: r("fountain") },
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: ai_result(),
+            },
+            T0 + 70_500,
+        );
+        assert!(without_wake(unasked).is_empty());
+
+        let (_, foreign) = run(
+            &state,
+            DriveInput::DescriptionFacts {
+                at: r("fountain"),
+                request: archive_request(),
+            },
+            T0 + 70_500,
+        );
+        assert!(without_wake(foreign).is_empty());
+        let (state, _) = run(
+            &state,
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request: archive_request(),
+            },
             T0 + 71_000,
         );
-        assert!(without_wake(other).is_empty());
-        let (late, commands) = run(
+        let (_, wrong_id) = run(
             &state,
-            DriveInput::Described { at: r("statue") },
-            T0 + 70_000 + super::DESCRIBE_MS + 1,
-        );
-        assert!(
-            !without_wake(commands)
-                .iter()
-                .any(|command| matches!(command, DriveCommand::Show { .. })),
-        );
-        assert!(late.described.is_empty());
-
-        // A tap drops the description in flight.
-        let (tapped, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 71_000);
-        let (_, commands) = run(
-            &tapped,
-            DriveInput::Described { at: r("statue") },
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 2,
+                result: ai_result(),
+            },
             T0 + 72_000,
         );
-        assert!(
-            !without_wake(commands)
-                .iter()
-                .any(|command| matches!(command, DriveCommand::Show { .. })),
+        assert!(without_wake(wrong_id).is_empty());
+
+        let (_, late) = run(
+            &state,
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: ai_result(),
+            },
+            T0 + 70_000 + super::DESCRIBE_MS + 1,
+        );
+        assert!(without_wake(late).is_empty());
+
+        let mut poisoned = ai_result();
+        poisoned.text = "some <script>data</script>".into();
+        let (_, unsafe_output) = run(
+            &state,
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: poisoned,
+            },
+            T0 + 73_000,
+        );
+        assert!(without_wake(unsafe_output).is_empty());
+
+        let (tapped, _) = run(&state, DriveInput::Tap { to: r("c") }, T0 + 71_500);
+        let (_, cancelled) = run(
+            &tapped,
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: ai_result(),
+            },
+            T0 + 72_000,
+        );
+        assert!(without_wake(cancelled).is_empty());
+
+        let (stopped, _) = run(&state, DriveInput::Stopped {}, T0 + 71_500);
+        let (_, cancelled) = run(
+            &stopped,
+            DriveInput::AiDescribed {
+                at: r("statue"),
+                request_id: 1,
+                result: ai_result(),
+            },
+            T0 + 72_000,
+        );
+        assert!(without_wake(cancelled).is_empty());
+
+        for hidden in ["\u{202E}", "\u{200B}", "\u{2066}"] {
+            let mut spoofed = ai_result();
+            spoofed.text = format!("Батьківщина-Мати{hidden} — пам'ятник.");
+            let (_, commands) = run(
+                &state,
+                DriveInput::AiDescribed {
+                    at: r("statue"),
+                    request_id: 1,
+                    result: spoofed,
+                },
+                T0 + 73_000,
+            );
+            assert!(without_wake(commands).is_empty(), "{hidden:?}");
+        }
+    }
+
+    #[test]
+    fn core_rejects_unbounded_or_unknown_archive_facts() {
+        let (state, _) = glancing_at_statue(Some(false));
+        let mut request = archive_request();
+        request
+            .facts
+            .insert("email".into(), "personal@host.test".into());
+        let (_, commands) = run(
+            &state,
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request,
+            },
+            T0 + 71_000,
+        );
+        assert!(without_wake(commands).is_empty());
+
+        let mut request = archive_request();
+        request.name = Some("Батьківщина\u{202E}-Мати".into());
+        let (_, commands) = run(
+            &state,
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request,
+            },
+            T0 + 71_000,
+        );
+        assert!(without_wake(commands).is_empty());
+    }
+
+    #[test]
+    fn a_describing_state_stored_before_ai_routing_awaits_facts() {
+        let (state, _) = glancing_at_statue(Some(false));
+        let mut stored: serde_json::Value = serde_json::to_value(&state).expect("state");
+        assert!(stored["describing"].get("request_id").is_none(), "{stored}");
+        stored
+            .as_object_mut()
+            .expect("object")
+            .remove("description_seq");
+        let older: DriveState = serde_json::from_value(stored).expect("older state");
+        let (_, commands) = run(
+            &older,
+            DriveInput::DescriptionFacts {
+                at: r("statue"),
+                request: archive_request(),
+            },
+            T0 + 71_000,
+        );
+        assert_eq!(
+            without_wake(commands),
+            vec![DriveCommand::AiDescribe {
+                at: r("statue"),
+                request_id: 1,
+                request: archive_request(),
+            }]
         );
     }
 
@@ -3149,12 +3445,16 @@ mod tests {
     }
 
     #[test]
-    fn the_wire_carries_the_describe_loop_and_reads_an_older_state() {
+    fn the_wire_carries_the_typed_ai_loop_and_reads_an_older_state() {
         let state = DriveState::new(T0);
         let stored = serde_json::to_string(&state).expect("state");
         assert!(!stored.contains("describ"), "{stored}");
-        let answer =
-            avaia_drive_step_wire(&stored, r#"{"type":"described","at":"statue"}"#, T0, NOON);
+        let answer = avaia_drive_step_wire(
+            &stored,
+            r#"{"type":"ai_described","at":"statue","request_id":1,"result":{"text":"ok.","produced_by":"template","template_version":1}}"#,
+            T0,
+            NOON,
+        );
         let value: serde_json::Value = serde_json::from_str(&answer).expect("json");
         assert_eq!(value["ok"], true, "{answer}");
         assert_eq!(
@@ -3162,9 +3462,13 @@ mod tests {
                 at: r("statue"),
                 how: super::Presentation::Speech,
                 ms: 9_000,
+                result: ai_result(),
             })
             .expect("show"),
-            serde_json::json!({"do":"show","at":"statue","how":"speech","ms":"9000"})
+            serde_json::json!({
+                "do":"show","at":"statue","how":"speech","ms":"9000",
+                "result":{"text":"Батьківщина-Мати — пам'ятник. Висота — 102 м.","produced_by":"template","template_version":1}
+            })
         );
     }
 }
