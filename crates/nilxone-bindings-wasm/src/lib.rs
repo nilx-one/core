@@ -194,6 +194,15 @@ pub fn orb_world(world: &str, now_ms: &str) -> String {
     }
 }
 
+/// A presentation-only map view of every Rare/Special/Exclusive landmark in
+/// a host-verified archive batch. The host must not supply a rarity; Core
+/// reads immutable registry data and preserves archive identities.
+#[must_use]
+#[wasm_bindgen]
+pub fn landmark_map_view(input: &str) -> String {
+    nilxone_contracts::landmark_map_view_wire(input)
+}
+
 /// Where a courier such as xPing goes: the nearest of the offered points.
 /// `request` is a `CourierDestinationRequest` as JSON. Answers
 /// `{"ok":true,"point_id":…}` or `{"ok":false,"error":…}`; see
@@ -335,6 +344,16 @@ mod tests {
             );
         }
         assert!(super::avaia_proximity(4_500, 0, true).contains(r#""can_reveal":false"#));
+    }
+
+    #[test]
+    fn wasm_surface_exposes_curated_landmark_map() {
+        let input = r#"{"registry":1,"landmarks":[{"id":"n1","at":{"longitude_e7":"304461000","latitude_e7":"504650000"}}]}"#;
+        assert_eq!(
+            super::landmark_map_view(input),
+            nilxone_contracts::landmark_map_view_wire(input)
+        );
+        assert!(super::landmark_map_view(input).contains(r#""landmarks":[]"#));
     }
 
     #[test]
