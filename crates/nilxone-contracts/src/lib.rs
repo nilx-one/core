@@ -28,6 +28,7 @@ mod inventory_wire;
 mod landmark_map;
 mod landmark_rarity;
 mod orb_spill;
+mod provider_binding;
 mod pub_dress;
 mod pub_dress_label;
 mod rarity_v3;
@@ -107,6 +108,11 @@ pub use orb_spill::{
     ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld, RatedOrbSpot,
     cell_orb_count, cell_orb_id, cell_orbs, cell_orbs_rated, orb_count, orb_id, orb_trail,
     orb_trail_via, orb_world, orb_world_wire, rated_orb_award, rated_orb_id, trail_start,
+};
+pub use provider_binding::{
+    DisconnectDecision, DisconnectSnapshot, LinkDecision, LinkSnapshot, MAX_PROVIDER_SUBJECT_BYTES,
+    ProviderAccount, ProviderLookupView, ProviderSubject, ProviderSubjectError, ProviderType,
+    UnknownProvider, decide_link, decide_self_disconnect, provider_lookup_view,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
