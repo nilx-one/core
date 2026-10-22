@@ -74,6 +74,23 @@ Source references for **factual heritage membership**, not automatic classificat
 - [UNESCO no. 1703 — Historic Centre of Odesa](https://whc.unesco.org/en/list/1703/).
 - [UNESCO selection criteria and Outstanding Universal Value](https://whc.unesco.org/en/criteria/).
 
+## Map projection for every Rare and Special landmark
+
+Core exports `landmark_map_view_wire` with identical Wasm and UniFFI `landmark_map_view(input)` bindings. This is **not a new registry or geographic entity**; it is a deterministic map projection of `CellLandmark { id, at }` inputs from the **authoritatively verified archive**. A full eligible archive batch returns **every** item whose immutable registry rarity is **Rare, Special or Exclusive**. There is no viewport-based rank, city quota or hand-authored list of pins.
+
+```json
+{
+  "registry": 1,
+  "landmarks": [
+    { "id": "n123", "at": { "longitude_e7": "304461000", "latitude_e7": "504650000" } }
+  ]
+}
+```
+
+The wire reply is `{"ok":true,"registry":1,"landmarks":[{"id":"...","at":{...},"rarity":"rare"}]}` with items in canonical ID order. Empty valid v1 returns `landmarks: []` because the registry has **no curated Rare/Special/Exclusive entries yet**. Bad versions, unknown fields, bad canonical archive IDs, conflicting positions for one ID or batches over 4096 entries fail with `{"ok":false,"error":"invalid"}` rather than pretending there are no qualifying items. Identical repeats are deduplicated. Large archive sets must use independent bounded batches, deduplicated by ID after all batches are projected.
+
+**The host, not Core, authenticates the published archive** and resolves the stable ID-to-position mapping; clients and a generic map renderer may not mint rarities, assign old pin aliases or verify a historic visit. The projection's output is presentation-only. Web must draw all eligible projected items when supplied, including while panning/zooming, with rarity-colour markers that are clearly distinct from business and position markers. Until the authoritative archive-to-registry curation and Identity/Web integration are deployed, this is a feature *contract* and Core export, not a claim that a live map already contains Rare/Special pins.
+
 ## Runtime and rollout guard
 
 This document changes **no** Rust enum, registry data, award, claim or rendered marker. Currently `LANDMARK_RARITY_REGISTRY_VERSION = 1` has `landmarks: &[]`, so all valid landmarks are Common at runtime, **even if the product has approved Exclusive targets**.
