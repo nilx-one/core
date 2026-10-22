@@ -29,6 +29,7 @@ mod orb_spill;
 mod pub_dress;
 mod pub_dress_label;
 mod rarity_v2;
+mod rarity_v3;
 mod scalar;
 mod spoken_line;
 mod version;
@@ -106,6 +107,7 @@ pub use pub_dress_label::{
     PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel, PubDressLabelError, PubDressStem,
 };
 pub use rarity_v2::RarityV2;
+pub use rarity_v3::{RARITY_V3_VERSION, RarityV3};
 pub use scalar::{DecimalU64, DecimalU64Error};
 pub use spoken_line::{
     EARSHOT_MAX_METERS, EarshotRadius, EarshotRadiusError, SPOKEN_TEXT_MAX_SCALARS, SpokenLine,
