@@ -25,6 +25,7 @@ mod geography;
 mod identifier;
 mod inventory;
 mod inventory_wire;
+mod landmark_map;
 mod landmark_rarity;
 mod orb_spill;
 mod pub_dress;
@@ -95,6 +96,7 @@ pub use inventory_wire::{
     apply_inventory_command, backpack_gift_due_wire, economy_catalog_json, find_item_wire,
     picks_up_wire, xping_repair_wire,
 };
+pub use landmark_map::{MAX_RARITY_MAP_LANDMARKS, landmark_map_view_wire};
 pub use landmark_rarity::{
     LANDMARK_ID_MAX, LANDMARK_RARITY_REGISTRY_VERSION, is_landmark_id, is_registry_version,
     landmark_rarity, orb_experience, roll_halving,

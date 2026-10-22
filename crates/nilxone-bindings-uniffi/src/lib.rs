@@ -136,6 +136,18 @@ pub fn orb_world(world: String, now_ms: String) -> String {
     }
 }
 
+/// Core-curated Rare/Special/Exclusive map projection, matching the Wasm
+/// wire exactly. Host archive identities and positions must be verified.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn landmark_map_view(input: String) -> String {
+    nilxone_contracts::landmark_map_view_wire(&input)
+}
+
 /// Returns the normative Core contract version implemented by this build.
 #[must_use]
 #[uniffi::export]
@@ -258,6 +270,16 @@ mod tests {
             );
         }
         assert!(super::avaia_proximity(4_500, 0, true).contains(r#""can_reveal":false"#));
+    }
+
+    #[test]
+    fn uniffi_surface_matches_landmark_map_contract() {
+        let input = r#"{"registry":1,"landmarks":[]}"#;
+        assert_eq!(
+            super::landmark_map_view(input.to_owned()),
+            nilxone_contracts::landmark_map_view_wire(input)
+        );
+        assert!(super::landmark_map_view(input.to_owned()).contains(r#""landmarks":[]"#));
     }
 
     #[test]
