@@ -26,6 +26,8 @@ These are **evidence thresholds for human-reviewed classification**, not runtime
 
 **No geography, medium or usage bias:** no quota per city or country; the same threshold applies in Kyiv, Saint Petersburg, Odesa, Paris, Rome and beyond. An architecturally exceptional palace that houses a museum is assessed as a **palace/ensemble**, not marked down for functioning as a museum. Likewise, the name, popularity, collection size or economic value of a museum is insufficient for monument rarity.
 
+**Conservation and reconstruction neutrality:** restoration after a disaster, replacement of lost fabric, conservation of authentic ruins, or a protective reconstruction **never automatically lowers a historical landmark's tier**. Review (a) independently evidenced historical/architectural influence of the *original landmark* and (b) the documented survival/reconstruction of its fabric **as separate factual fields**. Do not describe a modern reconstruction as wholly original, and do not elevate a generic replica with no verified historical subject solely for resembling an old monument. Apply the same test to Notre-Dame de Paris (restored after the 2019 fire) and Kyiv's Golden Gate (authentic eleventh-century remains protected by a reconstruction pavilion erected in 1982).
+
 ## Evidence and decision record
 
 Before adding a non-Common `(archive_feature_id, rarity)` to the registry, a review record MUST document:
