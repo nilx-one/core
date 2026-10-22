@@ -141,3 +141,7 @@ assert.equal(
   core.apply_business_point_command('', '{"op":"withdraw"}', '01'),
   '{"error":"invalid","ok":false}',
 );
+
+const subscription = JSON.stringify({bond_pub_dress: '0x0sky', checked_at_ms: '100', refresh_after_ms: '400', entitlement: {tier: 'exclusive', starts_at_ms: '150', expires_at_ms: '300'}});
+assert.deepEqual(JSON.parse(core.subscription_status(subscription, '0x0sky', '200')), {kind: 'active', bond_pub_dress: '0x0sky', tier: 'exclusive', valid_until_ms: '300'});
+assert.deepEqual(JSON.parse(core.subscription_status(subscription, '0x1other', '200')), {kind: 'unknown'});

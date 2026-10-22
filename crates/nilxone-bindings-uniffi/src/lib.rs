@@ -156,6 +156,17 @@ pub fn fixture_corpus_digest() -> String {
     nilxone_kernel::fixture_corpus_digest().to_owned()
 }
 
+/// Resolves the same subscription status as Wasm; no UI or payment semantics.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn subscription_status(snapshot: String, owner: String, now_ms: String) -> String {
+    nilxone_contracts::subscription_status_wire(&snapshot, &owner, &now_ms)
+}
+
 uniffi::setup_scaffolding!();
 
 /// Applies one observation to local AI Bond needs and spatial state.
