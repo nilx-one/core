@@ -25,6 +25,8 @@ Target tiers and old numeric tiers cannot safely share an unversioned protocol:
 
 A future PR must bind every persisted, transmitted and rewarded find to its originating catalog/roll version and preserve legacy receipts, XP and inventory; then supply target item pools, reviewed five-tier drop weights, deterministic golden vectors, service entitlement checks, Web preference migration and synchronized rollout. No historical `legendary` item may be automatically treated as paid Special or Exclusive.
 
+Experience Orbs reuse these names and multipliers for their own, separate rules ([orb spills](orb-spills.md), v4): an orb's chance is `1 / multiplier` under its landmark's rarity and it pays `orb_experience` (10 / 20 / 40 / 80 / 160), never `base_find_xp`. Orbs are not gated by a subscription.
+
 `RarityV3` does **not** itself authorize collection or grant paid access. The actual entitlement comes from the identity service, and no find event writes BondChain/Relationship truth.
 
 ---

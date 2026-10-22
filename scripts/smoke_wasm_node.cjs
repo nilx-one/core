@@ -69,13 +69,14 @@ const cellWorld = JSON.parse(core.orb_world(JSON.stringify({
   cells: [{
     key: cellKey,
     center: { longitude_e7: '304461000', latitude_e7: '504650000' },
-    landmarks: [{ at: { longitude_e7: '304470000', latitude_e7: '504665000' }, rarity: 'exclusive' }],
+    registry: 1,
+    rated_landmarks: [{ id: 'n1', at: { longitude_e7: '304470000', latitude_e7: '504665000' } }],
     appeared_at: '1000',
   }],
 }), '2000'));
 assert.equal(cellWorld.ok, true);
 assert.equal(cellWorld.view.orbs.length, 10);
-assert.equal(cellWorld.view.orbs[0].id, `orb:cell:${cellKey}:0`);
+assert.equal(cellWorld.view.orbs[0].id, `orb:cell:${cellKey}:1:~:0`);
 assert.equal(cellWorld.view.next_expiry, null);
 assert.equal(cellWorld.view.orbs[0].rarity, 'common');
 assert.ok(cellWorld.view.orbs.every((orb) => ['common', 'uncommon', 'rare', 'special', 'exclusive'].includes(orb.rarity)));

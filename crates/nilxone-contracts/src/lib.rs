@@ -25,10 +25,10 @@ mod geography;
 mod identifier;
 mod inventory;
 mod inventory_wire;
+mod landmark_rarity;
 mod orb_spill;
 mod pub_dress;
 mod pub_dress_label;
-mod rarity_v2;
 mod rarity_v3;
 mod scalar;
 mod spoken_line;
@@ -94,19 +94,23 @@ pub use inventory_wire::{
     apply_inventory_command, backpack_gift_due_wire, economy_catalog_json, find_item_wire,
     picks_up_wire, xping_repair_wire,
 };
+pub use landmark_rarity::{
+    LANDMARK_ID_MAX, LANDMARK_RARITY_REGISTRY_VERSION, is_landmark_id, is_registry_version,
+    landmark_rarity,
+};
 pub use orb_spill::{
     CELL_ORBS, CellLandmark, CellOrbSpot, CellSpill, DrawnOrb, KnownSpill, LANDMARK_ORBS,
     MIN_TRAIL_METERS, ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN, ORB_PICKUP_METERS,
-    ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld,
-    cell_orb_count, cell_orb_id, cell_orbs, orb_award, orb_count, orb_id, orb_trail, orb_trail_via,
-    orb_world, orb_world_wire, trail_start,
+    ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld, RatedOrbSpot,
+    cell_orb_count, cell_orb_id, cell_orbs, cell_orbs_rated, orb_count, orb_experience, orb_id,
+    orb_rarity_roll, orb_trail, orb_trail_via, orb_world, orb_world_wire, rated_orb_award,
+    rated_orb_id, trail_start,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
     PUB_DRESS_LABEL_MAX_OCTETS, PUB_DRESS_LABEL_SUFFIX_MAX_LENGTH, PUB_DRESS_UNICODE_VERSION,
     PUB_DRESS_UTS46_IMPLEMENTATION, PubDressLabel, PubDressLabelError, PubDressStem,
 };
-pub use rarity_v2::RarityV2;
 pub use rarity_v3::{RARITY_V3_VERSION, RarityV3};
 pub use scalar::{DecimalU64, DecimalU64Error};
 pub use spoken_line::{

@@ -119,8 +119,8 @@ pub fn orb_spill_version() -> u32 {
 /// Orb spill layout through the same Core wire as Web/Wasm. The optional
 /// `via` landmark is navigation only; the find and the orb identities remain
 /// unchanged. Since v3, `cells` carries the per-cell spills the identity
-/// service answered; since v4 its landmarks carry a rarity and each cell orb
-/// reports its own. `now_ms` is canonical decimal milliseconds.
+/// service answered; since v4 a spill may name a landmark rarity `registry`
+/// with `rated_landmarks`, and each rated orb reports its rarity. `now_ms` is canonical decimal milliseconds.
 ///
 /// Returns `{"ok":true,"view":…}` or `{"ok":false,"error":"invalid"}`.
 #[must_use]
@@ -256,7 +256,7 @@ mod tests {
             nilxone_contracts::ORB_SPILL_VERSION
         );
         assert_eq!(super::orb_spill_version(), 4);
-        let cells = r#"{"spills":[],"cells":[{"key":"5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f","center":{"longitude_e7":"304461000","latitude_e7":"504650000"},"landmarks":[{"at":{"longitude_e7":"304470000","latitude_e7":"504665000"},"rarity":"exclusive"}],"appeared_at":"1000"}],"picked":[],"bond":null,"avaia":null}"#;
+        let cells = r#"{"spills":[],"cells":[{"key":"5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f","center":{"longitude_e7":"304461000","latitude_e7":"504650000"},"registry":1,"rated_landmarks":[{"id":"n1","at":{"longitude_e7":"304470000","latitude_e7":"504665000"}}],"appeared_at":"1000"}],"picked":[],"bond":null,"avaia":null}"#;
         assert_eq!(
             super::orb_world(cells.to_owned(), "2000".to_owned()),
             nilxone_contracts::orb_world_wire(cells, 2_000)
