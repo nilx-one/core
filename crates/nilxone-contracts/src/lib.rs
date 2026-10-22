@@ -32,6 +32,7 @@ mod pub_dress_label;
 mod rarity_v3;
 mod scalar;
 mod spoken_line;
+mod subscription;
 mod version;
 mod xping_engine;
 
@@ -115,6 +116,10 @@ pub use scalar::{DecimalU64, DecimalU64Error};
 pub use spoken_line::{
     EARSHOT_MAX_METERS, EarshotRadius, EarshotRadiusError, SPOKEN_TEXT_MAX_SCALARS, SpokenLine,
     SpokenText, SpokenTextError, distance_meters, within_earshot,
+};
+pub use subscription::{
+    SubscriptionEntitlement, SubscriptionSnapshot, SubscriptionStatus, SubscriptionTier,
+    subscription_status, subscription_status_wire,
 };
 pub use version::{ContractVersion, VersionError};
 

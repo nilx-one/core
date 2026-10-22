@@ -104,6 +104,13 @@ pub fn business_point_view(state: &str, now_s: &str, organization_verified: bool
     }
 }
 
+/// Resolves a shared subscription status, never a payment or access grant.
+#[must_use]
+#[wasm_bindgen]
+pub fn subscription_status(snapshot: &str, owner: &str, now_ms: &str) -> String {
+    nilxone_contracts::subscription_status_wire(snapshot, owner, now_ms)
+}
+
 /// Returns the pinned Unicode version used by the `PubDress` scalar policy.
 #[must_use]
 #[wasm_bindgen]
