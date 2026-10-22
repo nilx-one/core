@@ -16,9 +16,10 @@
 //! landmark's rarity from its own versioned registry, never from the host.
 //! The cell's own five are Common; each landmark's five roll at least rarity
 //! `r` with chance `1 / multiplier(r)`, never rarer than the landmark. An orb
-//! pays [`orb_experience`]: 10, 20, 40, 80 or 160. Both are orb rules alone,
-//! apart from find rates and find XP. A rated orb's id names its key,
-//! registry, landmark and number, so the same id always prices the same.
+//! pays 10, 20, 40, 80 or 160. Both are orb rules alone, apart from find
+//! rates and find XP, and both are frozen with the registry version. A rated
+//! orb's id names its key, registry, landmark and number, so the same id
+//! always rolls and prices the same.
 //!
 //! The per-find spill below (v1, v2) stays readable for older hosts:
 //! Each find in an opened cell spills a short trail of orbs, in small clumps,
@@ -39,7 +40,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::find_item::{artifact_segment, fnv1a32};
-use crate::landmark_rarity::{is_registry_version, landmark_rarity};
+use crate::landmark_rarity::{REGISTRIES, Registry, rarity_in, registry_in};
 use crate::rarity_v3::RarityV3;
 use crate::spoken_line::{CENTIMETERS_PER_DEGREE, cosine_millionths};
 use crate::{DecimalU64, GEO_COORDINATE_E7_SCALE, GeoCoordinate, distance_meters};
@@ -70,7 +71,6 @@ const COUNT_DOMAIN: &str = "nilx-one.orbs.count.v1:";
 const CLUMP_DOMAIN: &str = "nilx-one.orbs.clump.v1:";
 const SCATTER_DOMAIN: &str = "nilx-one.orbs.scatter.v1:";
 const CELL_SCATTER_DOMAIN: &str = "nilx-one.orbs.cell.v1:";
-const CELL_RARITY_DOMAIN: &str = "nilx-one.orbs.rarity.v1:";
 const RATED_SCATTER_DOMAIN: &str = "nilx-one.orbs.rated.v1:";
 /// Stands for the cell itself where a rated orb id names a landmark.
 const OWN_ORBS: &str = "~";
@@ -327,27 +327,6 @@ pub fn cell_orb_count(landmarks: usize) -> u32 {
     CELL_ORBS.saturating_add(LANDMARK_ORBS.saturating_mul(landmarks))
 }
 
-/// What one Experience Orb of `rarity` pays whoever picks it up:
-/// [`ORB_EXPERIENCE`] times the rarity's multiplier, 10, 20, 40, 80 or 160.
-///
-/// This is the orb reward table alone. A find's reward is
-/// [`RarityV3::base_find_xp`]; neither table prices the other.
-#[must_use]
-pub fn orb_experience(rarity: RarityV3) -> u32 {
-    ORB_EXPERIENCE * u32::try_from(rarity.price_multiplier()).unwrap_or(1)
-}
-
-/// The rarity a uniform 32-bit `draw` rolls for an orb under `ceiling`: at
-/// least rarity `r` with chance `1 / multiplier(r)` (one in two Uncommon or
-/// rarer, one in sixteen Exclusive), never rarer than the ceiling. This is
-/// the orb chance rule alone; find encounter rates are a separate table.
-#[must_use]
-pub fn orb_rarity_roll(draw: u32, ceiling: RarityV3) -> RarityV3 {
-    let steps = u32::from(ceiling.tier() - 1);
-    let step = u8::try_from(draw.leading_zeros().min(steps)).unwrap_or(0);
-    RarityV3::from_v3_tier(step + 1).unwrap_or(RarityV3::Common)
-}
-
 /// The id of one of a cell's orbs (v3): `orb:cell:`, the cell key, and which
 /// orb.
 ///
@@ -454,12 +433,22 @@ pub fn rated_orb_id(
     landmark: Option<&str>,
     n: u32,
 ) -> Result<String, OrbError> {
+    rated_orb_id_in(&REGISTRIES, key, registry, landmark, n)
+}
+
+fn rated_orb_id_in(
+    registries: &[Registry],
+    key: &str,
+    registry: u32,
+    landmark: Option<&str>,
+    n: u32,
+) -> Result<String, OrbError> {
     if !is_cell_key(key) {
         return Err(OrbError::CellKey);
     }
     let valid = match landmark {
-        Some(id) => landmark_rarity(registry, id).is_some(),
-        None => is_registry_version(registry),
+        Some(id) => rarity_in(registries, registry, id).is_some(),
+        None => registry_in(registries, registry).is_some(),
     };
     if !valid || n >= LANDMARK_ORBS {
         return Err(OrbError::Landmark);
@@ -480,6 +469,10 @@ pub fn rated_orb_id(
 /// Returns [`OrbError::CellKey`] or [`OrbError::Landmark`] for an id that is
 /// not a rated cell orb.
 pub fn rated_orb_award(orb_id: &str) -> Result<(RarityV3, u32), OrbError> {
+    rated_orb_award_in(&REGISTRIES, orb_id)
+}
+
+fn rated_orb_award_in(registries: &[Registry], orb_id: &str) -> Result<(RarityV3, u32), OrbError> {
     let rest = orb_id.strip_prefix("orb:cell:").ok_or(OrbError::CellKey)?;
     let mut parts = rest.split(':');
     let (Some(key), Some(registry), Some(landmark), Some(n), None) = (
@@ -495,11 +488,13 @@ pub fn rated_orb_award(orb_id: &str) -> Result<(RarityV3, u32), OrbError> {
     let n: u32 = canonical_u32(n).ok_or(OrbError::Landmark)?;
     let landmark = (landmark != OWN_ORBS).then_some(landmark);
     // Re-derive the id: only a canonical one is an orb.
-    if rated_orb_id(key, registry, landmark, n)? != orb_id {
+    if rated_orb_id_in(registries, key, registry, landmark, n)? != orb_id {
         return Err(OrbError::Landmark);
     }
-    let rarity = rated_orb_rarity(key, registry, landmark, n);
-    Ok((rarity, orb_experience(rarity)))
+    let rules = registry_in(registries, registry).ok_or(OrbError::Landmark)?;
+    let rarity = rated_orb_rarity_in(registries, key, registry, landmark, n);
+    let paid = rules.experience[usize::from(rarity.tier() - 1)];
+    Ok((rarity, paid))
 }
 
 fn canonical_u32(text: &str) -> Option<u32> {
@@ -508,13 +503,20 @@ fn canonical_u32(text: &str) -> Option<u32> {
 }
 
 /// The rarity of rated orb `n` around `landmark` (Common for the cell's own).
-fn rated_orb_rarity(key: &str, registry: u32, landmark: Option<&str>, n: u32) -> RarityV3 {
-    let Some(id) = landmark else {
+/// Under that registry's own frozen roll and hash domain.
+fn rated_orb_rarity_in(
+    registries: &[Registry],
+    key: &str,
+    registry: u32,
+    landmark: Option<&str>,
+    n: u32,
+) -> RarityV3 {
+    let (Some(id), Some(rules)) = (landmark, registry_in(registries, registry)) else {
         return RarityV3::Common;
     };
-    let ceiling = landmark_rarity(registry, id).unwrap_or(RarityV3::Common);
-    orb_rarity_roll(
-        fnv1a32(CELL_RARITY_DOMAIN, &format!("{key}:{registry}:{id}:{n}")),
+    let ceiling = rarity_in(registries, registry, id).unwrap_or(RarityV3::Common);
+    (rules.roll)(
+        fnv1a32(rules.roll_domain, &format!("{key}:{registry}:{id}:{n}")),
         ceiling,
     )
 }
@@ -550,6 +552,14 @@ pub fn cell_orbs_rated(
     }
     let mut sorted: Vec<&CellLandmark> = landmarks.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    // A repeat must agree on where its landmark stands; otherwise which one
+    // survives would move an orb under the same id.
+    if sorted
+        .windows(2)
+        .any(|pair| pair[0].id == pair[1].id && pair[0].at != pair[1].at)
+    {
+        return Err(OrbError::Landmark);
+    }
     sorted.dedup_by(|a, b| a.id == b.id);
     let around = core::iter::once((None, center, CELL_SCATTER_CM)).chain(
         sorted
@@ -562,7 +572,7 @@ pub fn cell_orbs_rated(
             let id = rated_orb_id(key, registry, landmark, n)?;
             let seed = format!("{key}:{}:{n}", landmark.unwrap_or(OWN_ORBS));
             spots.push(RatedOrbSpot {
-                rarity: rated_orb_rarity(key, registry, landmark, n),
+                rarity: rated_orb_rarity_in(&REGISTRIES, key, registry, landmark, n),
                 landmark: landmark.map(str::to_owned),
                 at: offset(
                     middle,
@@ -1305,7 +1315,10 @@ mod tests {
 
     #[test]
     fn an_orb_pays_ten_times_its_multiplier_apart_from_find_xp() {
-        let orb: Vec<u32> = RarityV3::ALL.into_iter().map(orb_experience).collect();
+        let orb: Vec<u32> = RarityV3::ALL
+            .into_iter()
+            .map(|rarity| crate::orb_experience(1, rarity).expect("registry 1"))
+            .collect();
         assert_eq!(orb, [10, 20, 40, 80, 160]);
         let find: Vec<u32> = RarityV3::ALL
             .into_iter()
@@ -1323,17 +1336,17 @@ mod tests {
         for rarity in RarityV3::ALL {
             let at_least = draws
                 .iter()
-                .filter(|draw| orb_rarity_roll(**draw, RarityV3::Exclusive) >= rarity)
+                .filter(|draw| crate::roll_halving(**draw, RarityV3::Exclusive) >= rarity)
                 .count();
             assert_eq!(
                 u64::try_from(at_least).expect("count"),
                 total / rarity.price_multiplier()
             );
         }
-        assert_eq!(orb_rarity_roll(0, RarityV3::Rare), RarityV3::Rare);
-        assert_eq!(orb_rarity_roll(0, RarityV3::Common), RarityV3::Common);
+        assert_eq!(crate::roll_halving(0, RarityV3::Rare), RarityV3::Rare);
+        assert_eq!(crate::roll_halving(0, RarityV3::Common), RarityV3::Common);
         assert_eq!(
-            orb_rarity_roll(u32::MAX, RarityV3::Exclusive),
+            crate::roll_halving(u32::MAX, RarityV3::Exclusive),
             RarityV3::Common
         );
     }
@@ -1403,7 +1416,10 @@ mod tests {
         for spot in &spots {
             assert_eq!(
                 rated_orb_award(&spot.id),
-                Ok((spot.rarity, orb_experience(spot.rarity)))
+                Ok((
+                    spot.rarity,
+                    crate::orb_experience(1, spot.rarity).expect("registry 1")
+                ))
             );
         }
         // Golden: registry 1 names nothing yet, so every orb is Common.
@@ -1425,18 +1441,61 @@ mod tests {
     }
 
     #[test]
-    fn a_later_registry_never_reprices_an_earlier_orb_id() {
-        // A registry revision is a new version, so it makes new ids; the old
-        // id still names version 1 and prices as it did.
-        let old = format!("orb:cell:{KEY}:1:n1:0");
-        let before = rated_orb_award(&old);
-        let registries: [&[(&str, RarityV3)]; 2] = [&[], &[("n1", RarityV3::Exclusive)]];
+    fn a_later_registry_never_rerolls_or_reprices_an_earlier_orb_id() {
+        // A later version rates n1 Exclusive, pays half again as much and
+        // rolls everything Common. None of it reaches an id laid under 1.
+        fn always_common(_: u32, _: RarityV3) -> RarityV3 {
+            RarityV3::Common
+        }
+        let registries = [
+            REGISTRIES[0],
+            Registry {
+                landmarks: &[("n1", RarityV3::Exclusive)],
+                experience: [15, 30, 60, 120, 240],
+                roll: always_common,
+                roll_domain: "nilx-one.orbs.rarity.test:",
+            },
+        ];
+        for seed in 0..64 {
+            let key = key_of(seed);
+            for n in 0..LANDMARK_ORBS {
+                let old = format!("orb:cell:{key}:1:n1:{n}");
+                assert_eq!(
+                    rated_orb_award_in(&registries, &old),
+                    rated_orb_award(&old),
+                    "{old}"
+                );
+                let new = format!("orb:cell:{key}:2:n1:{n}");
+                assert_eq!(
+                    rated_orb_award_in(&registries, &new),
+                    Ok((RarityV3::Common, 15))
+                );
+            }
+        }
+        // Golden: registry 1 names nothing, so this orb is Common for 10.
         assert_eq!(
-            crate::landmark_rarity::rarity_in(&registries, 1, "n1"),
-            Some(RarityV3::Common)
+            rated_orb_award(&format!("orb:cell:{KEY}:1:n1:0")),
+            Ok((RarityV3::Common, 10))
         );
-        assert_eq!(rated_orb_award(&old), before);
-        assert_eq!(before, Ok((RarityV3::Common, 10)));
+    }
+
+    #[test]
+    fn a_repeated_landmark_must_agree_on_where_it_stands() {
+        let conflicting = [sight("n1", landmark_a()), sight("n1", landmark_b())];
+        let reversed = [sight("n1", landmark_b()), sight("n1", landmark_a())];
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &conflicting),
+            Err(OrbError::Landmark)
+        );
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &reversed),
+            Err(OrbError::Landmark)
+        );
+        let agreeing = [sight("n1", landmark_a()), sight("n1", landmark_a())];
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &agreeing),
+            cell_orbs_rated(KEY, cell_middle(), 1, &[sight("n1", landmark_a())])
+        );
     }
 
     #[test]
@@ -1446,8 +1505,8 @@ mod tests {
         for seed in 0..4_000 {
             let key = key_of(seed);
             for n in 0..LANDMARK_ORBS {
-                let draw = fnv1a32(CELL_RARITY_DOMAIN, &format!("{key}:1:n1:{n}"));
-                let rarity = orb_rarity_roll(draw, RarityV3::Exclusive);
+                let draw = fnv1a32(REGISTRIES[0].roll_domain, &format!("{key}:1:n1:{n}"));
+                let rarity = crate::roll_halving(draw, RarityV3::Exclusive);
                 counts[usize::from(rarity.tier() - 1)] += 1;
                 total += 1;
             }

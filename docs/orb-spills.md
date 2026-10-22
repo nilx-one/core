@@ -33,10 +33,10 @@ its stable archive feature **id**. It never carries a rarity: Core reads it.
 | Rule | Value |
 | --- | --- |
 | Landmark rarity | `landmark_rarity(registry, id)`: Core's own versioned registry; a landmark it does not name is `common`; an unpublished version is refused |
-| Orb rarity | the cell's own 5 are `common`; each landmark's 5 roll at least rarity `r` with chance `1 / multiplier(r)` (`orb_rarity_roll`), never rarer than the landmark |
-| Orb experience | `orb_experience(rarity)`: 10, 20, 40, 80 or 160 |
+| Orb rarity | the cell's own 5 are `common`; each landmark's 5 roll under the registry's frozen roll (v1: `roll_halving`, at least rarity `r` with chance `1 / 2^(tier − 1)`), never rarer than the landmark |
+| Orb experience | `orb_experience(registry, rarity)`, frozen with the registry (v1: 10, 20, 40, 80 or 160) |
 | Identity | `orb:cell:<key>:<registry>:<landmark id, or ~ for the cell's own>:<n>`, `n` 0–4 |
-| Order | landmarks are taken in id order, each id once; an orb's place and rarity depend only on its key, registry, landmark and `n` |
+| Order | landmarks are taken in id order, each id once; a repeat with another position is refused; an orb's place and rarity depend only on its key, registry, landmark and `n` |
 
 Rarity names and multipliers are `RarityV3` ([five-tier rarity](rarity-v3.md)).
 The orb **chance** and orb **experience** above are orb rules of their own
@@ -44,8 +44,10 @@ The orb **chance** and orb **experience** above are orb rules of their own
 they are not find encounter rates and not `base_find_xp`, and neither table
 prices the other. Orbs are not gated by a subscription.
 
-A rated orb's id names everything its rarity depends on, and a published
-registry version never changes (a revision is a new version), so
+A registry version freezes the landmark rarities **and** the orb rules laid
+under it: the experience table, the roll and its hash domain. A rated orb's
+id names everything its rarity and experience depend on, and a published
+registry version never changes (a revision of either is a new version), so
 `rated_orb_award(id)` gives the same rarity and experience for the same id on
 every retry and every runtime. The identity service prices a pick-up with it
 after checking what Core cannot: that the `key` is its own keyed digest for

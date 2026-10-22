@@ -96,15 +96,14 @@ pub use inventory_wire::{
 };
 pub use landmark_rarity::{
     LANDMARK_ID_MAX, LANDMARK_RARITY_REGISTRY_VERSION, is_landmark_id, is_registry_version,
-    landmark_rarity,
+    landmark_rarity, orb_experience, roll_halving,
 };
 pub use orb_spill::{
     CELL_ORBS, CellLandmark, CellOrbSpot, CellSpill, DrawnOrb, KnownSpill, LANDMARK_ORBS,
     MIN_TRAIL_METERS, ORB_EXPERIENCE, ORB_LIFETIME_MS, ORB_MAX, ORB_MIN, ORB_PICKUP_METERS,
     ORB_SPILL_VERSION, ORB_STAGGER_MS, OrbError, OrbKind, OrbSpot, OrbView, OrbWorld, RatedOrbSpot,
-    cell_orb_count, cell_orb_id, cell_orbs, cell_orbs_rated, orb_count, orb_experience, orb_id,
-    orb_rarity_roll, orb_trail, orb_trail_via, orb_world, orb_world_wire, rated_orb_award,
-    rated_orb_id, trail_start,
+    cell_orb_count, cell_orb_id, cell_orbs, cell_orbs_rated, orb_count, orb_id, orb_trail,
+    orb_trail_via, orb_world, orb_world_wire, rated_orb_award, rated_orb_id, trail_start,
 };
 pub use pub_dress::{PubDress, PubDressError};
 pub use pub_dress_label::{
