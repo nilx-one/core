@@ -11,6 +11,16 @@
 //! to pay. A cell spill lies until it is picked up, and only on that Bond's
 //! device. Between the Bond and its Avaia, the nearer one reaches an orb.
 //!
+//! Since v4, a spill names a landmark rarity registry version and each
+//! landmark's archive id, and every cell orb has a [`RarityV3`]. Core reads a
+//! landmark's rarity from its own versioned registry, never from the host.
+//! The cell's own five are Common; each landmark's five roll at least rarity
+//! `r` with chance `1 / multiplier(r)`, never rarer than the landmark. An orb
+//! pays 10, 20, 40, 80 or 160. Both are orb rules alone, apart from find
+//! rates and find XP, and both are frozen with the registry version. A rated
+//! orb's id names its key, registry, landmark and number, so the same id
+//! always rolls and prices the same.
+//!
 //! The per-find spill below (v1, v2) stays readable for older hosts:
 //! Each find in an opened cell spills a short trail of orbs, in small clumps,
 //! from the point the host names (the middle of the cell) to where the find
@@ -30,11 +40,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::find_item::{artifact_segment, fnv1a32};
+use crate::landmark_rarity::{REGISTRIES, Registry, rarity_in, registry_in};
+use crate::rarity_v3::RarityV3;
 use crate::spoken_line::{CENTIMETERS_PER_DEGREE, cosine_millionths};
 use crate::{DecimalU64, GEO_COORDINATE_E7_SCALE, GeoCoordinate, distance_meters};
 
 /// Version of the orb rules below; any change to a number raises it.
-pub const ORB_SPILL_VERSION: u32 = 3;
+pub const ORB_SPILL_VERSION: u32 = 4;
 /// What one orb pays whoever picks it up.
 pub const ORB_EXPERIENCE: u32 = 10;
 /// How long a spill lies before it is gone.
@@ -59,6 +71,9 @@ const COUNT_DOMAIN: &str = "nilx-one.orbs.count.v1:";
 const CLUMP_DOMAIN: &str = "nilx-one.orbs.clump.v1:";
 const SCATTER_DOMAIN: &str = "nilx-one.orbs.scatter.v1:";
 const CELL_SCATTER_DOMAIN: &str = "nilx-one.orbs.cell.v1:";
+const RATED_SCATTER_DOMAIN: &str = "nilx-one.orbs.rated.v1:";
+/// Stands for the cell itself where a rated orb id names a landmark.
+const OWN_ORBS: &str = "~";
 /// A cell's own orbs lie at most this far, in centimetres, from its centre
 /// on each axis.
 const CELL_SCATTER_CM: i64 = 2_500;
@@ -85,6 +100,8 @@ pub enum OrbError {
     ArtifactId,
     /// Not a cell key: 64 lowercase hex digits.
     CellKey,
+    /// Not a published landmark registry version, landmark id or orb number.
+    Landmark,
 }
 
 impl core::fmt::Display for OrbError {
@@ -92,6 +109,7 @@ impl core::fmt::Display for OrbError {
         formatter.write_str(match self {
             Self::ArtifactId => "not a canonical artifact id",
             Self::CellKey => "not a cell key",
+            Self::Landmark => "not a rated cell orb",
         })
     }
 }
@@ -309,7 +327,8 @@ pub fn cell_orb_count(landmarks: usize) -> u32 {
     CELL_ORBS.saturating_add(LANDMARK_ORBS.saturating_mul(landmarks))
 }
 
-/// The id of one of a cell's orbs: `orb:cell:`, the cell key, and which orb.
+/// The id of one of a cell's orbs (v3): `orb:cell:`, the cell key, and which
+/// orb.
 ///
 /// # Errors
 ///
@@ -334,8 +353,14 @@ fn cell_scatter(key: &str, index: u32, axis: char, limit: i64) -> i64 {
     i64::from(fnv1a32(CELL_SCATTER_DOMAIN, &format!("{key}:{index}:{axis}")) % span) - limit
 }
 
-/// One orb a cell spilled: which, around which landmark (none for the cell's
-/// own five), and where.
+/// The same, for a rated orb, seeded by its own place in the spill.
+fn rated_scatter(seed: &str, axis: char, limit: i64) -> i64 {
+    let span = u32::try_from(2 * limit + 1).unwrap_or(1);
+    i64::from(fnv1a32(RATED_SCATTER_DOMAIN, &format!("{seed}:{axis}")) % span) - limit
+}
+
+/// One orb a cell spilled (v3): which, around which landmark (none for the
+/// cell's own five), and where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellOrbSpot {
     pub index: u32,
@@ -343,10 +368,10 @@ pub struct CellOrbSpot {
     pub at: GeoCoordinate,
 }
 
-/// Where a cell's orbs lie: the first [`CELL_ORBS`] around its centre, then
-/// [`LANDMARK_ORBS`] around each landmark, in the order the landmarks are
-/// given. The key alone seeds the scatter, so the same answer always lays
-/// the same orbs.
+/// Where a cell's orbs lie (v3): the first [`CELL_ORBS`] around its centre,
+/// then [`LANDMARK_ORBS`] around each landmark, in the order the landmarks
+/// are given. The key alone seeds the scatter, so the same answer always lays
+/// the same orbs. Every v3 orb is Common.
 ///
 /// # Errors
 ///
@@ -383,8 +408,191 @@ pub fn cell_orbs(
     Ok(spots)
 }
 
+/// A landmark in a cell, as the service read it from the published archive:
+/// its stable archive feature id, and where it stands. Its rarity is never
+/// given: Core reads it from the landmark rarity registry.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellLandmark {
+    pub id: String,
+    pub at: GeoCoordinate,
+}
+
+/// The id of a rated cell orb (v4):
+/// `orb:cell:<key>:<registry>:<landmark id, or ~ for the cell's own>:<n>`,
+/// `n` from 0 to 4. It names everything its rarity depends on, so the same id
+/// always has the same rarity and pays the same.
+///
+/// # Errors
+///
+/// Returns [`OrbError::CellKey`] for a bad key, and [`OrbError::Landmark`]
+/// for a landmark id, registry version or `n` that cannot be.
+pub fn rated_orb_id(
+    key: &str,
+    registry: u32,
+    landmark: Option<&str>,
+    n: u32,
+) -> Result<String, OrbError> {
+    rated_orb_id_in(&REGISTRIES, key, registry, landmark, n)
+}
+
+fn rated_orb_id_in(
+    registries: &[Registry],
+    key: &str,
+    registry: u32,
+    landmark: Option<&str>,
+    n: u32,
+) -> Result<String, OrbError> {
+    if !is_cell_key(key) {
+        return Err(OrbError::CellKey);
+    }
+    let valid = match landmark {
+        Some(id) => rarity_in(registries, registry, id).is_some(),
+        None => registry_in(registries, registry).is_some(),
+    };
+    if !valid || n >= LANDMARK_ORBS {
+        return Err(OrbError::Landmark);
+    }
+    Ok(format!(
+        "orb:cell:{key}:{registry}:{}:{n}",
+        landmark.unwrap_or(OWN_ORBS)
+    ))
+}
+
+/// What a rated cell orb is: its rarity and what it pays, read from its id
+/// alone. The identity service prices a pick-up with this, after checking
+/// that the key is its own for that Bond and cell and that the landmark lies
+/// in that cell.
+///
+/// # Errors
+///
+/// Returns [`OrbError::CellKey`] or [`OrbError::Landmark`] for an id that is
+/// not a rated cell orb.
+pub fn rated_orb_award(orb_id: &str) -> Result<(RarityV3, u32), OrbError> {
+    rated_orb_award_in(&REGISTRIES, orb_id)
+}
+
+fn rated_orb_award_in(registries: &[Registry], orb_id: &str) -> Result<(RarityV3, u32), OrbError> {
+    let rest = orb_id.strip_prefix("orb:cell:").ok_or(OrbError::CellKey)?;
+    let mut parts = rest.split(':');
+    let (Some(key), Some(registry), Some(landmark), Some(n), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return Err(OrbError::Landmark);
+    };
+    let registry: u32 = canonical_u32(registry).ok_or(OrbError::Landmark)?;
+    let n: u32 = canonical_u32(n).ok_or(OrbError::Landmark)?;
+    let landmark = (landmark != OWN_ORBS).then_some(landmark);
+    // Re-derive the id: only a canonical one is an orb.
+    if rated_orb_id_in(registries, key, registry, landmark, n)? != orb_id {
+        return Err(OrbError::Landmark);
+    }
+    let rules = registry_in(registries, registry).ok_or(OrbError::Landmark)?;
+    let rarity = rated_orb_rarity_in(registries, key, registry, landmark, n);
+    let paid = rules.experience[usize::from(rarity.tier() - 1)];
+    Ok((rarity, paid))
+}
+
+fn canonical_u32(text: &str) -> Option<u32> {
+    let value: u32 = text.parse().ok()?;
+    (value.to_string() == text).then_some(value)
+}
+
+/// The rarity of rated orb `n` around `landmark` (Common for the cell's own).
+/// Under that registry's own frozen roll and hash domain.
+fn rated_orb_rarity_in(
+    registries: &[Registry],
+    key: &str,
+    registry: u32,
+    landmark: Option<&str>,
+    n: u32,
+) -> RarityV3 {
+    let (Some(id), Some(rules)) = (landmark, registry_in(registries, registry)) else {
+        return RarityV3::Common;
+    };
+    let ceiling = rarity_in(registries, registry, id).unwrap_or(RarityV3::Common);
+    (rules.roll)(
+        fnv1a32(rules.roll_domain, &format!("{key}:{registry}:{id}:{n}")),
+        ceiling,
+    )
+}
+
+/// One rated orb a cell spilled (v4): its id, the landmark it lies around
+/// (none for the cell's own five), where, and how rare.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RatedOrbSpot {
+    pub id: String,
+    pub landmark: Option<String>,
+    pub at: GeoCoordinate,
+    pub rarity: RarityV3,
+}
+
+/// Where a cell's rated orbs lie (v4): five around its centre, Common, then
+/// five around each landmark, rolled under that landmark's rarity in
+/// `registry`. Landmarks are taken in id order and each id once, so neither
+/// the order they are given in nor a repeat changes any orb; each orb's place
+/// and rarity depend only on the key, the registry, its landmark and `n`.
+///
+/// # Errors
+///
+/// Returns [`OrbError::CellKey`] for a bad key and [`OrbError::Landmark`] for
+/// an unpublished registry version or a landmark id that cannot be.
+pub fn cell_orbs_rated(
+    key: &str,
+    center: GeoCoordinate,
+    registry: u32,
+    landmarks: &[CellLandmark],
+) -> Result<Vec<RatedOrbSpot>, OrbError> {
+    if !is_cell_key(key) {
+        return Err(OrbError::CellKey);
+    }
+    let mut sorted: Vec<&CellLandmark> = landmarks.iter().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    // A repeat must agree on where its landmark stands; otherwise which one
+    // survives would move an orb under the same id.
+    if sorted
+        .windows(2)
+        .any(|pair| pair[0].id == pair[1].id && pair[0].at != pair[1].at)
+    {
+        return Err(OrbError::Landmark);
+    }
+    sorted.dedup_by(|a, b| a.id == b.id);
+    let around = core::iter::once((None, center, CELL_SCATTER_CM)).chain(
+        sorted
+            .into_iter()
+            .map(|landmark| (Some(landmark.id.as_str()), landmark.at, LANDMARK_SCATTER_CM)),
+    );
+    let mut spots = Vec::new();
+    for (landmark, middle, limit) in around {
+        for n in 0..LANDMARK_ORBS {
+            let id = rated_orb_id(key, registry, landmark, n)?;
+            let seed = format!("{key}:{}:{n}", landmark.unwrap_or(OWN_ORBS));
+            spots.push(RatedOrbSpot {
+                rarity: rated_orb_rarity_in(&REGISTRIES, key, registry, landmark, n),
+                landmark: landmark.map(str::to_owned),
+                at: offset(
+                    middle,
+                    rated_scatter(&seed, 'n', limit),
+                    rated_scatter(&seed, 'e', limit),
+                ),
+                id,
+            });
+        }
+    }
+    Ok(spots)
+}
+
 /// One cell's spill as the service answered it: its key, its centre, its
 /// landmarks, and when this device first drew it. It lies until picked up.
+///
+/// v3 gives bare `landmarks` and no `registry`; every orb is Common. v4 gives
+/// the `registry` version and `rated_landmarks` with their archive ids, and
+/// Core reads each landmark's rarity from that registry. A spill mixing the
+/// two lies nowhere.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CellSpill {
@@ -392,6 +600,12 @@ pub struct CellSpill {
     pub center: GeoCoordinate,
     #[serde(default)]
     pub landmarks: Vec<GeoCoordinate>,
+    /// The landmark rarity registry version the service answered with (v4).
+    #[serde(default)]
+    pub registry: Option<u32>,
+    /// The cell's landmarks with their archive ids (v4).
+    #[serde(default)]
+    pub rated_landmarks: Vec<CellLandmark>,
     pub appeared_at: DecimalU64,
 }
 
@@ -447,6 +661,10 @@ pub struct DrawnOrb {
     pub kind: OrbKind,
     pub at: GeoCoordinate,
     pub lands_at: DecimalU64,
+    /// A rated cell orb's rarity code (v4); find orbs and v3 cell orbs carry
+    /// none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<&'static str>,
 }
 
 /// Core's answer: what to draw, and what the Bond and the Avaia reach now.
@@ -500,6 +718,7 @@ pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
                 lands_at: DecimalU64::new(
                     appeared.saturating_add((u64::from(spot.index) + 1) * ORB_STAGGER_MS),
                 ),
+                rarity: None,
             });
             lying.push(Lying {
                 id,
@@ -515,6 +734,7 @@ pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
                 lands_at: DecimalU64::new(
                     appeared.saturating_add((u64::from(spill.count) + 2) * ORB_STAGGER_MS),
                 ),
+                rarity: None,
             });
         }
     }
@@ -528,32 +748,54 @@ pub fn orb_world(world: &OrbWorld, now_ms: u64) -> OrbView {
     }
 }
 
-/// Lays the cells' orbs this device has not picked up yet.
+/// Lays the cells' orbs this device has not picked up yet: rated (v4) when
+/// the spill names a registry, else v3. A spill mixing the two lies nowhere.
 fn lay_cells(world: &OrbWorld, orbs: &mut Vec<DrawnOrb>, lying: &mut Vec<Lying>) {
     for cell in &world.cells {
-        let Ok(spots) = cell_orbs(&cell.key, cell.center, &cell.landmarks) else {
-            continue;
+        let laid: Vec<(String, GeoCoordinate, Option<&'static str>)> = match (
+            cell.registry,
+            cell.landmarks.is_empty(),
+            cell.rated_landmarks.is_empty(),
+        ) {
+            (Some(registry), true, _) => {
+                match cell_orbs_rated(&cell.key, cell.center, registry, &cell.rated_landmarks) {
+                    Ok(spots) => spots
+                        .into_iter()
+                        .map(|spot| (spot.id, spot.at, Some(spot.rarity.code())))
+                        .collect(),
+                    Err(_) => continue,
+                }
+            }
+            (None, _, true) => match cell_orbs(&cell.key, cell.center, &cell.landmarks) {
+                Ok(spots) => spots
+                    .into_iter()
+                    .map(|spot| {
+                        (
+                            format!("orb:cell:{}:{}", cell.key, spot.index),
+                            spot.at,
+                            None,
+                        )
+                    })
+                    .collect(),
+                Err(_) => continue,
+            },
+            _ => continue,
         };
         let appeared = cell.appeared_at.get();
-        for spot in spots {
-            let id = format!("orb:cell:{}:{}", cell.key, spot.index);
+        for (index, (id, at, rarity)) in (0_u64..).zip(laid) {
             if world.picked.contains(&id) {
                 continue;
             }
             orbs.push(DrawnOrb {
                 id: id.clone(),
                 kind: OrbKind::Orb,
-                at: spot.at,
+                at,
                 lands_at: DecimalU64::new(
-                    appeared
-                        .saturating_add((u64::from(spot.index) + 1).saturating_mul(ORB_STAGGER_MS)),
+                    appeared.saturating_add((index + 1).saturating_mul(ORB_STAGGER_MS)),
                 ),
+                rarity,
             });
-            lying.push(Lying {
-                id,
-                at: spot.at,
-                cell: true,
-            });
+            lying.push(Lying { id, at, cell: true });
         }
     }
 }
@@ -909,6 +1151,8 @@ mod tests {
             key: KEY.to_owned(),
             center: cell_middle(),
             landmarks,
+            registry: None,
+            rated_landmarks: Vec::new(),
             appeared_at: DecimalU64::new(1_000),
         }
     }
@@ -945,7 +1189,8 @@ mod tests {
 
     #[test]
     fn a_cells_orbs_lie_around_its_centre_and_each_landmark() {
-        let spots = cell_orbs(KEY, cell_middle(), &[landmark_a(), landmark_b()]).expect("orbs");
+        let both = [landmark_a(), landmark_b()];
+        let spots = cell_orbs(KEY, cell_middle(), &both).expect("orbs");
         assert_eq!(spots.len(), 15);
         for spot in &spots[..5] {
             assert_eq!(spot.landmark, None);
@@ -960,10 +1205,7 @@ mod tests {
             };
             assert!(distance_meters(spot.at, at) <= 12);
         }
-        assert_eq!(
-            cell_orbs(KEY, cell_middle(), &[landmark_a(), landmark_b()]),
-            Ok(spots)
-        );
+        assert_eq!(cell_orbs(KEY, cell_middle(), &both), Ok(spots));
         let other = KEY.replace('5', "6");
         assert_ne!(
             cell_orbs(&other, cell_middle(), &[]).expect("orbs")[0].at,
@@ -1055,5 +1297,262 @@ mod tests {
             ),
             r#"{"error":"invalid","ok":false}"#
         );
+    }
+
+    fn key_of(seed: u32) -> String {
+        format!(
+            "{:064x}",
+            u128::from(seed).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c834)
+        )
+    }
+
+    fn sight(id: &str, at: GeoCoordinate) -> CellLandmark {
+        CellLandmark {
+            id: id.to_owned(),
+            at,
+        }
+    }
+
+    #[test]
+    fn an_orb_pays_ten_times_its_multiplier_apart_from_find_xp() {
+        let orb: Vec<u32> = RarityV3::ALL
+            .into_iter()
+            .map(|rarity| crate::orb_experience(1, rarity).expect("registry 1"))
+            .collect();
+        assert_eq!(orb, [10, 20, 40, 80, 160]);
+        let find: Vec<u32> = RarityV3::ALL
+            .into_iter()
+            .map(RarityV3::base_find_xp)
+            .collect();
+        assert_ne!(orb, find);
+    }
+
+    #[test]
+    fn an_orb_roll_is_at_least_r_with_chance_one_in_its_multiplier() {
+        let draws: Vec<u32> = (0..=u16::MAX)
+            .map(|high| (u32::from(high) << 16) | 0x1234)
+            .collect();
+        let total = u64::try_from(draws.len()).expect("count");
+        for rarity in RarityV3::ALL {
+            let at_least = draws
+                .iter()
+                .filter(|draw| crate::roll_halving(**draw, RarityV3::Exclusive) >= rarity)
+                .count();
+            assert_eq!(
+                u64::try_from(at_least).expect("count"),
+                total / rarity.price_multiplier()
+            );
+        }
+        assert_eq!(crate::roll_halving(0, RarityV3::Rare), RarityV3::Rare);
+        assert_eq!(crate::roll_halving(0, RarityV3::Common), RarityV3::Common);
+        assert_eq!(
+            crate::roll_halving(u32::MAX, RarityV3::Exclusive),
+            RarityV3::Common
+        );
+    }
+
+    #[test]
+    fn a_rated_spill_is_five_common_and_five_per_landmark_in_id_order() {
+        let given = [sight("n2", landmark_b()), sight("n1", landmark_a())];
+        let spots = cell_orbs_rated(KEY, cell_middle(), 1, &given).expect("orbs");
+        assert_eq!(spots.len(), 15);
+        assert!(spots[..5].iter().all(|spot| spot.landmark.is_none()
+            && spot.rarity == RarityV3::Common
+            && distance_meters(spot.at, cell_middle()) <= 36));
+        assert!(
+            spots[5..10]
+                .iter()
+                .all(|spot| spot.landmark.as_deref() == Some("n1")
+                    && distance_meters(spot.at, landmark_a()) <= 12)
+        );
+        assert!(
+            spots[10..]
+                .iter()
+                .all(|spot| spot.landmark.as_deref() == Some("n2")
+                    && distance_meters(spot.at, landmark_b()) <= 12)
+        );
+        assert_eq!(spots[0].id, format!("orb:cell:{KEY}:1:~:0"));
+        assert_eq!(spots[5].id, format!("orb:cell:{KEY}:1:n1:0"));
+        // Order and repeats change nothing.
+        let reordered = [
+            sight("n1", landmark_a()),
+            sight("n2", landmark_b()),
+            sight("n1", landmark_a()),
+        ];
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &reordered),
+            Ok(spots.clone())
+        );
+        // An orb does not move or change when another landmark comes or goes.
+        let alone =
+            cell_orbs_rated(KEY, cell_middle(), 1, &[sight("n2", landmark_b())]).expect("orbs");
+        assert_eq!(alone[5..], spots[10..]);
+    }
+
+    #[test]
+    fn a_rated_spill_refuses_an_unpublished_registry_or_a_bad_landmark_id() {
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 0, &[]),
+            Err(OrbError::Landmark)
+        );
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 2, &[]),
+            Err(OrbError::Landmark)
+        );
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &[sight("a:b", landmark_a())]),
+            Err(OrbError::Landmark)
+        );
+        assert_eq!(
+            cell_orbs_rated("nope", cell_middle(), 1, &[]),
+            Err(OrbError::CellKey)
+        );
+    }
+
+    #[test]
+    fn a_rated_orb_prices_from_its_id_alone_and_only_a_canonical_id() {
+        let spots =
+            cell_orbs_rated(KEY, cell_middle(), 1, &[sight("n1", landmark_a())]).expect("orbs");
+        for spot in &spots {
+            assert_eq!(
+                rated_orb_award(&spot.id),
+                Ok((
+                    spot.rarity,
+                    crate::orb_experience(1, spot.rarity).expect("registry 1")
+                ))
+            );
+        }
+        // Golden: registry 1 names nothing yet, so every orb is Common.
+        assert_eq!(
+            rated_orb_award(&format!("orb:cell:{KEY}:1:n1:4")),
+            Ok((RarityV3::Common, 10))
+        );
+        for bad in [
+            format!("orb:cell:{KEY}:1:n1:5"),
+            format!("orb:cell:{KEY}:01:n1:0"),
+            format!("orb:cell:{KEY}:2:n1:0"),
+            format!("orb:cell:{KEY}:1:n1:0:0"),
+            format!("orb:cell:{KEY}:1:a.b:+1"),
+            format!("orb:cell:{KEY}:0"),
+            "orb:art:seg:1".to_owned(),
+        ] {
+            assert!(rated_orb_award(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_later_registry_never_rerolls_or_reprices_an_earlier_orb_id() {
+        // A later version rates n1 Exclusive, pays half again as much and
+        // rolls everything Common. None of it reaches an id laid under 1.
+        fn always_common(_: u32, _: RarityV3) -> RarityV3 {
+            RarityV3::Common
+        }
+        let registries = [
+            REGISTRIES[0],
+            Registry {
+                landmarks: &[("n1", RarityV3::Exclusive)],
+                experience: [15, 30, 60, 120, 240],
+                roll: always_common,
+                roll_domain: "nilx-one.orbs.rarity.test:",
+            },
+        ];
+        for seed in 0..64 {
+            let key = key_of(seed);
+            for n in 0..LANDMARK_ORBS {
+                let old = format!("orb:cell:{key}:1:n1:{n}");
+                assert_eq!(
+                    rated_orb_award_in(&registries, &old),
+                    rated_orb_award(&old),
+                    "{old}"
+                );
+                let new = format!("orb:cell:{key}:2:n1:{n}");
+                assert_eq!(
+                    rated_orb_award_in(&registries, &new),
+                    Ok((RarityV3::Common, 15))
+                );
+            }
+        }
+        // Golden: registry 1 names nothing, so this orb is Common for 10.
+        assert_eq!(
+            rated_orb_award(&format!("orb:cell:{KEY}:1:n1:0")),
+            Ok((RarityV3::Common, 10))
+        );
+    }
+
+    #[test]
+    fn a_repeated_landmark_must_agree_on_where_it_stands() {
+        let conflicting = [sight("n1", landmark_a()), sight("n1", landmark_b())];
+        let reversed = [sight("n1", landmark_b()), sight("n1", landmark_a())];
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &conflicting),
+            Err(OrbError::Landmark)
+        );
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &reversed),
+            Err(OrbError::Landmark)
+        );
+        let agreeing = [sight("n1", landmark_a()), sight("n1", landmark_a())];
+        assert_eq!(
+            cell_orbs_rated(KEY, cell_middle(), 1, &agreeing),
+            cell_orbs_rated(KEY, cell_middle(), 1, &[sight("n1", landmark_a())])
+        );
+    }
+
+    #[test]
+    fn about_one_in_sixteen_orbs_under_an_exclusive_ceiling_is_exclusive() {
+        let mut counts = [0_u64; 5];
+        let mut total = 0_u64;
+        for seed in 0..4_000 {
+            let key = key_of(seed);
+            for n in 0..LANDMARK_ORBS {
+                let draw = fnv1a32(REGISTRIES[0].roll_domain, &format!("{key}:1:n1:{n}"));
+                let rarity = crate::roll_halving(draw, RarityV3::Exclusive);
+                counts[usize::from(rarity.tier() - 1)] += 1;
+                total += 1;
+            }
+        }
+        // 20 000 rolls: at least rarity r is expected total / multiplier(r).
+        for rarity in RarityV3::ALL {
+            let at_least: u64 = counts[usize::from(rarity.tier() - 1)..].iter().sum();
+            let expected = total / rarity.price_multiplier();
+            assert!(
+                at_least.abs_diff(expected) * 100 <= expected * 15,
+                "{rarity:?}: {at_least} of {total}, expected about {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_v4_wire_takes_ids_never_rarities_and_reports_each_orbs_rarity() {
+        let rated = format!(
+            r#"{{"spills":[],"cells":[{{"key":"{KEY}","center":{{"longitude_e7":"304461000","latitude_e7":"504650000"}},"registry":1,"rated_landmarks":[{{"id":"n1","at":{{"longitude_e7":"304470000","latitude_e7":"504665000"}}}}],"appeared_at":"1000"}}]}}"#
+        );
+        let answer: serde_json::Value =
+            serde_json::from_str(&orb_world_wire(&rated, 2_000)).expect("JSON");
+        let orbs = answer["view"]["orbs"].as_array().expect("orbs");
+        assert_eq!(orbs.len(), 10);
+        assert_eq!(orbs[0]["id"], format!("orb:cell:{KEY}:1:~:0"));
+        assert!(orbs.iter().all(|orb| orb["rarity"] == "common"));
+        // A host cannot hand in a rarity.
+        let tampered = rated.replace(r#""id":"n1","#, r#""id":"n1","rarity":"exclusive","#);
+        assert_eq!(
+            orb_world_wire(&tampered, 2_000),
+            r#"{"error":"invalid","ok":false}"#
+        );
+        // Mixing v3 landmarks into a rated spill lays nothing.
+        let mixed = rated.replace(
+            r#""registry":1,"#,
+            r#""registry":1,"landmarks":[{"longitude_e7":"304470000","latitude_e7":"504665000"}],"#,
+        );
+        let mixed: serde_json::Value =
+            serde_json::from_str(&orb_world_wire(&mixed, 2_000)).expect("JSON");
+        assert_eq!(mixed["view"]["orbs"].as_array().expect("orbs").len(), 0);
+        // v3 cells and finds carry no rarity: their output is unchanged.
+        let v3 = format!(
+            r#"{{"spills":[],"cells":[{{"key":"{KEY}","center":{{"longitude_e7":"304461000","latitude_e7":"504650000"}},"landmarks":[{{"longitude_e7":"304470000","latitude_e7":"504665000"}}],"appeared_at":"1000"}}]}}"#
+        );
+        let v3 = orb_world_wire(&v3, 2_000);
+        assert!(v3.contains(&format!(r#""id":"orb:cell:{KEY}:0""#)), "{v3}");
+        assert!(!v3.contains("rarity"), "{v3}");
     }
 }

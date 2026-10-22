@@ -12,21 +12,48 @@ hosts move to cells.
 | Orbs per cell | `5 + 5 × landmarks` (`cell_orb_count`), no cap |
 | Placement | orbs 0–4 within 25 m of the centre on each axis; then 5 per landmark, within 8 m of it on each axis, in the order the landmarks are given |
 | Identity | `orb:cell:<key>:<index>`; `key` is 64 lowercase hex digits |
+| Rarity | none: every v3 orb pays 10 (`ORB_EXPERIENCE`) |
 | Lifetime | none: a cell's orbs lie until picked up |
 | Reach | 15 m or closer (`ORB_PICKUP_METERS`, inclusive) |
 | Between Bond and Avaia | an orb within reach of both goes to the nearer, the Bond on a tie |
-| Pays | 10 experience (`ORB_EXPERIENCE`) to whoever picks it up |
 | Landing | orb `i` lands `70 × (i + 1)` ms after the host first drew the spill |
 
 The identity service answers a cell's spill when the cell opens: an opaque
 `key` (its keyed digest of the Bond and the cell), the cell's `center`, and
-the cell's `landmarks` as it counted them from the published archive. It
-keeps nothing. Core needs no secret and no cell geometry: it lays the orbs
-from that answer alone, the `key` seeding the scatter. So the same answer
-always lays the same orbs, and the service, which can recompute the `key`,
-can check any orb id it is asked to pay (`index < 5 + 5 × landmarks`)
-without having stored the spill. Which landmarks a cell holds, and what a
-landmark is, are not decided here; Core lays what it is given.
+the cell's landmarks from the published archive. It keeps nothing. Core
+needs no secret and no cell geometry: it lays the orbs from that answer, the
+`key` seeding the scatter, so the same answer always lays the same orbs.
+`cell_orbs(key, center, &[GeoCoordinate])` is the v3 layout.
+
+## Rated cell spills (v4)
+
+A v4 spill names a landmark rarity **registry** version and each landmark by
+its stable archive feature **id**. It never carries a rarity: Core reads it.
+
+| Rule | Value |
+| --- | --- |
+| Landmark rarity | `landmark_rarity(registry, id)`: Core's own versioned registry; a landmark it does not name is `common`; an unpublished version is refused |
+| Orb rarity | the cell's own 5 are `common`; each landmark's 5 roll under the registry's frozen roll (v1: `roll_halving`, at least rarity `r` with chance `1 / 2^(tier − 1)`), never rarer than the landmark |
+| Orb experience | `orb_experience(registry, rarity)`, frozen with the registry (v1: 10, 20, 40, 80 or 160) |
+| Identity | `orb:cell:<key>:<registry>:<landmark id, or ~ for the cell's own>:<n>`, `n` 0–4 |
+| Order | landmarks are taken in id order, each id once; a repeat with another position is refused; an orb's place and rarity depend only on its key, registry, landmark and `n` |
+
+Rarity names and multipliers are `RarityV3` ([five-tier rarity](rarity-v3.md)).
+The orb **chance** and orb **experience** above are orb rules of their own
+([0x1 Experience Orb rarity](https://github.com/nilx-one/0x1/blob/master/documents/product-direction/rarity-coefficient.md)):
+they are not find encounter rates and not `base_find_xp`, and neither table
+prices the other. Orbs are not gated by a subscription.
+
+A registry version freezes the landmark rarities **and** the orb rules laid
+under it: the experience table, the roll and its hash domain. A rated orb's
+id names everything its rarity and experience depend on, and a published
+registry version never changes (a revision of either is a new version), so
+`rated_orb_award(id)` gives the same rarity and experience for the same id on
+every retry and every runtime. The identity service prices a pick-up with it
+after checking what Core cannot: that the `key` is its own keyed digest for
+that Bond and cell, and that the named landmark lies in that cell in the
+archive it answered from. Until the service does both, a rated orb is
+presentation only, and its rarity is not an award.
 
 The host passes the answer as one entry of `cells` in the `orb_world` input:
 
@@ -37,7 +64,13 @@ The host passes the answer as one entry of `cells` in the `orb_world` input:
     {
       "key": "5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
       "center": { "longitude_e7": "304461000", "latitude_e7": "504650000" },
-      "landmarks": [{ "longitude_e7": "304470000", "latitude_e7": "504665000" }],
+      "registry": 1,
+      "rated_landmarks": [
+        {
+          "id": "n1",
+          "at": { "longitude_e7": "304470000", "latitude_e7": "504665000" }
+        }
+      ],
       "appeared_at": "1000"
     }
   ],
@@ -47,9 +80,13 @@ The host passes the answer as one entry of `cells` in the `orb_world` input:
 }
 ```
 
-A cell whose `key` is not a key lies nowhere. Cell orbs are drawn with
-`kind` `orb`; a cell has no `goal` and no expiry, so it never moves
-`next_expiry`.
+A landmark carrying a `rarity`, or any other unknown field, makes the input
+invalid. A spill that gives both v3 `landmarks` and a `registry`, or
+`rated_landmarks` without one, lies nowhere, as does a bad key or registry.
+Rated orbs are drawn with `kind` `orb` and their `rarity` code; v3 cell orbs
+and a find's orbs carry no `rarity`, so their output is unchanged. A cell has
+no `goal` and no expiry, so it never moves `next_expiry`. Registry version 1
+names no landmark yet: its curation is a later revision.
 
 ## Find spills (v1, v2)
 
@@ -126,14 +163,17 @@ a spill whose `count` is not its find's are not drawn.
   stagger, reach, and the unchanged Artifact goal must remain identical.
 - **Core v2:** optional `via` guides the geometry without changing identity,
   reward, or goal.
-- **Core v3:** `ORB_SPILL_VERSION = 3`; optional `cells` carries per-cell
-  spills. Find spills, their reach (strictly closer than 15 m) and their ids
-  are unchanged.
+- **Core v3:** optional `cells` carries per-cell spills. Find spills, their
+  reach (strictly closer than 15 m) and their ids are unchanged.
+- **Core v4:** `ORB_SPILL_VERSION = 4`; a cell spill may name a `registry`
+  with `rated_landmarks`, and each rated orb reports its rarity. v3 spills,
+  their ids and placement are unchanged, and so is `cell_orbs`.
 - Both `orb_spill_version()` and `orb_world(...)` are exported through
   **Wasm and UniFFI**. The latter uses canonical decimal-string `now_ms` and
   the same JSON success/error envelope.
 - **Web and iOS:** discover the *actually loaded* Core runtime version before
-  serializing `via` (2 or more) or `cells` (3 or more). A newer Web bundle
+  serializing `via` (2 or more), `cells` (3 or more) or a rated spill
+  (4 or more). A newer Web bundle
   running older Core must omit them: older runtimes reject unknown fields.
   No deployment status is inferred from merging a Core PR, and a newer Core
   library is not proof that all installed hosts have upgraded.

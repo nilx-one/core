@@ -62,21 +62,24 @@ assert.equal(orbWorld.view.orbs.filter((orb) => orb.kind === 'orb').length, 20);
 assert.equal(orbWorld.view.orbs[0].lands_at, '1070');
 assert.equal(orbWorld.view.next_expiry, '1801000');
 assert.deepEqual(JSON.parse(core.orb_world('{}', '1000')), { error: 'invalid', ok: false });
-assert.equal(core.orb_spill_version(), 3);
+assert.equal(core.orb_spill_version(), 4);
 const cellKey = '5f1c0a7e9b2d4c6e8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f';
 const cellWorld = JSON.parse(core.orb_world(JSON.stringify({
   spills: [],
   cells: [{
     key: cellKey,
     center: { longitude_e7: '304461000', latitude_e7: '504650000' },
-    landmarks: [{ longitude_e7: '304470000', latitude_e7: '504665000' }],
+    registry: 1,
+    rated_landmarks: [{ id: 'n1', at: { longitude_e7: '304470000', latitude_e7: '504665000' } }],
     appeared_at: '1000',
   }],
 }), '2000'));
 assert.equal(cellWorld.ok, true);
 assert.equal(cellWorld.view.orbs.length, 10);
-assert.equal(cellWorld.view.orbs[0].id, `orb:cell:${cellKey}:0`);
+assert.equal(cellWorld.view.orbs[0].id, `orb:cell:${cellKey}:1:~:0`);
 assert.equal(cellWorld.view.next_expiry, null);
+assert.equal(cellWorld.view.orbs[0].rarity, 'common');
+assert.ok(cellWorld.view.orbs.every((orb) => ['common', 'uncommon', 'rare', 'special', 'exclusive'].includes(orb.rarity)));
 
 const destination = JSON.parse(core.courier_destination(JSON.stringify({
   origin: { longitude_e7: '305130000', latitude_e7: '504490000' },
