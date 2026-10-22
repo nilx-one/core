@@ -51,6 +51,34 @@ BondChain, Relationship, consent, or presence. Server access checks remain
 authoritative. This additive API is version-one capability, independent of the
 existing contract version; an older runtime without the export is unknown.
 
+## Exclusive priority and paused Special
+
+`SubscriptionClock` is the pure authority-side duration policy. Exclusive has
+priority: while it has remaining time, Special's remaining time is paused.
+At Exclusive's exact expiry, Special resumes automatically with its unconsumed
+duration. Only one tier is effective at any instant.
+
+For example, Special has 8 days remaining when 3 days of Exclusive are granted.
+For the next 3 days only Exclusive runs; afterwards Special still has 8 days.
+Extending Exclusive keeps Special paused. Special time granted while Exclusive
+is active is added to the paused balance, not consumed concurrently.
+
+The clock stores a Bond owner, settlement timestamp and both remaining durations
+as canonical decimal-u64 values. `advance` consumes elapsed Exclusive time first,
+then Special; this works across offline intervals without scheduled jobs.
+`grant` settles before adding an authorized duration and rejects zero time,
+rollback and overflow without changing the original state. `snapshot` projects
+the effective period into the existing Wasm/UniFFI status contract. Consumers
+must refresh at the returned deadline to observe resumed Special; they must not
+infer it from an expired Exclusive snapshot.
+
+The identity authority must persist the clock transactionally, authenticate the
+owner, deduplicate payment/grant events, and supply its own trusted time. These
+pure methods do not provide persistence, payment fulfillment or permission to
+grant subscriptions. Do not expose `grant` as an unauthenticated client action.
+Early revocation/refund handling remains a separate authority decision; this
+policy specifies natural expiry, not refund conversion.
+
 Delivery remains staged: no production entitlement reader or payment fulfillment
 exists yet. An implementation of this resolver alone must not be reported as
 live paid subscriptions.

@@ -35,6 +35,7 @@ mod rarity_v3;
 mod scalar;
 mod spoken_line;
 mod subscription;
+mod subscription_clock;
 mod version;
 mod xping_engine;
 
@@ -129,6 +130,7 @@ pub use subscription::{
     SubscriptionEntitlement, SubscriptionSnapshot, SubscriptionStatus, SubscriptionTier,
     subscription_status, subscription_status_wire,
 };
+pub use subscription_clock::{SubscriptionClock, SubscriptionClockError};
 pub use version::{ContractVersion, VersionError};
 
 /// Normative Core contract version implemented by this workspace.
