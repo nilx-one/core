@@ -52,13 +52,13 @@ fn map_items_in(
         if !is_landmark_id(&landmark.id) {
             return None;
         }
-        if let Some((id, at)) = last {
-            if id == landmark.id {
-                if at != landmark.at {
-                    return None;
-                }
-                continue;
+        if let Some((id, at)) = last
+            && id == landmark.id
+        {
+            if at != landmark.at {
+                return None;
             }
+            continue;
         }
         last = Some((landmark.id.as_str(), landmark.at));
         let rarity = rarity_in(registries, request.registry, &landmark.id)?;
