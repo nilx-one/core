@@ -100,7 +100,7 @@ mod tests {
     use super::*;
 
     fn point() -> GeoCoordinate {
-        GeoCoordinate::new(304461000, 504650000).expect("valid coordinate")
+        GeoCoordinate::new(304_461_000, 504_650_000).expect("valid coordinate")
     }
 
     fn landmark(id: &str, at: GeoCoordinate) -> CellLandmark {
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn conflicting_coordinates_and_invalid_ids_fail_closed() {
         let at = point();
-        let elsewhere = GeoCoordinate::new(304462000, 504650000).expect("valid");
+        let elsewhere = GeoCoordinate::new(304_462_000, 504_650_000).expect("valid");
         let conflicts = LandmarkMapRequest {
             registry: 2,
             landmarks: vec![landmark("one", at), landmark("one", elsewhere)],
