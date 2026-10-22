@@ -30,6 +30,8 @@ needs no secret and no cell geometry: it lays the orbs from that answer, the
 A v4 spill names a landmark rarity **registry** version and each landmark by
 its stable archive feature **id**. It never carries a rarity: Core reads it.
 
+Landmark tier **curation** follows the [evidence and classification policy](landmark-rarity-policy.md): one reviewed archive subject, no automatic promotion from a World Heritage city/zone, and no implied reward or visit evidence.
+
 | Rule | Value |
 | --- | --- |
 | Landmark rarity | `landmark_rarity(registry, id)`: Core's own versioned registry; a landmark it does not name is `common`; an unpublished version is refused |
