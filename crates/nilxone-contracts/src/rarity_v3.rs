@@ -121,7 +121,7 @@ impl RarityV3 {
     ///
     /// The item catalog never needs an individual "celebrity/title" sale price.
     /// A caller can provide a historical/fixture Common base here; normal
-    /// v3 catalog valuations must use [Self::canonical_find_sale_price].
+    /// v3 catalog valuations must use [`Self::canonical_find_sale_price`].
     /// Overflow must not wrap or saturate.
     #[must_use]
     pub fn find_sale_price(self, common_base_seeds: NonZeroU64) -> Option<u64> {
