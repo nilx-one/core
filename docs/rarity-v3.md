@@ -4,15 +4,15 @@ Canonical target: [0x1 product-direction contract](https://github.com/nilx-one/0
 
 **This module is inert.** It does not change the current artifact roll, public rarity wire, inventory valuation, paid pickup, or rewards. Existing `FindTier`/`Rarity` still describe the **legacy** six-tier catalog.
 
-| Target tier | Code | Price factor | Base find XP |
-| ---: | --- | ---: | ---: |
-| 1 | `common` | ×1 | 10 |
-| 2 | `uncommon` | ×2 | 30 |
-| 3 | `rare` | ×4 | 90 |
-| 4 | `special` | ×8 | 270 |
-| 5 | `exclusive` | ×16 | 800 |
+| Target tier | Code | Price factor | Target find resale (seeds, ₴€£) | Base find XP |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | `common` | ×1 | 40 | 10 |
+| 2 | `uncommon` | ×2 | 80 | 30 |
+| 3 | `rare` | ×4 | 160 | 90 |
+| 4 | `special` | ×8 | 320 | 270 |
+| 5 | `exclusive` | ×16 | 640 | 800 |
 
-`RarityV3` holds the approved target numbers and validates tier/code input independently of legacy `Rarity`. Base XP approximates ×3 between successive tiers but uses published integer rewards (810 → 800). `find_sale_price` derives one sale price from a **shared, positive** Common price (and checks overflow), so names, titles and creator identities cannot set arbitrary sale prices. The Common Seeds base is not yet fixed, so no new market price is emitted automatically.
+`RarityV3` holds the approved target numbers and validates tier/code input independently of legacy `Rarity`. Base XP approximates ×3 between successive tiers but uses published integer rewards (810 → 800). `find_sale_price` derives one sale price from a **shared, positive** Common price (and checks overflow), so names, titles and creator identities cannot set arbitrary sale prices. The Common find resale base is now approved at **`FIND_COMMON_BASE_SEEDS = 40`** (40 ₴€£ in in-game `seeds`, not a fiat FX rate), yielding **40 / 80 / 160 / 320 / 640 seeds** at tiers 1–5. This is the staged v3 resale contract, **not** a seeds pickup payout. The Core API still accepts the Common base as an argument; no value is activated in existing rolls, claims, inventory or market pricing until the synchronized v3 rollout.
 
 The multiplier ×2 for prices must also guide future Special/Exclusive subscription prices, with a separate term discount and denomination-aware commercial rounding. **Market** owns payment quotes, not this item contract. Inactive 0xda-market SKUs and old issued prices are not overwritten.
 
