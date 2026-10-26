@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orb_roll_is_at_least_r_with_chance_one_in_its_multiplier() {
+    fn published_v1_orb_roll_halves_each_step_independent_of_find_prices() {
         let draws: Vec<u32> = (0..=u16::MAX)
             .map(|high| (u32::from(high) << 16) | 0x1234)
             .collect();
@@ -1340,7 +1340,7 @@ mod tests {
                 .count();
             assert_eq!(
                 u64::try_from(at_least).expect("count"),
-                total / rarity.price_multiplier()
+                total / (1_u64 << (rarity.tier() - 1))
             );
         }
         assert_eq!(crate::roll_halving(0, RarityV3::Rare), RarityV3::Rare);
@@ -1511,10 +1511,11 @@ mod tests {
                 total += 1;
             }
         }
-        // 20 000 rolls: at least rarity r is expected total / multiplier(r).
+        // Published orb registry v1 halves its probabilities per tier. Never
+        // derive these immutable chances from evolving found-item resale values.
         for rarity in RarityV3::ALL {
             let at_least: u64 = counts[usize::from(rarity.tier() - 1)..].iter().sum();
-            let expected = total / rarity.price_multiplier();
+            let expected = total / (1_u64 << (rarity.tier() - 1));
             assert!(
                 at_least.abs_diff(expected) * 100 <= expected * 15,
                 "{rarity:?}: {at_least} of {total}, expected about {expected}"

@@ -15,6 +15,11 @@ use core::num::NonZeroU64;
 /// Target rarity scale version; not a live find catalog/roll-table version.
 pub const RARITY_V3_VERSION: u32 = 3;
 
+/// The approved Common resale value, in whole in-game seeds (not fiat).
+///
+/// This is an inert v3 pricing contract, not a live claim or wallet credit.
+pub const FIND_COMMON_BASE_SEEDS: u64 = 10;
+
 /// Exactly one rarity per target tier, commonest first.
 ///
 /// No `Legendary` exists in this version. Do not map legacy catalog values
@@ -97,25 +102,38 @@ impl RarityV3 {
         }
     }
 
-    /// Exact tier-relative price multiplier, independent of individual item ID.
+    /// Exact v3 find-resale multiplier: ×4 per tier from Common.
+    ///
+    /// Independent of both base find XP and the immutable XP tables of
+    /// previously published Experience Orb registries.
     #[must_use]
     pub const fn price_multiplier(self) -> u64 {
         match self {
             Self::Common => 1,
-            Self::Uncommon => 2,
-            Self::Rare => 4,
-            Self::Special => 8,
-            Self::Exclusive => 16,
+            Self::Uncommon => 4,
+            Self::Rare => 16,
+            Self::Special => 64,
+            Self::Exclusive => 256,
         }
     }
 
     /// Sale price for a rarity-priced found item at an approved common base.
     ///
     /// The item catalog never needs an individual "celebrity/title" sale price.
-    /// The base value is *not chosen here*. Overflow must not wrap or saturate.
+    /// A caller can provide a historical/fixture Common base here; normal
+    /// v3 catalog valuations must use [`Self::canonical_find_sale_price`].
+    /// Overflow must not wrap or saturate.
     #[must_use]
     pub fn find_sale_price(self, common_base_seeds: NonZeroU64) -> Option<u64> {
         common_base_seeds.get().checked_mul(self.price_multiplier())
+    }
+
+    /// Canonical (pre-activation) resale value for an eligible rarity-priced find.
+    ///
+    /// Never interprets this as a wallet grant merely for collecting an item.
+    #[must_use]
+    pub const fn canonical_find_sale_price(self) -> u64 {
+        FIND_COMMON_BASE_SEEDS * self.price_multiplier()
     }
 }
 
@@ -123,7 +141,7 @@ impl RarityV3 {
 mod tests {
     use core::num::NonZeroU64;
 
-    use super::RarityV3;
+    use super::{FIND_COMMON_BASE_SEEDS, RarityV3};
 
     #[test]
     fn one_distinct_rarity_per_tier_and_no_legacy_legendary() {
@@ -142,18 +160,24 @@ mod tests {
     }
 
     #[test]
-    fn exact_prices_double_per_rarity_without_titles() {
-        let common_base = NonZeroU64::new(50).expect("positive base");
+    fn exact_prices_quadruple_per_rarity_without_titles() {
+        assert_eq!(FIND_COMMON_BASE_SEEDS, 10);
+        let common_base = NonZeroU64::new(FIND_COMMON_BASE_SEEDS).expect("positive base");
         let prices: Vec<_> = RarityV3::ALL
             .into_iter()
             .map(|rarity| rarity.find_sale_price(common_base))
             .collect();
         assert_eq!(
             prices,
-            [Some(50), Some(100), Some(200), Some(400), Some(800)]
+            [Some(10), Some(40), Some(160), Some(640), Some(2_560)]
         );
-        assert_eq!(RarityV3::Special.price_multiplier(), 8);
-        assert_eq!(RarityV3::Exclusive.price_multiplier(), 16);
+        let canonical: Vec<_> = RarityV3::ALL
+            .into_iter()
+            .map(RarityV3::canonical_find_sale_price)
+            .collect();
+        assert_eq!(canonical, [10, 40, 160, 640, 2_560]);
+        assert_eq!(RarityV3::Special.price_multiplier(), 64);
+        assert_eq!(RarityV3::Exclusive.price_multiplier(), 256);
         assert_eq!(RarityV3::Exclusive.find_sale_price(NonZeroU64::MAX), None);
     }
 

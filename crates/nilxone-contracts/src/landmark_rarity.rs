@@ -179,16 +179,15 @@ mod tests {
     }
 
     #[test]
-    fn version_one_pays_ten_times_the_multiplier_and_halves_per_step() {
+    fn version_one_orbs_keep_published_xp_independent_of_find_resale() {
         let paid: Vec<Option<u32>> = RarityV3::ALL
             .into_iter()
             .map(|rarity| orb_experience(1, rarity))
             .collect();
-        let expected: Vec<Option<u32>> = RarityV3::ALL
-            .into_iter()
-            .map(|rarity| u32::try_from(10 * rarity.price_multiplier()).ok())
-            .collect();
-        assert_eq!(paid, expected);
+        // Version 1 is immutable: never derive historical orb XP from the
+        // independently evolving found-item resale price multiplier.
+        assert_eq!(paid, [Some(10), Some(20), Some(40), Some(80), Some(160)]);
+        assert_eq!(RarityV3::Exclusive.price_multiplier(), 256);
         assert_eq!(orb_experience(2, RarityV3::Common), None);
         assert_eq!(roll_halving(0, RarityV3::Exclusive), RarityV3::Exclusive);
         assert_eq!(
