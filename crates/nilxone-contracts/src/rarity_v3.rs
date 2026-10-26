@@ -103,9 +103,9 @@ impl RarityV3 {
     }
 
     /// Exact v3 find-resale multiplier: ×4 per tier from Common.
-///
-/// Independent of both base find XP and the immutable XP tables of
-/// previously published Experience Orb registries.
+    ///
+    /// Independent of both base find XP and the immutable XP tables of
+    /// previously published Experience Orb registries.
     #[must_use]
     pub const fn price_multiplier(self) -> u64 {
         match self {
