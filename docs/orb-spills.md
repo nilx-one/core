@@ -40,7 +40,7 @@ Landmark tier **curation** follows the [evidence and classification policy](land
 | Identity | `orb:cell:<key>:<registry>:<landmark id, or ~ for the cell's own>:<n>`, `n` 0–4 |
 | Order | landmarks are taken in id order, each id once; a repeat with another position is refused; an orb's place and rarity depend only on its key, registry, landmark and `n` |
 
-Rarity names and multipliers are `RarityV3` ([five-tier rarity](rarity-v3.md)).
+Rarity names are shared with `RarityV3` ([five-tier rarity](rarity-v3.md)), but the orb coefficients above are **registry-v1-specific** and remain ×1/×2/×4/×8/×16, regardless of the newly approved ×4-per-tier **seeds resale** factors. Changing `RarityV3::price_multiplier()` for finds must not reprice published orb IDs; decouple any test relying on that function before implementing the updated find-price policy.
 The orb **chance** and orb **experience** above are orb rules of their own
 ([0x1 Experience Orb rarity](https://github.com/nilx-one/0x1/blob/master/documents/product-direction/rarity-coefficient.md)):
 they are not find encounter rates and not `base_find_xp`, and neither table
