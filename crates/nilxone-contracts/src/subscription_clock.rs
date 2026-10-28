@@ -27,6 +27,8 @@ pub struct SubscriptionClock {
 /// Invalid authority input leaves the original clock unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubscriptionClockError {
+    /// Supported paid terms are one, three, six or twelve calendar months.
+    InvalidTerm,
     /// Not a valid Bond identity.
     InvalidOwner,
     /// Authority timestamps must not move backwards.
@@ -40,6 +42,34 @@ pub enum SubscriptionClockError {
 }
 
 impl SubscriptionClock {
+    /// Extend Special by calendar months in UTC, keeping the time of day and
+    /// clamping the day to the last valid day of the destination month.
+    /// The anchor is the projected end of existing Special after Exclusive.
+    /// Later Exclusive grants still pause the resulting remaining duration.
+    ///
+    /// # Errors
+    /// Rejects unsupported terms, invalid clocks and unrepresentable dates.
+    pub fn grant_special_months(
+        &self,
+        months: u32,
+        now_ms: u64,
+    ) -> Result<Self, SubscriptionClockError> {
+        if !matches!(months, 1 | 3 | 6 | 12) {
+            return Err(SubscriptionClockError::InvalidTerm);
+        }
+        let current = self.advance(now_ms)?;
+        let anchor = now_ms
+            .checked_add(current.exclusive_remaining_ms.get())
+            .and_then(|end| end.checked_add(current.special_remaining_ms.get()))
+            .ok_or(SubscriptionClockError::Overflow)?;
+        let timestamp = i64::try_from(anchor).map_err(|_| SubscriptionClockError::Overflow)?;
+        let end = chrono::DateTime::from_timestamp_millis(timestamp)
+            .and_then(|date| date.checked_add_months(chrono::Months::new(months)))
+            .and_then(|date| u64::try_from(date.timestamp_millis()).ok())
+            .ok_or(SubscriptionClockError::Overflow)?;
+        current.grant(SubscriptionTier::Special, end - anchor, now_ms)
+    }
+
     /// An empty clock for a known Bond. Only a trusted authority may grant time.
     ///
     /// # Errors
@@ -173,6 +203,95 @@ impl SubscriptionClock {
 mod tests {
     use super::*;
     use crate::{SubscriptionStatus, subscription_status};
+
+    fn utc(value: &str) -> u64 {
+        u64::try_from(
+            value
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+                .timestamp_millis(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn calendar_terms_preserve_time_and_clamp_end_of_month() {
+        for (start, months, end) in [
+            ("2026-01-31T12:34:56.789Z", 1, "2026-02-28T12:34:56.789Z"),
+            ("2028-01-31T12:34:56.789Z", 1, "2028-02-29T12:34:56.789Z"),
+            ("2028-02-29T12:34:56.789Z", 12, "2029-02-28T12:34:56.789Z"),
+            ("2026-08-31T12:34:56.789Z", 3, "2026-11-30T12:34:56.789Z"),
+            ("2026-08-31T12:34:56.789Z", 6, "2027-02-28T12:34:56.789Z"),
+        ] {
+            let start = utc(start);
+            let clock = SubscriptionClock::new("0x0sky", start)
+                .unwrap()
+                .grant_special_months(months, start)
+                .unwrap();
+            assert_eq!(
+                clock
+                    .snapshot(start, start + 1)
+                    .unwrap()
+                    .entitlement
+                    .unwrap()
+                    .expires_at_ms
+                    .get(),
+                utc(end)
+            );
+        }
+    }
+
+    #[test]
+    fn calendar_extension_uses_existing_end_after_exclusive_and_stays_paused() {
+        let start = utc("2026-01-01T00:00:00Z");
+        let feb = utc("2026-02-01T00:00:00Z");
+        let march = utc("2026-03-01T00:00:00Z");
+        let clock = SubscriptionClock::new("0x0sky", start)
+            .unwrap()
+            .grant_special_months(1, start)
+            .unwrap()
+            .grant_special_months(1, start + 1)
+            .unwrap();
+        assert_eq!(
+            clock
+                .snapshot(start + 1, march)
+                .unwrap()
+                .entitlement
+                .unwrap()
+                .expires_at_ms
+                .get(),
+            march
+        );
+        let paused = SubscriptionClock::new("0x0sky", start)
+            .unwrap()
+            .grant(SubscriptionTier::Exclusive, feb - start, start)
+            .unwrap()
+            .grant_special_months(1, start)
+            .unwrap();
+        assert_eq!(paused.special_remaining_ms.get(), march - feb);
+        assert_eq!(
+            paused.advance(feb - 1).unwrap().special_remaining_ms,
+            paused.special_remaining_ms
+        );
+        assert_eq!(
+            paused
+                .snapshot(feb, march + 1)
+                .unwrap()
+                .entitlement
+                .unwrap()
+                .expires_at_ms
+                .get(),
+            march
+        );
+        assert!(paused.grant_special_months(2, start).is_err());
+        assert!(paused.grant_special_months(1, start - 1).is_err());
+        assert!(
+            SubscriptionClock::new("0x0sky", u64::MAX)
+                .unwrap()
+                .grant_special_months(1, u64::MAX)
+                .is_err()
+        );
+    }
 
     fn upgraded() -> SubscriptionClock {
         SubscriptionClock::new("0x0sky", 100)
