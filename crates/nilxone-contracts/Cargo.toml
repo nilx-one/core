@@ -11,6 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+chrono = { version = "0.4.42", default-features = false, features = ["std"] }
 idna = "=1.1.0"
 # Pin idna's unicode-rs backend and its data tables explicitly so UTS-46
 # behavior cannot drift when a different runtime resolves dependencies.

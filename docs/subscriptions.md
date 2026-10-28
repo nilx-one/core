@@ -53,6 +53,16 @@ existing contract version; an older runtime without the export is unknown.
 
 ## Exclusive priority and paused Special
 
+Paid Special terms are 1, 3, 6 or 12 **calendar months**, not fixed 30-day
+periods. `grant_special_months` uses the authority's UTC time. It extends the
+projected end of existing Special (after queued Exclusive), preserving the
+time of day and clamping to the last valid day of the destination month.
+January 31 plus one month is February 28 (29 in a leap year); February 29
+plus twelve months is February 28. Each purchase applies its full term once.
+The resulting duration is frozen in the clock; subsequent Exclusive grants
+pause it without recalculating or losing purchased time. Payment receipts
+must retain the calendar term and deduplicate it before recalculation.
+
 `SubscriptionClock` is the pure authority-side duration policy. Exclusive has
 priority: while it has remaining time, Special's remaining time is paused.
 At Exclusive's exact expiry, Special resumes automatically with its unconsumed
