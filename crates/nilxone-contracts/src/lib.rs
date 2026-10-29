@@ -150,4 +150,4 @@ pub use xping_engine::{
 };
 
 mod special_seeds_terms;
-pub use special_seeds_terms::valid_special_seeds_terms;
+pub use special_seeds_terms::{SpecialSeedsOrder, special_seeds_term_months};

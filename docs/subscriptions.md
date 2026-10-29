@@ -63,6 +63,12 @@ The resulting duration is frozen in the clock; subsequent Exclusive grants
 pause it without recalculating or losing purchased time. Payment receipts
 must retain the calendar term and deduplicate it before recalculation.
 
+`special_seeds_term_months` gives the term a Special order paid in seeds buys:
+1, 3, 6 or 12 from its SKU, and only for issuer `0x1`, denomination `seeds`, a
+`processing` order and a nonzero price id and amount. It checks structure
+only. Authenticating the issuer, verifying the quote, binding the recipient
+and session, and the atomic debit and grant stay with the authority.
+
 `SubscriptionClock` is the pure authority-side duration policy. Exclusive has
 priority: while it has remaining time, Special's remaining time is paused.
 At Exclusive's exact expiry, Special resumes automatically with its unconsumed

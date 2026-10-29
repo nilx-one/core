@@ -4,45 +4,101 @@
 //! Structural eligibility for issuer-owned Special purchases.
 //! Authentication, quote verification and persistence remain authority concerns.
 
-/// Validate already verified issuer terms without authorizing a debit.
-/// Prices and durations come from the verified order, never a browser balance.
-pub fn valid_special_seeds_terms(
-    sku: &str,
-    issuer: &str,
-    denomination: &str,
-    status: &str,
-    price_id: u64,
-    amount_minor: u64,
-    duration_ms: u64,
-) -> bool {
-    matches!(
-        sku,
-        "0x1_special_1m" | "0x1_special_3m" | "0x1_special_6m" | "0x1_special_12m"
-    ) && issuer == "0x1"
-        && denomination == "seeds"
-        && status == "processing"
-        && price_id > 0
-        && amount_minor > 0
-        && duration_ms > 0
+/// A Special purchase paid in seeds, as the issuer's verified order states it.
+///
+/// Named fields, so a caller cannot silently swap the issuer and the
+/// denomination, or the price id and the amount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpecialSeedsOrder<'a> {
+    pub sku: &'a str,
+    pub issuer: &'a str,
+    pub denomination: &'a str,
+    pub status: &'a str,
+    pub price_id: u64,
+    pub amount_minor: u64,
+}
+
+/// The calendar-month term a structurally eligible Special seeds order buys,
+/// for [`SubscriptionClock::grant_special_months`], or `None` for any other
+/// order. This validates structure only and never authorizes a debit: prices
+/// come from the verified order, never a browser balance.
+///
+/// [`SubscriptionClock::grant_special_months`]: crate::SubscriptionClock::grant_special_months
+#[must_use]
+pub fn special_seeds_term_months(order: &SpecialSeedsOrder<'_>) -> Option<u32> {
+    let months = match order.sku {
+        "0x1_special_1m" => 1,
+        "0x1_special_3m" => 3,
+        "0x1_special_6m" => 6,
+        "0x1_special_12m" => 12,
+        _ => return None,
+    };
+    let eligible = order.issuer == "0x1"
+        && order.denomination == "seeds"
+        && order.status == "processing"
+        && order.price_id > 0
+        && order.amount_minor > 0;
+    eligible.then_some(months)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::valid_special_seeds_terms as valid;
+    use super::{SpecialSeedsOrder, special_seeds_term_months as term};
+    use crate::SubscriptionClock;
+
+    const ORDER: SpecialSeedsOrder<'static> = SpecialSeedsOrder {
+        sku: "0x1_special_1m",
+        issuer: "0x1",
+        denomination: "seeds",
+        status: "processing",
+        price_id: 1,
+        amount_minor: 640,
+    };
+
+    #[test]
+    fn each_special_sku_buys_its_calendar_term() {
+        for (sku, months) in [
+            ("0x1_special_1m", 1),
+            ("0x1_special_3m", 3),
+            ("0x1_special_6m", 6),
+            ("0x1_special_12m", 12),
+        ] {
+            let order = SpecialSeedsOrder { sku, ..ORDER };
+            assert_eq!(term(&order), Some(months), "{sku}");
+            // Every term this accepts is one the clock grants.
+            let clock = SubscriptionClock::new("0x0sky", 1).unwrap();
+            assert!(clock.grant_special_months(months, 1).is_ok(), "{sku}");
+        }
+    }
 
     #[test]
     fn only_special_processing_seed_orders_are_eligible() {
-        for sku in ["0x1_special_1m", "0x1_special_3m", "0x1_special_6m", "0x1_special_12m"] {
-            assert!(valid(sku, "0x1", "seeds", "processing", 1, 640, 1));
-        }
         for sku in ["0x1_exclusive_1m", "0x1_special_2m", "", "0x1_special_1m "] {
-            assert!(!valid(sku, "0x1", "seeds", "processing", 1, 640, 1));
+            assert_eq!(term(&SpecialSeedsOrder { sku, ..ORDER }), None, "{sku:?}");
         }
-        assert!(!valid("0x1_special_1m", "other", "seeds", "processing", 1, 640, 1));
-        assert!(!valid("0x1_special_1m", "0x1", "USDT", "processing", 1, 640, 1));
-        assert!(!valid("0x1_special_1m", "0x1", "seeds", "pending", 1, 640, 1));
-        for (price, amount, duration) in [(0, 640, 1), (1, 0, 1), (1, 640, 0)] {
-            assert!(!valid("0x1_special_1m", "0x1", "seeds", "processing", price, amount, duration));
+        for order in [
+            SpecialSeedsOrder {
+                issuer: "other",
+                ..ORDER
+            },
+            SpecialSeedsOrder {
+                denomination: "USDT",
+                ..ORDER
+            },
+            SpecialSeedsOrder {
+                status: "pending",
+                ..ORDER
+            },
+            SpecialSeedsOrder {
+                price_id: 0,
+                ..ORDER
+            },
+            SpecialSeedsOrder {
+                amount_minor: 0,
+                ..ORDER
+            },
+        ] {
+            assert_eq!(term(&order), None, "{order:?}");
         }
     }
 }
