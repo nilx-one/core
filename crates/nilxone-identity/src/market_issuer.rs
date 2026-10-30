@@ -140,6 +140,10 @@ pub struct MarketIssuerWorker<M> {
     repository: IdentityRepository,
     market: M,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Where the next tick resumes the `processing` scan. Held orders stay
+    /// processing forever; resuming instead of restarting means a backlog of
+    /// them can never hide a later order from recovery.
+    recovery_cursor: std::sync::Mutex<Option<String>>,
 }
 
 impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
@@ -152,33 +156,58 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
             repository,
             market,
             now_ms,
+            recovery_cursor: std::sync::Mutex::new(None),
         }
     }
 
     /// Recovers claimed orders first, then takes new ones. One failing order
     /// does not stop the others; it is retried on the next tick.
+    ///
+    /// Each status is read for at most `MAX_PAGES_PER_TICK` pages. Recovery
+    /// resumes where the previous tick stopped and starts over only after it
+    /// reached the end, so every processing order is visited within
+    /// `ceil(backlog / (MAX_PAGES_PER_TICK * PAGE_LIMIT))` ticks. Pending
+    /// orders leave the queue once claimed, so their scan always starts over.
     pub async fn tick(&self) -> Result<(), MarketIssuerError> {
-        for status in ["processing", "pending"] {
-            let mut cursor: Option<String> = None;
-            for _ in 0..MAX_PAGES_PER_TICK {
-                let page = self.market.orders(status, cursor.as_deref()).await?;
-                for order in &page.orders {
-                    match self.handle(order).await {
-                        Ok(outcome) => {
-                            info!(order = %order.id, ?outcome, "market issuer order handled")
-                        }
-                        Err(failure) => {
-                            warn!(order = %order.id, %failure, "market issuer order deferred")
-                        }
+        let resume = self.recovery_cursor().clone();
+        let stopped = self.scan("processing", resume).await?;
+        *self.recovery_cursor() = stopped;
+        self.scan("pending", None).await?;
+        Ok(())
+    }
+
+    /// Reads up to `MAX_PAGES_PER_TICK` pages from `cursor` and handles each
+    /// order. Returns where to resume, or `None` once the queue's end is read.
+    async fn scan(
+        &self,
+        status: &str,
+        mut cursor: Option<String>,
+    ) -> Result<Option<String>, MarketIssuerError> {
+        for _ in 0..MAX_PAGES_PER_TICK {
+            let page = self.market.orders(status, cursor.as_deref()).await?;
+            for order in &page.orders {
+                match self.handle(order).await {
+                    Ok(outcome) => {
+                        info!(order = %order.id, ?outcome, "market issuer order handled")
+                    }
+                    Err(failure) => {
+                        warn!(order = %order.id, %failure, "market issuer order deferred")
                     }
                 }
-                cursor = page.next_cursor;
-                if cursor.is_none() {
-                    break;
-                }
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return Ok(None);
             }
         }
-        Ok(())
+        Ok(cursor)
+    }
+
+    fn recovery_cursor(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        // A poisoned lock only means a panic elsewhere; the cursor is a hint.
+        self.recovery_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub async fn handle(&self, order: &IssuerOrder) -> Result<Settlement, WorkerFailure> {
@@ -619,6 +648,8 @@ mod tests {
         rejections: Mutex<Vec<String>>,
         expire_on_claim: Mutex<bool>,
         lose_next_fulfil: Mutex<bool>,
+        /// Page size of the fake queue; `None` returns everything at once.
+        page_size: Mutex<Option<usize>>,
     }
 
     impl FakeMarket {
@@ -637,18 +668,23 @@ mod tests {
         async fn orders(
             &self,
             status: &str,
-            _: Option<&str>,
+            cursor: Option<&str>,
         ) -> Result<IssuerOrderPage, MarketIssuerError> {
             let orders = self.orders.lock().unwrap();
-            let mut page: Vec<_> = orders
+            let mut queue: Vec<_> = orders
                 .values()
                 .filter(|o| o.attributes.status == status)
+                .filter(|o| cursor.is_none_or(|after| o.id.as_str() > after))
                 .cloned()
                 .collect();
-            page.sort_by(|a, b| a.id.cmp(&b.id));
+            queue.sort_by(|a, b| a.id.cmp(&b.id));
+            let size = self.page_size.lock().unwrap().unwrap_or(queue.len());
+            let more = queue.len() > size;
+            queue.truncate(size);
+            let next_cursor = more.then(|| queue.last().map(|o| o.id.clone())).flatten();
             Ok(IssuerOrderPage {
-                orders: page,
-                next_cursor: None,
+                orders: queue,
+                next_cursor,
             })
         }
         async fn claim(&self, id: &str) -> Result<IssuerOrder, MarketIssuerError> {
@@ -673,6 +709,10 @@ mod tests {
         }
         async fn reject(&self, id: &str, code: &str) -> Result<IssuerOrder, MarketIssuerError> {
             self.rejections.lock().unwrap().push(code.to_owned());
+            // A stuck order's decision never reaches Market: it stays processing.
+            if id.starts_with("a-stuck-") {
+                return Err(MarketIssuerError::Unavailable);
+            }
             Ok(self.set_status(id, "rejected"))
         }
     }
@@ -989,5 +1029,41 @@ mod tests {
         worker(&fixture, NOW_MS).tick().await.expect("recovery");
         assert_eq!(fixture.market.status("order-0001"), "fulfilled");
         assert_eq!(balance(&fixture).await, 360);
+    }
+
+    #[tokio::test]
+    async fn recovery_resumes_past_a_backlog_that_stays_processing() {
+        let fixture = fixture(1000).await;
+        *fixture.market.page_size.lock().unwrap() = Some(1);
+        // A full tick's worth of orders that stay processing (their decision
+        // never reaches Market), sorted before the one paid order to recover.
+        for index in 0..MAX_PAGES_PER_TICK {
+            let mut stuck = order(&format!("a-stuck-{index:02}"));
+            stuck.attributes.status = "processing".to_owned();
+            stuck.attributes.link_provider_user_id = "w".repeat(43);
+            fixture
+                .market
+                .orders
+                .lock()
+                .unwrap()
+                .insert(stuck.id.clone(), stuck);
+        }
+        fixture.market.set_status("order-0001", "processing");
+
+        worker(&fixture, NOW_MS).tick().await.expect("first tick");
+        assert_eq!(fixture.market.status("order-0001"), "processing");
+        assert!(fixture.market.confirmations.lock().unwrap().is_empty());
+
+        // The same worker resumes after the backlog instead of rescanning it.
+        let recovering = worker(&fixture, NOW_MS);
+        recovering.tick().await.expect("first tick");
+        recovering.tick().await.expect("second tick");
+        assert_eq!(fixture.market.status("order-0001"), "fulfilled");
+        assert_eq!(balance(&fixture).await, 360);
+        // At the end of the queue the scan starts over, so the backlog is
+        // visited again rather than forgotten.
+        let before = fixture.market.rejections.lock().unwrap().len();
+        recovering.tick().await.expect("third tick");
+        assert!(fixture.market.rejections.lock().unwrap().len() > before);
     }
 }
