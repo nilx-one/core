@@ -78,3 +78,12 @@ Licensed under the Mozilla Public License, Version 2.0 (`MPL-2.0`). See [LICENSE
 ---
 
 © 2026 aiaiaiai · aiaiaiai.org
+
+## Shared server authority
+
+[`nilxone-identity`](crates/nilxone-identity/README.md) contains shared Identity
+persistence, wallet/entitlement settlement and the Market issuer adapter. It is
+server-only and is not a dependency of the portable kernel or client bindings.
+Common non-UI rules belong in Core; clients own platform-specific adapters,
+including authentication, payment presentation and navigation. A client payment
+callback cannot authorize a shared grant.
