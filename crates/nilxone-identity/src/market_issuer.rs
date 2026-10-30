@@ -717,6 +717,11 @@ mod tests {
             .execute(&pool)
             .await
             .expect("balance");
+        // A Bond whose starter credit was issued earlier: the balance is exact.
+        repository
+            .mark_starter_seeds_issued_for_test(owner.as_str())
+            .await
+            .expect("spent starter");
         repository
             .create_market_visit(
                 VISIT,
@@ -811,6 +816,22 @@ mod tests {
         assert!(serde_json::to_string(&clock).unwrap().contains("special"));
         worker(&fixture, NOW_MS).tick().await.expect("idle tick");
         assert_eq!(balance(&fixture).await, 360);
+    }
+
+    #[tokio::test]
+    async fn a_bond_without_any_wallet_buys_special_with_its_starter_seeds() {
+        let fixture = fixture(0).await;
+        sqlx::query("DELETE FROM bond_seed_credits")
+            .execute(&fixture.pool)
+            .await
+            .expect("fresh");
+        sqlx::query("DELETE FROM bond_seeds")
+            .execute(&fixture.pool)
+            .await
+            .expect("fresh");
+        worker(&fixture, NOW_MS).tick().await.expect("tick");
+        assert_eq!(fixture.market.status("order-0001"), "fulfilled");
+        assert_eq!(balance(&fixture).await, 10_000 - 640);
     }
 
     #[tokio::test]

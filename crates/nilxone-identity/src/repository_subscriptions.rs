@@ -87,62 +87,84 @@ pub enum StarterSeedsCredit {
     AlreadyGranted,
 }
 
+/// Credits Core's `STARTER_SEEDS` once per Bond, inside the caller's write
+/// transaction, so a Bond's first purchase or repair already sees them.
+///
+/// Owner decision (2026-10-30): until verified gameplay credits (jobs) exist,
+/// every Bond gets this once: a new Bond on its first wallet use, an existing
+/// Bond the same way. The once-only receipt in `bond_seed_credits` follows a
+/// rename, so the credit is never issued again, even after it is spent. A
+/// browser `inventory.state` snapshot is still never credited.
+pub(crate) async fn credit_starter_seeds_in(
+    transaction: &mut Transaction<'_, Sqlite>,
+    owner: &PubDress,
+    now_ms: u64,
+) -> Result<StarterSeedsCredit, RepositoryError> {
+    let at = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSeedsBalance)?;
+    let amount = i64::try_from(nilxone_contracts::STARTER_SEEDS)
+        .map_err(|_| RepositoryError::CorruptSeedsBalance)?;
+    let already_issued = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM bond_seed_credits
+         WHERE owner_pub_dress = ? AND source_kind = 'starter' AND source_id = 'once')",
+    )
+    .bind(owner.as_str())
+    .fetch_one(&mut **transaction)
+    .await? != 0;
+    if already_issued {
+        return Ok(StarterSeedsCredit::AlreadyGranted);
+    }
+
+    // The balance is a read projection of authority-controlled economic
+    // mutations; the credit and the once-only receipt share one commit.
+    let balance_update = sqlx::query(
+        "INSERT INTO bond_seeds(owner_pub_dress, balance) VALUES (?, ?)
+         ON CONFLICT(owner_pub_dress) DO UPDATE
+         SET balance = bond_seeds.balance + excluded.balance
+         WHERE bond_seeds.balance <= ?",
+    )
+    .bind(owner.as_str())
+    .bind(amount)
+    .bind(i64::MAX - amount)
+    .execute(&mut **transaction)
+    .await?;
+    if balance_update.rows_affected() != 1 {
+        return Err(RepositoryError::CorruptSeedsBalance);
+    }
+    sqlx::query(
+        "INSERT INTO bond_seed_credits
+         (owner_pub_dress, source_kind, source_id, amount_minor, committed_at_ms)
+         VALUES (?, 'starter', 'once', ?, ?)",
+    )
+    .bind(owner.as_str())
+    .bind(amount)
+    .bind(at)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(StarterSeedsCredit::Granted)
+}
+
 impl IdentityRepository {
-    /// Server-owned, once-only starter credit based on Core's fixed rule.
-    ///
-    /// There is intentionally no HTTP endpoint to call this. Existing
-    /// browser `inventory.state` snapshots must never be credited from
-    /// a client assertion. Live activation requires a reviewed legacy
-    /// reconciliation policy for Bonds who previously played on-device.
+    /// Server-owned, once-only starter credit based on Core's fixed rule
+    /// (see `credit_starter_seeds_in`). There is no HTTP endpoint for it.
     pub async fn grant_starter_seeds_once(
         &self,
         owner: &PubDress,
         now_ms: u64,
     ) -> Result<StarterSeedsCredit, RepositoryError> {
-        let at = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSeedsBalance)?;
-        let amount = i64::try_from(nilxone_contracts::STARTER_SEEDS)
-            .map_err(|_| RepositoryError::CorruptSeedsBalance)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-
-        let already_issued = sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM bond_seed_credits
-             WHERE owner_pub_dress = ? AND source_kind = 'starter' AND source_id = 'once')",
-        )
-        .bind(owner.as_str())
-        .fetch_one(&mut *tx)
-        .await? != 0;
-        if already_issued {
-            return Ok(StarterSeedsCredit::AlreadyGranted);
-        }
-
-        // The balance is a read projection of authority-controlled economic
-        // mutations; the credit and the once-only receipt share one commit.
-        let balance_update = sqlx::query(
-            "INSERT INTO bond_seeds(owner_pub_dress, balance) VALUES (?, ?)
-             ON CONFLICT(owner_pub_dress) DO UPDATE
-             SET balance = bond_seeds.balance + excluded.balance
-             WHERE bond_seeds.balance <= ?",
-        )
-        .bind(owner.as_str())
-        .bind(amount)
-        .bind(i64::MAX - amount)
-        .execute(&mut *tx)
-        .await?;
-        if balance_update.rows_affected() != 1 {
-            return Err(RepositoryError::CorruptSeedsBalance);
-        }
-        sqlx::query(
-            "INSERT INTO bond_seed_credits
-             (owner_pub_dress, source_kind, source_id, amount_minor, committed_at_ms)
-             VALUES (?, 'starter', 'once', ?, ?)",
-        )
-        .bind(owner.as_str())
-        .bind(amount)
-        .bind(at)
-        .execute(&mut *tx)
-        .await?;
+        let credit = credit_starter_seeds_in(&mut tx, owner, now_ms).await?;
         tx.commit().await?;
-        Ok(StarterSeedsCredit::Granted)
+        Ok(credit)
+    }
+
+    /// The wallet as the Bond first sees it: its starter credit included.
+    pub async fn read_seeds_balance_with_starter(
+        &self,
+        owner: &PubDress,
+        now_ms: u64,
+    ) -> Result<u64, RepositoryError> {
+        self.grant_starter_seeds_once(owner, now_ms).await?;
+        self.read_seeds_balance(owner).await
     }
 
     /// One authoritative seeds balance, owned exclusively by this service.
@@ -228,6 +250,7 @@ impl IdentityRepository {
         if !spend_session_active_in(&mut transaction, owner, &order.active_session_hash, now_ms / 1000).await? {
             return Ok(SpecialSeedsOutcome::SessionChanged);
         }
+        credit_starter_seeds_in(&mut transaction, owner, now_ms).await?;
 
         let balance = sqlx::query_scalar::<_, i64>(
             "SELECT balance FROM bond_seeds WHERE owner_pub_dress = ?",
@@ -400,6 +423,7 @@ mod special_seeds_tests {
             .execute(&repository.pool)
             .await
             .expect("fixture balance");
+        repository.mark_starter_seeds_issued_for_test(owner.as_str()).await.expect("spent starter");
     }
 
     #[tokio::test]
@@ -451,6 +475,8 @@ mod special_seeds_tests {
     #[tokio::test]
     async fn no_authoritative_seeds_means_no_purchase_or_grant() {
         let (repository, owner) = setup().await;
+        // A Bond whose starter credit is spent and that has no other credit.
+        repository.mark_starter_seeds_issued_for_test(owner.as_str()).await.unwrap();
         assert_eq!(
             repository.settle_special_seeds(&owner, &order("order-no-funds"), 100).await.unwrap(),
             SpecialSeedsOutcome::InsufficientSeeds
@@ -636,6 +662,45 @@ mod special_seeds_tests {
         assert_eq!(clock.special_remaining_ms.get(), JANUARY_MS + 28 * 24 * 60 * 60 * 1000);
         let second = repository.find_special_seeds_receipt("order-stack-2").await.unwrap().unwrap();
         assert_eq!(second.duration_ms, 28 * 24 * 60 * 60 * 1000);
+    }
+
+    #[tokio::test]
+    async fn the_first_purchase_of_a_new_bond_spends_its_starter_once() {
+        let (repository, owner) = setup().await;
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-starter-1"), 100).await.unwrap(),
+            SpecialSeedsOutcome::Granted
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 9_360);
+        // Spending never earns a second starter credit.
+        assert_eq!(
+            repository.read_seeds_balance_with_starter(&owner, 200).await.unwrap(),
+            9_360
+        );
+        assert_eq!(
+            repository.grant_starter_seeds_once(&owner, 300).await.unwrap(),
+            StarterSeedsCredit::AlreadyGranted
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_purchase_does_not_commit_the_starter_credit() {
+        let (repository, owner) = setup().await;
+        let mut wrong = order("order-starter-refused");
+        wrong.recipient_pub_dress = "0x0other".to_owned();
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &wrong, 100).await.unwrap(),
+            SpecialSeedsOutcome::InvalidTerms
+        );
+        sqlx::query("UPDATE native_sessions SET active = 0").execute(&repository.pool).await.unwrap();
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-starter-session"), 100).await.unwrap(),
+            SpecialSeedsOutcome::SessionChanged
+        );
+        let credits: i64 = sqlx::query_scalar("SELECT count(*) FROM bond_seed_credits")
+            .fetch_one(&repository.pool).await.unwrap();
+        assert_eq!(credits, 0);
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 0);
     }
 
     #[tokio::test]

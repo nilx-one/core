@@ -13,6 +13,23 @@ pub enum XpingSeedsRepairRefusal {
     Engine(nilxone_contracts::XpingEngineError),
 }
 
+#[cfg(test)]
+impl IdentityRepository {
+    /// Test-only: this Bond's starter credit was issued earlier (and spent),
+    /// so a fixture's balance is exactly what the test funded.
+    pub(crate) async fn mark_starter_seeds_issued_for_test(&self, owner: &str) -> Result<(), RepositoryError> {
+        sqlx::query(
+            "INSERT INTO bond_seed_credits \
+             (owner_pub_dress, source_kind, source_id, amount_minor, committed_at_ms) \
+             VALUES (?, 'starter', 'once', 10000, 0)",
+        )
+        .bind(owner)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
 impl IdentityRepository {
     /// Repairs xPing and debits the Identity-owned seeds wallet in one
     /// transaction. Local inventory is never payment evidence.
@@ -27,6 +44,7 @@ impl IdentityRepository {
         if !spend_session_active_in(&mut tx, owner, active_session_hash, now_ms / 1000).await? {
             return Ok(Err(XpingSeedsRepairRefusal::SessionChanged));
         }
+        credit_starter_seeds_in(&mut tx, owner, now_ms).await?;
 
         let current = read_xping_engine_in(&mut tx, owner, now_ms).await?;
         if current != expected {
