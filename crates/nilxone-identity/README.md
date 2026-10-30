@@ -24,6 +24,11 @@ grant economic authority.
 - A future native client supplies its own platform/payment adapter. A successful
   UI callback is not a purchase receipt and cannot grant an entitlement.
 - Market owns offers, prices, checkout and orders, not the Identity wallet.
+- Outbound HTTP to Market's issuer API (`reqwest` in `market_issuer`) is
+  intentionally Core-owned, because the settlement it drives is. Inbound routes,
+  the async runtime (threads, signals) and the decision to start the worker stay
+  in the host that composes this package; `scripts/check_architecture.py` keeps
+  route and host SDK crates out of it.
 - Provider-specific payment verification must produce authenticated evidence
   before the common authority applies any entitlement. This extraction adds no
   new payment method or entitlement-grant API.
