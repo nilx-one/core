@@ -8,6 +8,7 @@ members = [
     "crates/nilxone-bindings-wasm",
     "crates/nilxone-bindings-uniffi",
     "crates/nilxone-test-support",
+    "crates/nilxone-identity",
 ]
 resolver = "2"
 

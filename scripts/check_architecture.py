@@ -47,6 +47,17 @@ def main() -> int:
             "crates/nilxone-kernel/Cargo.toml: kernel dependencies must be exactly nilxone-contracts in C1"
         )
 
+    # Server authority must never enter the portable client dependency graph.
+    for crate in (ROOT / "crates").iterdir():
+        manifest = crate / "Cargo.toml"
+        if not manifest.exists():
+            continue
+        deps = dependency_names(manifest)
+        if crate.name != "nilxone-identity" and "nilxone-identity" in deps:
+            failures.append(f"{crate.name}: server Identity must not be linked into portable Core")
+        if crate.name == "nilxone-identity" and deps & {"teloxide", "axum", "wasm-bindgen", "uniffi"}:
+            failures.append("nilxone-identity: host SDKs/routes/bindings belong to adapters")
+
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
