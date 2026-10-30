@@ -196,11 +196,10 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
 
     async fn settle(&self, order: &IssuerOrder) -> Result<Settlement, WorkerFailure> {
         let attributes = &order.attributes;
-        let months = match valid_terms(attributes) {
-            Some(months) => months,
-            None => return self.reject(order, rejection::INVALID_TERMS).await,
-        };
-        // A receipt means the debit and grant are committed: only confirm it.
+        let terms = valid_terms(attributes);
+        // A receipt means the debit and grant are committed, so it is looked up
+        // before anything can reject: a paid order is only ever confirmed, or
+        // held for an operator when Market's view of it no longer matches.
         // The SKU fixes the term; the receipt's duration is what that term came
         // to on the clock at the time, so it is never recomputed here.
         if let Some(receipt) = self
@@ -211,12 +210,17 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
             let same = receipt.sku == attributes.sku
                 && receipt.price_id == attributes.price_id
                 && receipt.amount_minor == attributes.amount_minor;
-            if !same {
-                error!(order = %order.id, "committed receipt disagrees with the market order");
-                return Ok(Settlement::Held);
-            }
-            return self.fulfil(order, months).await;
+            return match terms {
+                Some(months) if same => self.fulfil(order, months).await,
+                _ => {
+                    error!(order = %order.id, "committed receipt disagrees with the market order");
+                    Ok(Settlement::Held)
+                }
+            };
         }
+        let Some(months) = terms else {
+            return self.reject(order, rejection::INVALID_TERMS).await;
+        };
 
         let Some(visit) = self
             .repository
@@ -953,5 +957,37 @@ mod tests {
         assert_eq!(outcome, Settlement::Held);
         assert_eq!(balance(&fixture).await, 360);
         assert!(fixture.market.rejections.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_paid_order_is_never_rejected_when_its_terms_stop_validating() {
+        let fixture = fixture(1000).await;
+        *fixture.market.lose_next_fulfil.lock().unwrap() = true;
+        worker(&fixture, NOW_MS)
+            .tick()
+            .await
+            .expect("paid, confirmation lost");
+        assert_eq!(fixture.market.status("order-0001"), "processing");
+        type Drift = fn(&mut IssuerOrder);
+        let drifts: [Drift; 3] = [
+            |o| o.attributes.term = None,
+            |o| o.attributes.link_provider = "other".to_owned(),
+            |o| o.attributes.term.as_mut().unwrap().policy = "thirty_days".to_owned(),
+        ];
+        for drift in drifts {
+            let mut drifted = fixture.market.orders.lock().unwrap()["order-0001"].clone();
+            drift(&mut drifted);
+            let outcome = worker(&fixture, NOW_MS)
+                .handle(&drifted)
+                .await
+                .expect("handle");
+            assert_eq!(outcome, Settlement::Held);
+        }
+        assert!(fixture.market.rejections.lock().unwrap().is_empty());
+        assert_eq!(balance(&fixture).await, 360);
+        // Once Market's view matches again, the receipt is confirmed.
+        worker(&fixture, NOW_MS).tick().await.expect("recovery");
+        assert_eq!(fixture.market.status("order-0001"), "fulfilled");
+        assert_eq!(balance(&fixture).await, 360);
     }
 }
