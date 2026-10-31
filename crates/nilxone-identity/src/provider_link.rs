@@ -59,6 +59,11 @@ impl ProviderLinkRepository {
         ))
         .execute(&pool)
         .await?;
+        sqlx::raw_sql(include_str!(
+            "../migrations/0041_provider_link_refusals.sql"
+        ))
+        .execute(&pool)
+        .await?;
         Ok(Self { pool })
     }
 
@@ -75,6 +80,9 @@ impl ProviderLinkRepository {
         let snapshot = link_snapshot(&mut transaction, pub_dress, provider).await?;
         let decision = decide_link(pub_dress, &account, &snapshot);
         if decision != LinkDecision::Insert {
+            if link_outcome(decision) == ProviderLinkOutcome::ProviderTypeAlreadyLinked {
+                record_type_refusal(&mut transaction, provider).await?;
+            }
             transaction.commit().await?;
             return Ok(link_outcome(decision));
         }
@@ -88,6 +96,13 @@ impl ProviderLinkRepository {
         .execute(&mut *transaction)
         .await?;
         if insert.rows_affected() == 1 {
+            sqlx::query(
+                "DELETE FROM provider_link_refusals WHERE provider = ? AND provider_subject = ?",
+            )
+            .bind(provider.provider.as_str())
+            .bind(&provider.subject)
+            .execute(&mut *transaction)
+            .await?;
             transaction.commit().await?;
             return Ok(ProviderLinkOutcome::Linked);
         }
@@ -113,6 +128,30 @@ impl ProviderLinkRepository {
         .as_deref()
         .map(stored_pub_dress)
         .transpose()
+    }
+
+    /// Why `account` could not be linked recently, while it is still unbound:
+    /// `provider_type_already_linked` when the Bond that tried already holds
+    /// another account of that provider. Refusals older than
+    /// `max_age_seconds` are ignored. It names no Bond.
+    pub async fn recent_link_refusal(
+        &self,
+        account: &ProviderAccount,
+        max_age_seconds: u32,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT reason FROM provider_link_refusals \
+             WHERE provider = ? AND provider_subject = ? \
+             AND refused_at >= CAST(strftime('%s', 'now') AS INTEGER) - ? \
+             AND NOT EXISTS (SELECT 1 FROM identity_providers \
+                 WHERE provider = provider_link_refusals.provider \
+                 AND provider_subject = provider_link_refusals.provider_subject)",
+        )
+        .bind(account.provider.as_str())
+        .bind(account.subject.as_str())
+        .bind(i64::from(max_age_seconds))
+        .fetch_optional(&self.pool)
+        .await
     }
 
     pub async fn list(&self, pub_dress: &PubDress) -> Result<Vec<String>, sqlx::Error> {
@@ -195,6 +234,25 @@ impl ProviderLinkRepository {
             }
         }
     }
+}
+
+/// Remembers that this account could not join a Bond that already holds
+/// another account of its provider, for the partner that sent the person.
+async fn record_type_refusal(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    provider: &ProviderIdentity,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO provider_link_refusals (provider, provider_subject, reason, refused_at) \
+         VALUES (?, ?, 'provider_type_already_linked', CAST(strftime('%s', 'now') AS INTEGER)) \
+         ON CONFLICT (provider, provider_subject) DO UPDATE SET \
+         reason = excluded.reason, refused_at = excluded.refused_at",
+    )
+    .bind(provider.provider.as_str())
+    .bind(&provider.subject)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
 }
 
 /// Reads what Core decides a link on. The GitHub evidence table, where it
@@ -388,6 +446,84 @@ mod tests {
             links.list(&bond).await.expect("provider list"),
             vec!["telegram".to_owned(), "github".to_owned()]
         );
+    }
+
+    #[tokio::test]
+    async fn a_refused_second_telegram_is_remembered_until_that_account_links() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database_url = format!(
+            "sqlite://{}",
+            directory.path().join("identity.sqlite").display()
+        );
+        let identities = IdentityRepository::connect(&database_url)
+            .await
+            .expect("identity repository");
+        let links = ProviderLinkRepository::connect(&database_url)
+            .await
+            .expect("provider link repository");
+        let bond = register_bond(&identities, "0x1sky", "refusal").await;
+        let other = register_bond(&identities, "0x2sky", "refusal-other").await;
+        let account = nilxone_contracts::ProviderAccount {
+            provider: nilxone_contracts::ProviderType::Telegram,
+            subject: "43".parse().expect("subject"),
+        };
+
+        assert_eq!(
+            links.recent_link_refusal(&account, 86_400).await.unwrap(),
+            None
+        );
+        links
+            .link(&bond, &ProviderIdentity::telegram(42))
+            .await
+            .expect("first");
+        assert_eq!(
+            links
+                .link(&bond, &ProviderIdentity::telegram(43))
+                .await
+                .expect("second"),
+            ProviderLinkOutcome::ProviderTypeAlreadyLinked
+        );
+        assert_eq!(
+            links
+                .recent_link_refusal(&account, 86_400)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("provider_type_already_linked")
+        );
+        // Only refusals inside the window count.
+        sqlx::query("UPDATE provider_link_refusals SET refused_at = refused_at - 90000")
+            .execute(&links.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            links.recent_link_refusal(&account, 86_400).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            links
+                .link(&bond, &ProviderIdentity::telegram(43))
+                .await
+                .expect("again"),
+            ProviderLinkOutcome::ProviderTypeAlreadyLinked
+        );
+        // Linking the account anywhere clears it.
+        assert_eq!(
+            links
+                .link(&other, &ProviderIdentity::telegram(43))
+                .await
+                .expect("linked"),
+            ProviderLinkOutcome::Linked
+        );
+        assert_eq!(
+            links.recent_link_refusal(&account, 86_400).await.unwrap(),
+            None
+        );
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM provider_link_refusals")
+            .fetch_one(&links.pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[tokio::test]

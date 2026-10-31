@@ -59,6 +59,14 @@ account belongs to.
 - `SignInRequired { provider }`: the account is not bound. Ask the person to
   sign in with that provider to connect it.
 
+When a person tried to connect the account and Core answered
+`ProviderTypeAlreadyLinked` (the Bond they signed in to already holds another
+account of that provider), Identity remembers that refusal for the account
+until it is linked anywhere (`ProviderLinkRepository::recent_link_refusal`).
+A partner that sent the person to sign in can then say why the account is
+still unbound ("this Bond already has another Telegram account") instead of
+asking again. The refusal names no Bond.
+
 A lookup that cannot reach storage is not a lookup result. The host reports it
 as unavailable and never as `SignInRequired`, so a person is not sent to link
 an account that is already linked.
