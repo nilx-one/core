@@ -10,6 +10,7 @@ pub mod credentials;
 pub mod finds;
 pub mod location;
 pub mod market_issuer;
+pub mod market_visit;
 pub mod provider_link;
 pub mod provider_secret;
 pub mod rate_limit;

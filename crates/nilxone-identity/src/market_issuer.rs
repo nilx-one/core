@@ -28,7 +28,7 @@ use crate::{
 };
 
 pub const ISSUER: &str = "0x1";
-const VISIT_PROVIDER: &str = "nilx_visit";
+pub(crate) const VISIT_PROVIDER: &str = "nilx_visit";
 /// Market's only subscription term policy. Core's `grant_special_months`
 /// applies it; this service never computes a calendar month itself.
 pub const TERM_POLICY: &str = "calendar_months_utc";

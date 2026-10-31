@@ -18,6 +18,19 @@ pub struct SpecialSeedsOrder<'a> {
     pub amount_minor: u64,
 }
 
+/// The calendar months a Special SKU buys, or `None` for any other SKU. The
+/// SKU alone fixes the term, whatever state its order is in.
+#[must_use]
+pub fn special_sku_months(sku: &str) -> Option<u32> {
+    match sku {
+        "0x1_special_1m" => Some(1),
+        "0x1_special_3m" => Some(3),
+        "0x1_special_6m" => Some(6),
+        "0x1_special_12m" => Some(12),
+        _ => None,
+    }
+}
+
 /// The calendar-month term a structurally eligible Special seeds order buys,
 /// for [`SubscriptionClock::grant_special_months`], or `None` for any other
 /// order. This validates structure only and never authorizes a debit: prices
@@ -26,13 +39,7 @@ pub struct SpecialSeedsOrder<'a> {
 /// [`SubscriptionClock::grant_special_months`]: crate::SubscriptionClock::grant_special_months
 #[must_use]
 pub fn special_seeds_term_months(order: &SpecialSeedsOrder<'_>) -> Option<u32> {
-    let months = match order.sku {
-        "0x1_special_1m" => 1,
-        "0x1_special_3m" => 3,
-        "0x1_special_6m" => 6,
-        "0x1_special_12m" => 12,
-        _ => return None,
-    };
+    let months = special_sku_months(order.sku)?;
     let eligible = order.issuer == "0x1"
         && order.denomination == "seeds"
         && order.status == "processing"
@@ -43,7 +50,7 @@ pub fn special_seeds_term_months(order: &SpecialSeedsOrder<'_>) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpecialSeedsOrder, special_seeds_term_months as term};
+    use super::{SpecialSeedsOrder, special_seeds_term_months as term, special_sku_months};
     use crate::SubscriptionClock;
 
     const ORDER: SpecialSeedsOrder<'static> = SpecialSeedsOrder {
@@ -65,9 +72,14 @@ mod tests {
         ] {
             let order = SpecialSeedsOrder { sku, ..ORDER };
             assert_eq!(term(&order), Some(months), "{sku}");
+            // The SKU fixes the term whatever the order's state.
+            assert_eq!(special_sku_months(sku), Some(months), "{sku}");
             // Every term this accepts is one the clock grants.
             let clock = SubscriptionClock::new("0x0sky", 1).unwrap();
             assert!(clock.grant_special_months(months, 1).is_ok(), "{sku}");
+        }
+        for sku in ["0x1_exclusive_1m", "0x1_special_2m", "", "0x1_special_1M"] {
+            assert_eq!(special_sku_months(sku), None, "{sku}");
         }
     }
 
