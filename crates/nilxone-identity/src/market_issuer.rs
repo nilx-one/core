@@ -10,6 +10,11 @@
 //! crash between the debit and the report can only lead to a repeated
 //! confirmation, never to a second debit or an order lost after payment.
 //!
+//! An order is authorized either by the browser visit that placed it (its 0x1
+//! session must still be active) or by the Telegram account that placed it
+//! (it must still be bound to the recipient Bond). A Bond that already holds
+//! Special is refused with `special_active` before anything is debited.
+//!
 //! It is off unless `MARKET_ISSUER_WORKER=1`, and it has no HTTP route: no
 //! browser or user can reach the debit.
 
@@ -24,11 +29,14 @@ use nilxone_contracts::{SpecialSeedsOrder, special_seeds_term_months};
 
 use crate::{
     IdentityRepository,
-    repository::{IssuerSpecialOrderSnapshot, SpecialSeedsOutcome},
+    repository::{IssuerSpecialOrderSnapshot, SpecialSeedsOutcome, SpendAuthorization},
 };
 
 pub const ISSUER: &str = "0x1";
 pub(crate) const VISIT_PROVIDER: &str = "nilx_visit";
+/// A channel account bound to the Bond: Market snapshots the Telegram account
+/// that ordered, and this service checks it still holds the recipient Bond.
+pub(crate) const TELEGRAM_PROVIDER: &str = "telegram";
 /// Market's only subscription term policy. Core's `grant_special_months`
 /// applies it; this service never computes a calendar month itself.
 pub const TERM_POLICY: &str = "calendar_months_utc";
@@ -46,6 +54,10 @@ pub mod rejection {
     pub const RECIPIENT_MISMATCH: &str = "recipient_mismatch";
     pub const INSUFFICIENT_SEEDS: &str = "insufficient_seeds";
     pub const SESSION_CHANGED: &str = "session_changed";
+    /// The ordering channel account is not (or no longer) bound to the Bond.
+    pub const ACCOUNT_UNLINKED: &str = "account_unlinked";
+    /// The Bond already holds Special; a second purchase never stacks.
+    pub const SPECIAL_ACTIVE: &str = "special_active";
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -251,30 +263,60 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
             return self.reject(order, rejection::INVALID_TERMS).await;
         };
 
-        let Some(visit) = self
-            .repository
-            .find_market_visit(&attributes.link_provider_user_id)
-            .await?
-        else {
-            return self.reject(order, rejection::VISIT_UNKNOWN).await;
-        };
-        if visit.recipient_pub_dress != attributes.recipient_subject {
-            return self.reject(order, rejection::RECIPIENT_MISMATCH).await;
-        }
         let now_ms = (self.now_ms)();
-        if now_ms >= visit.spend_until_ms {
-            return self.reject(order, rejection::VISIT_EXPIRED).await;
-        }
+        let (owner, authorization) = match attributes.link_provider.as_str() {
+            VISIT_PROVIDER => {
+                let Some(visit) = self
+                    .repository
+                    .find_market_visit(&attributes.link_provider_user_id)
+                    .await?
+                else {
+                    return self.reject(order, rejection::VISIT_UNKNOWN).await;
+                };
+                if visit.recipient_pub_dress != attributes.recipient_subject {
+                    return self.reject(order, rejection::RECIPIENT_MISMATCH).await;
+                }
+                if now_ms >= visit.spend_until_ms {
+                    return self.reject(order, rejection::VISIT_EXPIRED).await;
+                }
+                (
+                    visit.owner,
+                    SpendAuthorization::Session(visit.session_token_hash),
+                )
+            }
+            // `valid_terms` admits only the visit and Telegram providers.
+            _ => {
+                let Some(owner) = self
+                    .repository
+                    .find_provider_owner(TELEGRAM_PROVIDER, &attributes.link_provider_user_id)
+                    .await?
+                else {
+                    return self.reject(order, rejection::ACCOUNT_UNLINKED).await;
+                };
+                // Market resolved the recipient through the partner lookup;
+                // a handle that no longer names the bound Bond is not paid.
+                if owner.as_str() != attributes.recipient_subject {
+                    return self.reject(order, rejection::RECIPIENT_MISMATCH).await;
+                }
+                (
+                    owner,
+                    SpendAuthorization::ProviderLink {
+                        provider: TELEGRAM_PROVIDER.to_owned(),
+                        subject: attributes.link_provider_user_id.clone(),
+                    },
+                )
+            }
+        };
 
         let snapshot = IssuerSpecialOrderSnapshot {
             order_id: order.id.clone(),
-            active_session_hash: visit.session_token_hash.clone(),
+            authorization,
             issuer: attributes.issuer.clone(),
             denomination: attributes.denomination.clone(),
             status: attributes.status.clone(),
             // The Bond's current handle; a rename after the visit still pays
             // from, and grants to, the same Bond.
-            recipient_pub_dress: visit.owner.as_str().to_owned(),
+            recipient_pub_dress: owner.as_str().to_owned(),
             sku: attributes.sku.clone(),
             price_id: attributes.price_id,
             amount_minor: attributes.amount_minor,
@@ -282,7 +324,7 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         };
         match self
             .repository
-            .settle_special_seeds(&visit.owner, &snapshot, now_ms)
+            .settle_special_seeds(&owner, &snapshot, now_ms)
             .await?
         {
             SpecialSeedsOutcome::Granted | SpecialSeedsOutcome::AlreadyGranted => {
@@ -294,6 +336,12 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
             SpecialSeedsOutcome::InvalidTerms => self.reject(order, rejection::INVALID_TERMS).await,
             SpecialSeedsOutcome::SessionChanged => {
                 self.reject(order, rejection::SESSION_CHANGED).await
+            }
+            SpecialSeedsOutcome::AccountUnlinked => {
+                self.reject(order, rejection::ACCOUNT_UNLINKED).await
+            }
+            SpecialSeedsOutcome::SpecialActive => {
+                self.reject(order, rejection::SPECIAL_ACTIVE).await
             }
             SpecialSeedsOutcome::ConflictingReplay => {
                 error!(order = %order.id, "order id was committed under different terms");
@@ -351,8 +399,10 @@ fn valid_terms(attributes: &IssuerOrderAttributes) -> Option<u32> {
         amount_minor: attributes.amount_minor,
     })?;
     let term = attributes.term.as_ref()?;
-    let ok = attributes.link_provider == VISIT_PROVIDER
-        && term.policy == TERM_POLICY
+    let ok = matches!(
+        attributes.link_provider.as_str(),
+        VISIT_PROVIDER | TELEGRAM_PROVIDER
+    ) && term.policy == TERM_POLICY
         && term.months == months;
     ok.then_some(months)
 }
@@ -954,6 +1004,106 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    /// Turns the fixture's order into one placed from the Telegram account
+    /// `123456789`, optionally bound to the fixture's Bond.
+    async fn telegram_order(fixture: &Fixture, bound: bool) {
+        if bound {
+            sqlx::query(
+                "INSERT INTO identity_providers(provider, provider_subject, pub_dress) \
+                 VALUES ('telegram', '123456789', ?)",
+            )
+            .bind(fixture.owner.as_str())
+            .execute(&fixture.pool)
+            .await
+            .expect("telegram link");
+        }
+        let mut orders = fixture.market.orders.lock().unwrap();
+        let attributes = &mut orders.get_mut("order-0001").unwrap().attributes;
+        attributes.link_provider = "telegram".to_owned();
+        attributes.link_provider_user_id = "123456789".to_owned();
+    }
+
+    #[tokio::test]
+    async fn a_telegram_order_from_a_bound_account_is_paid_without_a_visit() {
+        let fixture = fixture(1000).await;
+        telegram_order(&fixture, true).await;
+        // No browser session and long after any visit window.
+        sqlx::query("UPDATE native_sessions SET active = 0")
+            .execute(&fixture.pool)
+            .await
+            .expect("no session");
+        worker(&fixture, NOW_MS + 7 * DAY)
+            .tick()
+            .await
+            .expect("tick");
+        assert_eq!(fixture.market.status("order-0001"), "fulfilled");
+        assert_eq!(balance(&fixture).await, 360);
+        assert_eq!(
+            fixture.market.confirmations.lock().unwrap()[0].recipient_subject,
+            "0x0sky"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_telegram_order_is_refused_when_its_account_does_not_hold_the_recipient() {
+        let unbound = fixture(1000).await;
+        telegram_order(&unbound, false).await;
+        worker(&unbound, NOW_MS).tick().await.expect("tick");
+        assert_eq!(
+            unbound.market.rejections.lock().unwrap().as_slice(),
+            [rejection::ACCOUNT_UNLINKED.to_owned()]
+        );
+
+        let fixture = fixture(1000).await;
+        telegram_order(&fixture, true).await;
+        fixture
+            .market
+            .orders
+            .lock()
+            .unwrap()
+            .get_mut("order-0001")
+            .unwrap()
+            .attributes
+            .recipient_subject = "0xother".to_owned();
+        worker(&fixture, NOW_MS).tick().await.expect("tick");
+        assert_eq!(
+            fixture.market.rejections.lock().unwrap().as_slice(),
+            [rejection::RECIPIENT_MISMATCH.to_owned()]
+        );
+        assert_eq!(balance(&fixture).await, 1000);
+    }
+
+    #[tokio::test]
+    async fn an_order_for_a_bond_that_holds_special_is_refused_unpaid() {
+        let fixture = fixture(5000).await;
+        worker(&fixture, NOW_MS).tick().await.expect("first");
+        assert_eq!(fixture.market.status("order-0001"), "fulfilled");
+
+        let mut second = order("order-0002");
+        second.attributes.link_provider = "telegram".to_owned();
+        second.attributes.link_provider_user_id = "123456789".to_owned();
+        sqlx::query(
+            "INSERT INTO identity_providers(provider, provider_subject, pub_dress) \
+             VALUES ('telegram', '123456789', ?)",
+        )
+        .bind(fixture.owner.as_str())
+        .execute(&fixture.pool)
+        .await
+        .expect("telegram link");
+        fixture
+            .market
+            .orders
+            .lock()
+            .unwrap()
+            .insert("order-0002".to_owned(), second);
+        worker(&fixture, NOW_MS + DAY).tick().await.expect("second");
+        assert_eq!(
+            fixture.market.rejections.lock().unwrap().as_slice(),
+            [rejection::SPECIAL_ACTIVE.to_owned()]
+        );
+        assert_eq!(balance(&fixture).await, 4360);
     }
 
     #[tokio::test]
