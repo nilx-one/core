@@ -28,6 +28,7 @@ mod inventory;
 mod inventory_wire;
 mod landmark_map;
 mod landmark_rarity;
+mod market_return;
 mod orb_spill;
 mod provider_binding;
 mod pub_dress;
@@ -104,6 +105,10 @@ pub use landmark_map::{MAX_RARITY_MAP_LANDMARKS, landmark_map_view_wire};
 pub use landmark_rarity::{
     LANDMARK_ID_MAX, LANDMARK_RARITY_REGISTRY_VERSION, is_landmark_id, is_registry_version,
     landmark_rarity, orb_experience, roll_halving,
+};
+pub use market_return::{
+    MARKET_OWNER, MARKET_RETURN_PENDING_MS, MARKET_RETURN_RECHECK_MS, MarketReturnTripError,
+    market_return_policy_wire, market_return_trip, market_return_trip_wire,
 };
 pub use orb_spill::{
     CELL_ORBS, CellLandmark, CellOrbSpot, CellSpill, DrawnOrb, KnownSpill, LANDMARK_ORBS,

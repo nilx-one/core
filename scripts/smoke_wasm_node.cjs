@@ -91,6 +91,21 @@ const destination = JSON.parse(core.courier_destination(JSON.stringify({
 assert.deepEqual(destination, { ok: true, point_id: 'near' });
 assert.deepEqual(JSON.parse(core.courier_destination('{}')), { error: 'invalid', ok: false });
 
+const kept = {
+  origin: { longitude_e7: '305000000', latitude_e7: '504000000' },
+  destination: {
+    id: { owner_pub_dress: '0xda-market', number: 0 },
+    pub_dress: '0xda-market-zoloti-vorota',
+    coordinate: { longitude_e7: '305131000', latitude_e7: '504489000' },
+  },
+};
+assert.deepEqual(JSON.parse(core.market_return_trip(JSON.stringify(kept))), { ok: true });
+assert.deepEqual(
+  JSON.parse(core.market_return_trip(JSON.stringify({ ...kept, destination: { ...kept.destination, pub_dress: '0x0sky-x' } }))),
+  { error: 'not_market_station', ok: false },
+);
+assert.deepEqual(JSON.parse(core.market_return_policy()), { pending_ms: 86400000, recheck_ms: [30000, 120000, 600000] });
+
 const engine = JSON.parse(core.xping_engine_command('', '{"op":"force","forced_ms":"15000"}', '1000'));
 assert.equal(engine.ok, true);
 assert.equal(engine.view.energy_permille, 500);
