@@ -13,9 +13,9 @@ use nilxone_contracts::{SpecialSeedsOrder, SubscriptionClock, special_seeds_term
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssuerSpecialOrderSnapshot {
     pub order_id: String,
-    /// SHA-256 of the authenticated 0x1 session active when checkout started.
-    /// The issuer worker resolves and verifies this binding server-side.
-    pub active_session_hash: Vec<u8>,
+    /// What lets this order spend the Bond's seeds. The issuer worker resolves
+    /// it server-side; the debit re-checks it under the wallet lock.
+    pub authorization: SpendAuthorization,
     pub issuer: String,
     pub denomination: String,
     pub status: String,
@@ -26,6 +26,30 @@ pub struct IssuerSpecialOrderSnapshot {
     /// Calendar months the verified order bought. It must equal the term Core
     /// derives from the SKU; a client's notion of a month is never authoritative.
     pub term_months: u32,
+}
+
+/// Who authorized a Special seeds order on the buyer's side.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SpendAuthorization {
+    /// A browser visit: SHA-256 of the authenticated 0x1 session active when
+    /// checkout started. That session must still be the active one.
+    Session(Vec<u8>),
+    /// A channel account, such as Telegram, through which the person ordered.
+    /// It must still be bound to the paying Bond when the debit commits, so an
+    /// account unlinked (or moved to another Bond) after ordering cannot spend.
+    ProviderLink { provider: String, subject: String },
+}
+
+impl SpendAuthorization {
+    fn well_formed(&self) -> bool {
+        match self {
+            Self::Session(hash) => hash.len() == 32,
+            Self::ProviderLink { provider, subject } => {
+                provider.parse::<nilxone_contracts::ProviderType>().is_ok()
+                    && subject.parse::<nilxone_contracts::ProviderSubject>().is_ok()
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +66,11 @@ pub enum SpecialSeedsOutcome {
     ConflictingReplay,
     /// The buyer's active session changed or another activation is pending.
     SessionChanged,
+    /// The channel account that ordered is no longer bound to this Bond.
+    AccountUnlinked,
+    /// The Bond already holds Special (running or paused behind Exclusive);
+    /// Core's `special_purchase_open` refuses a second purchase.
+    SpecialActive,
 }
 
 /// Called while the same SQLite writer transaction owns the wallet. This
@@ -207,7 +236,7 @@ impl IdentityRepository {
         });
         if !valid_order_id
             || core_term != Some(order.term_months)
-            || order.active_session_hash.len() != 32
+            || !order.authorization.well_formed()
             || order.recipient_pub_dress != owner.as_str()
         {
             return Ok(SpecialSeedsOutcome::InvalidTerms);
@@ -246,9 +275,27 @@ impl IdentityRepository {
         }
 
         // Existing committed receipts can be confirmed after a device handoff.
-        // Only a *new* debit requires the original active session.
-        if !spend_session_active_in(&mut transaction, owner, &order.active_session_hash, now_ms / 1000).await? {
-            return Ok(SpecialSeedsOutcome::SessionChanged);
+        // Only a *new* debit requires the authorization to still hold.
+        match &order.authorization {
+            SpendAuthorization::Session(hash) => {
+                if !spend_session_active_in(&mut transaction, owner, hash, now_ms / 1000).await? {
+                    return Ok(SpecialSeedsOutcome::SessionChanged);
+                }
+            }
+            SpendAuthorization::ProviderLink { provider, subject } => {
+                let bound = sqlx::query_scalar::<_, i64>(
+                    "SELECT EXISTS(SELECT 1 FROM identity_providers \
+                     WHERE provider = ? AND provider_subject = ? AND pub_dress = ?)",
+                )
+                .bind(provider)
+                .bind(subject)
+                .bind(owner.as_str())
+                .fetch_one(&mut *transaction)
+                .await? != 0;
+                if !bound {
+                    return Ok(SpecialSeedsOutcome::AccountUnlinked);
+                }
+            }
         }
         credit_starter_seeds_in(&mut transaction, owner, now_ms).await?;
 
@@ -284,6 +331,11 @@ impl IdentityRepository {
         // corruption) must never debit the buyer.
         let current = clock.advance(now_ms)
             .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
+        if !current.special_purchase_open(now_ms)
+            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?
+        {
+            return Ok(SpecialSeedsOutcome::SpecialActive);
+        }
         let next = current.grant_special_months(order.term_months, now_ms)
             .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
         let granted_ms = next.special_remaining_ms.get()
@@ -402,7 +454,7 @@ mod special_seeds_tests {
     fn order(id: &str) -> IssuerSpecialOrderSnapshot {
         IssuerSpecialOrderSnapshot {
             order_id: id.to_owned(),
-            active_session_hash: vec![9; 32],
+            authorization: SpendAuthorization::Session(vec![9; 32]),
             issuer: "0x1".to_owned(),
             denomination: "seeds".to_owned(),
             status: "processing".to_owned(),
@@ -648,20 +700,131 @@ mod special_seeds_tests {
     }
 
     #[tokio::test]
-    async fn a_second_purchase_extends_from_the_end_of_the_first() {
+    async fn a_bond_that_holds_special_cannot_buy_it_again_until_it_ends() {
         let (repository, owner) = setup().await;
         fund_fixture(&repository, &owner, 5000).await;
-        for id in ["order-stack-1", "order-stack-2"] {
-            assert_eq!(
-                repository.settle_special_seeds(&owner, &order(id), 100).await.unwrap(),
-                SpecialSeedsOutcome::Granted
-            );
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-first"), 100).await.unwrap(),
+            SpecialSeedsOutcome::Granted
+        );
+        // While the first term runs, a second order is refused and pays nothing.
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-second"), 200).await.unwrap(),
+            SpecialSeedsOutcome::SpecialActive
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 4360);
+        assert!(repository.find_special_seeds_receipt("order-second").await.unwrap().is_none());
+        // The refusal never touches the first order's replay.
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-first"), 300).await.unwrap(),
+            SpecialSeedsOutcome::AlreadyGranted
+        );
+        // Once Special has run out, Special can be bought again.
+        let ended = 100 + JANUARY_MS;
+        sqlx::query("UPDATE native_sessions SET expires_at = ?")
+            .bind(i64::try_from(ended / 1000 + 60).unwrap())
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-after-end"), ended).await.unwrap(),
+            SpecialSeedsOutcome::Granted
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 3720);
+    }
+
+    #[tokio::test]
+    async fn special_paused_behind_exclusive_still_blocks_a_purchase() {
+        let (repository, owner) = setup().await;
+        fund_fixture(&repository, &owner, 5000).await;
+        let held = SubscriptionClock::new(owner.as_str(), 100)
+            .unwrap()
+            .grant(SubscriptionTier::Special, 1_000, 100)
+            .unwrap()
+            .grant(SubscriptionTier::Exclusive, 5_000, 100)
+            .unwrap();
+        sqlx::query("INSERT INTO bond_subscription_clocks(owner_pub_dress,clock_json) VALUES (?, ?)")
+            .bind(owner.as_str())
+            .bind(serde_json::to_string(&held).unwrap())
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &order("order-paused"), 200).await.unwrap(),
+            SpecialSeedsOutcome::SpecialActive
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 5000);
+    }
+
+    fn telegram_order(id: &str) -> IssuerSpecialOrderSnapshot {
+        IssuerSpecialOrderSnapshot {
+            authorization: SpendAuthorization::ProviderLink {
+                provider: "telegram".to_owned(),
+                subject: "123456789".to_owned(),
+            },
+            ..order(id)
         }
-        // January, then February 1970 (28 days), from the first term's end.
-        let clock = repository.read_subscription_clock(&owner, 100).await.unwrap();
-        assert_eq!(clock.special_remaining_ms.get(), JANUARY_MS + 28 * 24 * 60 * 60 * 1000);
-        let second = repository.find_special_seeds_receipt("order-stack-2").await.unwrap().unwrap();
-        assert_eq!(second.duration_ms, 28 * 24 * 60 * 60 * 1000);
+    }
+
+    async fn link_telegram(repository: &IdentityRepository, owner: &str) {
+        sqlx::query(
+            "INSERT INTO identity_providers(provider, provider_subject, pub_dress) \
+             VALUES ('telegram', '123456789', ?)",
+        )
+        .bind(owner)
+        .execute(&repository.pool)
+        .await
+        .expect("telegram link");
+    }
+
+    #[tokio::test]
+    async fn a_telegram_order_spends_only_while_its_account_is_bound_to_the_bond() {
+        let (repository, owner) = setup().await;
+        fund_fixture(&repository, &owner, 1000).await;
+        // Not bound: nothing is debited, whatever the session state.
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &telegram_order("order-tg-1"), 100).await.unwrap(),
+            SpecialSeedsOutcome::AccountUnlinked
+        );
+        link_telegram(&repository, owner.as_str()).await;
+        // A Telegram order needs no browser session.
+        sqlx::query("UPDATE native_sessions SET active = 0").execute(&repository.pool).await.unwrap();
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &telegram_order("order-tg-1"), 100).await.unwrap(),
+            SpecialSeedsOutcome::Granted
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
+        // A committed receipt is confirmed again even after the account is unlinked.
+        sqlx::query("DELETE FROM identity_providers").execute(&repository.pool).await.unwrap();
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &telegram_order("order-tg-1"), 200).await.unwrap(),
+            SpecialSeedsOutcome::AlreadyGranted
+        );
+    }
+
+    #[tokio::test]
+    async fn a_telegram_account_bound_to_another_bond_cannot_spend_this_one() {
+        let (repository, owner) = setup().await;
+        fund_fixture(&repository, &owner, 1000).await;
+        sqlx::query("INSERT INTO identities(pub_dress, identity_kind, created_at) VALUES ('0x0other', 'human', 1)")
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        link_telegram(&repository, "0x0other").await;
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &telegram_order("order-tg-other"), 100).await.unwrap(),
+            SpecialSeedsOutcome::AccountUnlinked
+        );
+        let mut malformed = telegram_order("order-tg-bad");
+        malformed.authorization = SpendAuthorization::ProviderLink {
+            provider: "telegram".to_owned(),
+            subject: String::new(),
+        };
+        assert_eq!(
+            repository.settle_special_seeds(&owner, &malformed, 100).await.unwrap(),
+            SpecialSeedsOutcome::InvalidTerms
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 1000);
     }
 
     #[tokio::test]

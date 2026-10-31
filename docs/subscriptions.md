@@ -69,6 +69,13 @@ must retain the calendar term and deduplicate it before recalculation.
 only. Authenticating the issuer, verifying the quote, binding the recipient
 and session, and the atomic debit and grant stay with the authority.
 
+`special_purchase_open` decides whether a Bond may buy Special now: only while
+it holds no Special time at all, running or paused behind Exclusive (owner
+decision, 2026-10-31). A Bond that has Special cannot place a second purchase
+until it ends, so purchases never stack. The authority checks it under the same
+lock as the debit and refuses with `special_active`; channels hide the offer
+from the same rule.
+
 `SubscriptionClock` is the pure authority-side duration policy. Exclusive has
 priority: while it has remaining time, Special's remaining time is paused.
 At Exclusive's exact expiry, Special resumes automatically with its unconsumed

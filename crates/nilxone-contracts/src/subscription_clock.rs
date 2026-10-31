@@ -70,6 +70,17 @@ impl SubscriptionClock {
         current.grant(SubscriptionTier::Special, end - anchor, now_ms)
     }
 
+    /// Whether a new Special purchase may be opened now: only while the Bond
+    /// holds no Special time at all, running or paused behind Exclusive. A
+    /// Bond that has Special cannot buy it again until it ends; purchases
+    /// never stack on an existing Special.
+    ///
+    /// # Errors
+    /// Rejects invalid state and clock rollback.
+    pub fn special_purchase_open(&self, now_ms: u64) -> Result<bool, SubscriptionClockError> {
+        Ok(self.advance(now_ms)?.special_remaining_ms.get() == 0)
+    }
+
     /// An empty clock for a known Bond. Only a trusted authority may grant time.
     ///
     /// # Errors
@@ -212,6 +223,32 @@ mod tests {
                 .timestamp_millis(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn special_can_be_bought_only_while_the_bond_holds_none() {
+        let empty = SubscriptionClock::new("0x0sky", 0).unwrap();
+        assert_eq!(empty.special_purchase_open(0), Ok(true));
+
+        let special = empty.grant(SubscriptionTier::Special, 10, 0).unwrap();
+        assert_eq!(special.special_purchase_open(9), Ok(false));
+        assert_eq!(special.special_purchase_open(10), Ok(true));
+
+        // Special paused behind Exclusive is still held.
+        let paused = special.grant(SubscriptionTier::Exclusive, 100, 0).unwrap();
+        assert_eq!(paused.special_purchase_open(50), Ok(false));
+        assert_eq!(paused.special_purchase_open(110), Ok(true));
+
+        // Exclusive alone does not hold Special.
+        let exclusive = empty.grant(SubscriptionTier::Exclusive, 100, 0).unwrap();
+        assert_eq!(exclusive.special_purchase_open(1), Ok(true));
+        assert_eq!(
+            special
+                .special_purchase_open(0)
+                .and(special.advance(5))
+                .and_then(|c| c.special_purchase_open(1)),
+            Err(SubscriptionClockError::ClockRollback)
+        );
     }
 
     #[test]

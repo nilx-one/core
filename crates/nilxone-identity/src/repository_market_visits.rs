@@ -74,6 +74,25 @@ impl IdentityRepository {
         }))
     }
 
+    /// The Bond a channel account is bound to, if any, read for the issuer
+    /// worker. The debit re-checks the same binding under the wallet lock.
+    pub async fn find_provider_owner(
+        &self,
+        provider: &str,
+        subject: &str,
+    ) -> Result<Option<PubDress>, RepositoryError> {
+        let owner = sqlx::query_scalar::<_, String>(
+            "SELECT pub_dress FROM identity_providers WHERE provider = ? AND provider_subject = ?",
+        )
+        .bind(provider)
+        .bind(subject)
+        .fetch_optional(&self.pool)
+        .await?;
+        owner
+            .map(|value| PubDress::from_str(&value).map_err(|_| RepositoryError::CorruptHumanPubDress))
+            .transpose()
+    }
+
     pub async fn find_special_seeds_receipt(
         &self,
         order_id: &str,
