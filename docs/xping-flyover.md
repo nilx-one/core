@@ -16,8 +16,8 @@ does the same thing.
 
 - In Settings, buying an Exclusive or Special subscription opens that
   subscription's cutscene. The flyover starts when the person presses
-  **Agreed** in that cutscene, and at no other time. No pin, station tap,
-  link or other entry starts it.
+  **Agreed** in that cutscene, and at no other time but the one return
+  below. No pin, station tap, link or other entry starts it.
 - Agreed starts the flight. It is not evidence that a purchase completed.
   What a subscription is, what it costs and what committing one records
   belong to the subscription's own contract, which is not defined yet. The
@@ -53,6 +53,33 @@ does the same thing.
   station, the route is cleared and the camera returns to where it was.
 - With reduced motion there is no flight: the route and both ends are shown
   in one still view until the person leaves it.
+
+## Return from Market
+
+At 0xda-market's station xPing parks and the Dock opens Market. A host that
+hands the Bond over to Market's own page leaves the tab, so the flight does
+not end where it began; it may finish on the way back instead:
+
+- Before it leaves, the tab keeps the route it flew out on. That route is
+  presentation only: no token, balance or purchase authority is kept.
+- Market sends the tab back to a 0x1 host page naming its visit and an
+  order. The address is never payment proof. The host asks Identity, which
+  confirms only a Special purchase that Market fulfilled and Identity
+  committed for this visit's Bond.
+- Only a confirmed purchase flies xPing home: from the station back to where
+  the Bond and its Avaia stand, once, when the flyover can fly and no other
+  flight is under way. It flies only the way back; it docks nowhere, carries
+  no loot and cannot be forced. With reduced motion there is no flight.
+- A kept route is flown only if both ends are valid coordinates and it leads
+  to one of 0xda-market's stations
+  ([`market_return_trip`](../crates/nilxone-contracts/src/market_return.rs));
+  any other is dropped.
+- An order Identity could not confirm yet keeps the route and stays
+  identifiable for a day (`MARKET_RETURN_PENDING_MS`). The tab asks again on
+  each of its page loads and, while a page is open, after each of
+  `MARKET_RETURN_RECHECK_MS`. After the day the order is let go and the route
+  stays. A malformed return is never asked about. The client never confirms a
+  purchase itself.
 
 ## Boundary
 

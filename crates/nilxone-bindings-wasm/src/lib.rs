@@ -220,6 +220,24 @@ pub fn courier_destination(request: &str) -> String {
     nilxone_contracts::courier_destination_wire(request)
 }
 
+/// Whether a kept xPing route may be flown home after a Market visit.
+/// `trip` is the kept `CourierPlan` as JSON. Answers `{"ok":true}` or
+/// `{"ok":false,"error":"invalid"|"not_market_station"}`; see
+/// `docs/xping-flyover.md`.
+#[must_use]
+#[wasm_bindgen]
+pub fn market_return_trip(trip: &str) -> String {
+    nilxone_contracts::market_return_trip_wire(trip)
+}
+
+/// How long, and how often within a page, an order Identity has not yet
+/// confirmed is asked about again: `{"pending_ms":…,"recheck_ms":[…]}`.
+#[must_use]
+#[wasm_bindgen]
+pub fn market_return_policy() -> String {
+    nilxone_contracts::market_return_policy_wire()
+}
+
 /// xPing's engine at `now_ms`: energy, smoke, whether it is broken, when
 /// it is full and what a repair costs. `state` is the stored engine (the
 /// empty string is a new one), `now_ms` a decimal string. Answers
