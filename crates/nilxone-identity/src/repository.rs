@@ -167,6 +167,28 @@ impl IdentityRepository {
         let subject: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(digester.digest("market-pairwise-subject-v1", &subject))
     }
+    /// The issuer's subject for one client: a keyed digest of the client id
+    /// and the private subject, so each product gets a stable reference that
+    /// no other product can match, and none of them learns the subject itself.
+    /// `None` when the address is not a human Bond.
+    pub async fn client_pairwise_subject(
+        &self,
+        owner: &PubDress,
+        client_id: &str,
+        digester: &crate::SecretDigester,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let bytes: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT subject FROM identity_subjects WHERE pub_dress = ?")
+                .bind(owner.as_str())
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(bytes.map(|bytes| {
+            let subject: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+            // Client ids carry no ':', so the joined value is unambiguous.
+            let digest = digester.digest("aiaiaiai-client-subject-v1", &format!("{client_id}:{subject}"));
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, digest)
+        }))
+    }
     pub async fn connect(database_url: &str) -> Result<Self, RepositoryError> {
         let max_connections = if database_url.contains(":memory:") {
             1
@@ -331,6 +353,9 @@ impl IdentityRepository {
             .execute(&self.pool)
             .await?;
         sqlx::raw_sql(include_str!("../migrations/0041_provider_link_refusals.sql"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::raw_sql(include_str!("../migrations/0042_aiaiaiai_accounts.sql"))
             .execute(&self.pool)
             .await?;
         Ok(())

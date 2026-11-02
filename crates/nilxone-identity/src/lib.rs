@@ -5,6 +5,7 @@
 //! Not linked into Wasm/Swift clients. Host authentication, HTTP routes and
 //! payment presentation belong to the application adapters.
 
+pub mod aiaiaiai_sign_in;
 pub mod cell_orbs;
 pub mod credentials;
 pub mod finds;
@@ -30,6 +31,7 @@ pub mod repository {
     include!("repository_business_membership_bootstrap.rs");
     include!("repository_business_creation.rs");
     include!("repository_xping.rs");
+    include!("repository_aiaiaiai_accounts.rs");
 }
 pub use credentials::{
     NativeAuthConfig, PasswordEngine, PasswordPolicyError, RememberedBondSigner, SecretDigester,
@@ -45,12 +47,12 @@ pub use provider_link::{ProviderLinkOutcome, ProviderLinkRepository, SelfDisconn
 pub use provider_secret::{ProviderSecretCipher, ProviderSecretError};
 pub use repository::{
     ActivationRequest, ActivationRequestStatus, AdminRoleDecision, AdminRoleRequest,
-    AdminRoleTelegramConfirmation, AdminRoleTelegramDelivery, AvaiaConfigurationState,
-    AvaiaIdentityRecord, AvaiaLocation, AvaiaTravelOutcome, AvaiaUpdateOutcome,
-    BusinessRegistrationOutcome, BusinessStation, BusinessStationOutcome, IdentityProvider,
-    IdentityRecord, IdentityRepository, NativeCredentialRecord, NativeRegistrationOutcome,
-    ProviderIdentity, PubDressRenameOutcome, PublicIdentityRecord, RegistrationOutcome,
-    RepositoryError, TelegramMessageSlot,
+    AdminRoleTelegramConfirmation, AdminRoleTelegramDelivery, AiaiaiaiAccountOutcome,
+    AvaiaConfigurationState, AvaiaIdentityRecord, AvaiaLocation, AvaiaTravelOutcome,
+    AvaiaUpdateOutcome, BusinessRegistrationOutcome, BusinessStation, BusinessStationOutcome,
+    IdentityProvider, IdentityRecord, IdentityRepository, NativeCredentialRecord,
+    NativeRegistrationOutcome, ProviderIdentity, PubDressRenameOutcome, PublicIdentityRecord,
+    RegistrationOutcome, RepositoryError, TelegramMessageSlot,
 };
 pub mod github_evidence;
 pub mod speech;
