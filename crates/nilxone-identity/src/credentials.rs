@@ -234,6 +234,13 @@ pub struct SecretDigester {
     secret: Arc<[u8]>,
 }
 
+// The key never reaches a log line through `{:?}`.
+impl std::fmt::Debug for SecretDigester {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SecretDigester(<redacted>)")
+    }
+}
+
 impl SecretDigester {
     pub fn digest(&self, domain: &str, value: &str) -> Vec<u8> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)

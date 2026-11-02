@@ -13,6 +13,34 @@ contract is
 [`docs/unified-auth.md`](https://github.com/nilx-one/web/blob/master/docs/unified-auth.md)
 in `nilx-one/web`.
 
+## What the host does: forward, nothing more
+
+`SignInFlow` is the whole browser flow. The 0x1 host routes pass the request
+in and apply what comes back; they decide nothing:
+
+| Host route        | Calls                                              | Applies                                                                                                             |
+| ----------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `…/start?return=` | `start(return, now)`                               | redirect to `location`, `Set-Cookie: set_cookie`                                                                    |
+| `…/callback`      | `finish(repository, Cookie header, Callback, now)` | `clear_cookie`; on `SignedIn` the ordinary 0x1 session and `return_path`; on a failure `/?auth_error=` + `as_str()` |
+
+Core owns the transaction cookie (`__Host-0x1_aiaiaiai`: HMAC-signed under
+the native authentication secret with its own domain, Secure, HttpOnly,
+SameSite=Lax, fifteen minutes), the `state` check (constant time, before
+anything else, so even a decline with a foreign `state` is `Invalid`), the
+return-path rule (same-origin paths only) and the failure codes:
+
+| `SignInFailure`   | Code                           | Meaning                                                      |
+| ----------------- | ------------------------------ | ------------------------------------------------------------ |
+| `Expired`         | `aiaiaiai_sign_in_expired`     | no transaction, or an old one                                |
+| `Invalid`         | `aiaiaiai_sign_in_invalid`     | tampered transaction, foreign `state`, refused code or token |
+| `Cancelled`       | `aiaiaiai_sign_in_cancelled`   | the person or issuer declined                                |
+| `Unavailable`     | `aiaiaiai_sign_in_unavailable` | issuer or storage did not answer; retry                      |
+| `AccountUnknown`  | `aiaiaiai_account_unknown`     | no Bond for this Identity account                            |
+| `AccountConflict` | `aiaiaiai_account_conflict`    | the Bond is linked to another account                        |
+
+The 0x1 session cookie itself stays the host's: it is the one every 0x1
+route already reads.
+
 ## The client: `aiaiaiai_sign_in`
 
 ```text
@@ -43,12 +71,12 @@ attempt, and the person starts again.
 useless to every other product, and never Identity's private identifier. 0x1
 keeps its own `aiaiaiai_accounts` table (`issuer`, `subject`) → Bond:
 
-| Situation                                                      | Outcome                                  |
-| -------------------------------------------------------------- | ---------------------------------------- |
-| subject already linked                                         | `Linked` (follows renames)               |
-| new subject; the token's `pub_dress` names a human Bond        | `Linked { newly_linked: true }`          |
-| new subject; that Bond is linked to another subject            | `BondLinkedElsewhere`, needs the owner   |
-| new subject; no `pub_dress`, or it names no human Bond         | `Unknown`                                |
+| Situation                                               | Outcome                                |
+| ------------------------------------------------------- | -------------------------------------- |
+| subject already linked                                  | `Linked` (follows renames)             |
+| new subject; the token's `pub_dress` names a human Bond | `Linked { newly_linked: true }`        |
+| new subject; that Bond is linked to another subject     | `BondLinkedElsewhere`, needs the owner |
+| new subject; no `pub_dress`, or it names no human Bond  | `Unknown`                              |
 
 The address is used only on first sight, because it is public and mutable.
 After that the subject is the key. Linking runs in one immediate
