@@ -62,7 +62,7 @@ pub enum SignInError {
     EntropyUnavailable,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SignInClientConfig {
     issuer: Url,
     backchannel: Url,
@@ -143,6 +143,20 @@ impl SignInClientConfig {
     }
 }
 
+// The secret never reaches a log line through `{:?}`.
+impl std::fmt::Debug for SignInClientConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SignInClientConfig")
+            .field("issuer", &self.issuer.as_str())
+            .field("backchannel", &self.backchannel.as_str())
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("redirect_uri", &self.redirect_uri.as_str())
+            .finish()
+    }
+}
+
 fn is_private_host(host: url::Host<&str>) -> bool {
     match host {
         url::Host::Ipv4(address) => address.is_loopback() || address.is_private(),
@@ -176,7 +190,7 @@ pub struct VerifiedSignIn {
     pub auth_time: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SignInClient {
     config: SignInClientConfig,
     http: reqwest::Client,
@@ -705,6 +719,16 @@ mod tests {
         assert!(!query.contains_key("code_verifier"));
         let (_, other) = client.begin().unwrap();
         assert_ne!(transaction, other);
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_client_secret() {
+        let shown = format!("{:?}", SignInClient::new(config()));
+        assert!(
+            !shown.contains("a-client-secret-of-thirty-two-bytes!"),
+            "{shown}"
+        );
+        assert!(shown.contains("<redacted>"));
     }
 
     #[test]
