@@ -29,6 +29,10 @@ grant economic authority.
   the async runtime (threads, signals) and the decision to start the worker stay
   in the host that composes this package; `scripts/check_architecture.py` keeps
   route and host SDK crates out of it.
+- `aiaiaiai_sign_in` is 0x1's client of aiaiaiai Identity (`auth.aiaiaiai.org`):
+  OIDC code + PKCE and EdDSA `id_token` verification over outbound HTTP, plus
+  0x1's own subject → Bond table. 0x1 reaches Identity only through it
+  ([`docs/aiaiaiai-sign-in.md`](../../docs/aiaiaiai-sign-in.md)).
 - Provider-specific payment verification must produce authenticated evidence
   before the common authority applies any entitlement. This extraction adds no
   new payment method or entitlement-grant API.
