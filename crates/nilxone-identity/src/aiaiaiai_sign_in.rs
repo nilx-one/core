@@ -508,6 +508,235 @@ fn signing_key(keys: &JsonWebKeySet, kid: Option<&str>) -> Result<VerifyingKey, 
     VerifyingKey::from_bytes(&bytes).map_err(|_| SignInError::InvalidToken("unknown_key"))
 }
 
+// ---------------------------------------------------------------------------
+// The whole browser flow, so a host only forwards (`docs/aiaiaiai-sign-in.md`)
+// ---------------------------------------------------------------------------
+
+/// The cookie that carries a sign-in between leaving for the issuer and
+/// coming back. `__Host-` pins it to this origin, path `/`, Secure.
+pub const TRANSACTION_COOKIE: &str = "__Host-0x1_aiaiaiai";
+const TRANSACTION_TTL_SECONDS: u64 = 15 * 60;
+const TRANSACTION_DOMAIN: &str = "aiaiaiai-sign-in-transaction";
+const MAX_RETURN_PATH_BYTES: usize = 512;
+
+#[derive(Deserialize, Serialize)]
+struct StoredTransaction {
+    sign_in: SignInTransaction,
+    return_path: String,
+    expires_at: u64,
+}
+
+/// Where the person goes next, and the cookie the host sets on the way.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Started {
+    pub location: Url,
+    /// A complete `Set-Cookie` value.
+    pub set_cookie: String,
+}
+
+/// The issuer's answer, exactly as the callback URL carried it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Callback<'a> {
+    pub code: Option<&'a str>,
+    pub state: Option<&'a str>,
+    pub error: Option<&'a str>,
+}
+
+/// Why a callback did not sign anyone in. `as_str` is the code the host shows
+/// the person (`/?auth_error=…`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignInFailure {
+    /// No transaction, or an expired one: the person starts again.
+    Expired,
+    /// A transaction or `state` that does not match: possibly forged.
+    Invalid,
+    /// The person or the issuer declined.
+    Cancelled,
+    /// The issuer or storage could not answer; worth a retry.
+    Unavailable,
+    /// A valid sign-in for an account no Bond is linked to.
+    AccountUnknown,
+    /// The named Bond is linked to another Identity account.
+    AccountConflict,
+}
+
+impl SignInFailure {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "aiaiaiai_sign_in_expired",
+            Self::Invalid => "aiaiaiai_sign_in_invalid",
+            Self::Cancelled => "aiaiaiai_sign_in_cancelled",
+            Self::Unavailable => "aiaiaiai_sign_in_unavailable",
+            Self::AccountUnknown => "aiaiaiai_account_unknown",
+            Self::AccountConflict => "aiaiaiai_account_conflict",
+        }
+    }
+}
+
+/// The Bond a callback signed in, and the same-origin path to return to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignedIn {
+    pub pub_dress: crate::PubDress,
+    pub return_path: String,
+}
+
+/// A finished callback. The transaction cookie is cleared either way.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Finished {
+    pub outcome: Result<SignedIn, SignInFailure>,
+    /// A complete `Set-Cookie` value that removes the transaction.
+    pub clear_cookie: String,
+}
+
+/// 0x1's sign-in through aiaiaiai Identity, end to end. The host passes the
+/// request's query and `Cookie` header in, and applies the redirect and the
+/// `Set-Cookie` values it gets back. It decides nothing itself.
+#[derive(Clone, Debug)]
+pub struct SignInFlow {
+    client: SignInClient,
+    signer: crate::SecretDigester,
+}
+
+impl SignInFlow {
+    /// `signer` keys the transaction cookie; the host's native authentication
+    /// secret, under this module's own domain.
+    pub fn new(client: SignInClient, signer: crate::SecretDigester) -> Self {
+        Self { client, signer }
+    }
+
+    pub fn issuer(&self) -> &str {
+        self.client.config().issuer()
+    }
+
+    /// Sends the person to the issuer. `requested_return` is the page they
+    /// came from; anything but a same-origin path returns them to `/`.
+    pub fn start(&self, requested_return: Option<&str>, now: u64) -> Result<Started, SignInError> {
+        let (location, sign_in) = self.client.begin()?;
+        let stored = StoredTransaction {
+            sign_in,
+            return_path: safe_return_path(requested_return),
+            expires_at: now.saturating_add(TRANSACTION_TTL_SECONDS),
+        };
+        let value = self.seal(&stored).ok_or(SignInError::EntropyUnavailable)?;
+        Ok(Started {
+            location,
+            set_cookie: format!(
+                "{TRANSACTION_COOKIE}={value}; Path=/; Max-Age={TRANSACTION_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax"
+            ),
+        })
+    }
+
+    /// Completes the callback: checks the transaction and `state`, exchanges
+    /// the code, verifies the token and resolves the Bond.
+    pub async fn finish(
+        &self,
+        repository: &crate::IdentityRepository,
+        cookie_header: Option<&str>,
+        callback: Callback<'_>,
+        now: u64,
+    ) -> Finished {
+        Finished {
+            outcome: self.resolve(repository, cookie_header, callback, now).await,
+            clear_cookie: format!(
+                "{TRANSACTION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"
+            ),
+        }
+    }
+
+    async fn resolve(
+        &self,
+        repository: &crate::IdentityRepository,
+        cookie_header: Option<&str>,
+        callback: Callback<'_>,
+        now: u64,
+    ) -> Result<SignedIn, SignInFailure> {
+        let raw = cookie_header
+            .and_then(|header| cookie_value(header, TRANSACTION_COOKIE))
+            .ok_or(SignInFailure::Expired)?;
+        let stored = self.open(raw).ok_or(SignInFailure::Invalid)?;
+        if stored.expires_at <= now {
+            return Err(SignInFailure::Expired);
+        }
+        // `state` first: an answer that is not to this transaction says
+        // nothing, not even that it was declined.
+        let state_matches = callback.state.is_some_and(|value| {
+            value
+                .as_bytes()
+                .ct_eq(stored.sign_in.state.as_bytes())
+                .into()
+        });
+        if !state_matches {
+            return Err(SignInFailure::Invalid);
+        }
+        if callback.error.is_some() {
+            return Err(SignInFailure::Cancelled);
+        }
+        let code = callback.code.ok_or(SignInFailure::Invalid)?;
+        let verified = match self.client.complete(code, &stored.sign_in, now).await {
+            Ok(value) => value,
+            Err(SignInError::Unavailable) => return Err(SignInFailure::Unavailable),
+            Err(_) => return Err(SignInFailure::Invalid),
+        };
+        match repository.resolve_aiaiaiai_account(&verified, now).await {
+            Ok(crate::AiaiaiaiAccountOutcome::Linked { pub_dress, .. }) => Ok(SignedIn {
+                pub_dress,
+                return_path: stored.return_path,
+            }),
+            Ok(crate::AiaiaiaiAccountOutcome::Unknown) => Err(SignInFailure::AccountUnknown),
+            Ok(crate::AiaiaiaiAccountOutcome::BondLinkedElsewhere) => {
+                Err(SignInFailure::AccountConflict)
+            }
+            Err(_) => Err(SignInFailure::Unavailable),
+        }
+    }
+
+    fn seal(&self, stored: &StoredTransaction) -> Option<String> {
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(stored).ok()?);
+        let mac = self.signer.digest(TRANSACTION_DOMAIN, &encoded);
+        Some(format!("v1.{encoded}.{}", URL_SAFE_NO_PAD.encode(mac)))
+    }
+
+    fn open(&self, value: &str) -> Option<StoredTransaction> {
+        let mut fields = value.split('.');
+        let (Some("v1"), Some(encoded), Some(mac), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return None;
+        };
+        let supplied = URL_SAFE_NO_PAD.decode(mac).ok()?;
+        let expected = self.signer.digest(TRANSACTION_DOMAIN, encoded);
+        if !bool::from(supplied.ct_eq(&expected)) {
+            return None;
+        }
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded).ok()?).ok()
+    }
+}
+
+fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    header.split(';').find_map(|pair| {
+        let (key, value) = pair.trim().split_once('=')?;
+        (key == name && !value.is_empty()).then_some(value)
+    })
+}
+
+/// Only a same-origin path may be a destination: an absolute URL, a
+/// scheme-relative `//host` or a backslash would make the sign-in an open
+/// redirect.
+pub fn safe_return_path(value: Option<&str>) -> String {
+    match value {
+        Some(path)
+            if path.starts_with('/')
+                && !path.starts_with("//")
+                && !path.contains('\\')
+                && path.len() <= MAX_RETURN_PATH_BYTES
+                && !path.bytes().any(|byte| byte.is_ascii_control()) =>
+        {
+            path.to_owned()
+        }
+        _ => "/".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::{Signer as _, SigningKey};
@@ -792,5 +1021,146 @@ mod tests {
             );
         }
         assert_eq!(config().issuer(), ISSUER);
+    }
+
+    fn flow() -> SignInFlow {
+        let digester = crate::NativeAuthConfig::new([1; 32], [2; 32])
+            .unwrap()
+            .secret_digester();
+        SignInFlow::new(SignInClient::new(config()), digester)
+    }
+
+    fn cookie_of(started: &Started) -> String {
+        started.set_cookie.split(';').next().unwrap().to_owned()
+    }
+
+    fn state_of(started: &Started) -> String {
+        started
+            .location
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.into_owned())
+            .unwrap()
+    }
+
+    async fn repository() -> crate::IdentityRepository {
+        crate::IdentityRepository::connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn start_sets_a_host_only_secure_transaction_cookie() {
+        let started = flow().start(Some("/map"), NOW).unwrap();
+        assert!(started.set_cookie.starts_with("__Host-0x1_aiaiaiai=v1."));
+        for attribute in [
+            "Path=/",
+            "Secure",
+            "HttpOnly",
+            "SameSite=Lax",
+            "Max-Age=900",
+        ] {
+            assert!(started.set_cookie.contains(attribute), "{attribute}");
+        }
+        assert!(!started.set_cookie.contains("Domain="));
+        assert_eq!(started.location.path(), "/authorize");
+    }
+
+    #[tokio::test]
+    async fn finish_refuses_what_is_not_this_transaction() {
+        let flow = flow();
+        let repository = repository().await;
+        let started = flow.start(None, NOW).unwrap();
+        let cookie = cookie_of(&started);
+        let state = state_of(&started);
+        let finish = |header: Option<String>, callback: Callback<'static>, now| {
+            let flow = flow.clone();
+            let repository = repository.clone();
+            async move {
+                flow.finish(&repository, header.as_deref(), callback, now)
+                    .await
+                    .outcome
+            }
+        };
+        let leaked: &'static str = Box::leak(state.into_boxed_str());
+        let answer = Callback {
+            code: Some("code"),
+            state: Some(leaked),
+            error: None,
+        };
+        assert_eq!(finish(None, answer, NOW).await, Err(SignInFailure::Expired));
+        assert_eq!(
+            finish(Some(cookie.clone()), answer, NOW + TRANSACTION_TTL_SECONDS).await,
+            Err(SignInFailure::Expired)
+        );
+        let tampered = cookie.replacen("v1.", "v1.x", 1);
+        assert_eq!(
+            finish(Some(tampered), answer, NOW).await,
+            Err(SignInFailure::Invalid)
+        );
+        let forged = Callback {
+            state: Some("forged"),
+            ..answer
+        };
+        assert_eq!(
+            finish(Some(cookie.clone()), forged, NOW).await,
+            Err(SignInFailure::Invalid)
+        );
+        // A decline with a foreign state is not even a decline.
+        let foreign_decline = Callback {
+            code: None,
+            state: Some("forged"),
+            error: Some("access_denied"),
+        };
+        assert_eq!(
+            finish(Some(cookie.clone()), foreign_decline, NOW).await,
+            Err(SignInFailure::Invalid)
+        );
+        let declined = Callback {
+            code: None,
+            error: Some("access_denied"),
+            ..answer
+        };
+        assert_eq!(
+            finish(Some(cookie.clone()), declined, NOW).await,
+            Err(SignInFailure::Cancelled)
+        );
+        let without_code = Callback {
+            code: None,
+            ..answer
+        };
+        assert_eq!(
+            finish(Some(cookie), without_code, NOW).await,
+            Err(SignInFailure::Invalid)
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_always_clears_the_transaction() {
+        let finished = flow()
+            .finish(&repository().await, None, Callback::default(), NOW)
+            .await;
+        assert!(finished.clear_cookie.starts_with("__Host-0x1_aiaiaiai=;"));
+        assert!(finished.clear_cookie.contains("Max-Age=0"));
+    }
+
+    #[test]
+    fn a_return_path_never_leaves_the_site() {
+        for (requested, expected) in [
+            (Some("/map?x=1"), "/map?x=1"),
+            (Some("https://evil.example"), "/"),
+            (Some("//evil.example"), "/"),
+            (Some("/\\evil.example"), "/"),
+            (Some("/a\nb"), "/"),
+            (None, "/"),
+        ] {
+            assert_eq!(safe_return_path(requested), expected, "{requested:?}");
+        }
+    }
+
+    #[test]
+    fn debug_output_never_shows_the_transaction_key() {
+        let shown = format!("{:?}", flow());
+        assert!(shown.contains("SecretDigester(<redacted>)"), "{shown}");
     }
 }
