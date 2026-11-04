@@ -22,6 +22,7 @@ pub struct SpecialSeedsReceipt {
     pub sku: String,
     pub price_id: u64,
     pub amount_minor: u64,
+    /// Zero for an item receipt: calendar time is computed on activation.
     pub duration_ms: u64,
 }
 
@@ -99,7 +100,9 @@ impl IdentityRepository {
     ) -> Result<Option<SpecialSeedsReceipt>, RepositoryError> {
         let row = sqlx::query(
             "SELECT owner_pub_dress, sku, price_id, amount_minor, duration_ms \
-             FROM bond_seed_subscription_debits WHERE order_id = ?",
+             FROM bond_seed_subscription_debits WHERE order_id = ?1
+             UNION ALL SELECT owner_pub_dress, sku, price_id, amount_minor, 0
+             FROM paid_special_items WHERE order_id = ?1",
         )
         .bind(order_id)
         .fetch_optional(&self.pool)

@@ -149,6 +149,7 @@ pub enum Settlement {
 }
 
 pub struct MarketIssuerWorker<M> {
+    issue_items: bool,
     repository: IdentityRepository,
     market: M,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
@@ -165,11 +166,19 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self {
+            issue_items: false,
             repository,
             market,
             now_ms,
             recovery_cursor: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Select after the host can collect and activate paid inventory items.
+    #[must_use]
+    pub fn with_paid_items(mut self) -> Self {
+        self.issue_items = true;
+        self
     }
 
     /// Recovers claimed orders first, then takes new ones. One failing order
@@ -324,10 +333,12 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         };
         match self
             .repository
-            .settle_special_seeds(&owner, &snapshot, now_ms)
+            .settle_special_order(&owner, &snapshot, now_ms, self.issue_items)
             .await?
         {
-            SpecialSeedsOutcome::Granted | SpecialSeedsOutcome::AlreadyGranted => {
+            SpecialSeedsOutcome::Granted
+            | SpecialSeedsOutcome::IssuedItem
+            | SpecialSeedsOutcome::AlreadyGranted => {
                 self.fulfil(order, months).await
             }
             SpecialSeedsOutcome::InsufficientSeeds => {
