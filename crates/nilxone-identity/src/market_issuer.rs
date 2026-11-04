@@ -338,9 +338,7 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         {
             SpecialSeedsOutcome::Granted
             | SpecialSeedsOutcome::IssuedItem
-            | SpecialSeedsOutcome::AlreadyGranted => {
-                self.fulfil(order, months).await
-            }
+            | SpecialSeedsOutcome::AlreadyGranted => self.fulfil(order, months).await,
             SpecialSeedsOutcome::InsufficientSeeds => {
                 self.reject(order, rejection::INSUFFICIENT_SEEDS).await
             }

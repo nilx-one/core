@@ -52,6 +52,15 @@ impl SpendAuthorization {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, sqlx::FromRow)]
+pub struct SpecialItemView {
+    pub order_id: String,
+    pub sku: String,
+    pub state: String,
+    pub slot_x: Option<u8>,
+    pub slot_y: Option<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpecialSeedsOutcome {
     /// The debit and Special grant were committed together.
@@ -420,6 +429,13 @@ impl IdentityRepository {
         Ok(SpecialSeedsOutcome::Granted)
     }
 
+    /// Paid inventory and transit projection for the authenticated owner.
+    pub async fn special_items(&self, owner: &PubDress) -> Result<Vec<SpecialItemView>, RepositoryError> {
+        Ok(sqlx::query_as("SELECT order_id, sku, state, slot_x, slot_y FROM paid_special_items
+            WHERE owner_pub_dress = ? AND state != 'activated' ORDER BY paid_at_ms, order_id")
+            .bind(owner.as_str()).fetch_all(&self.pool).await?)
+    }
+
     /// Collect at an authorized Market visit. The item stays paid if the caller
     /// leaves the flight before pickup, or if the active client changes.
     pub async fn collect_special_item(
@@ -447,6 +463,22 @@ impl IdentityRepository {
     pub async fn activate_special_item(
         &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
     ) -> Result<bool, RepositoryError> {
+        self.resolve_special_item(owner, order_id, session_hash, now_ms, None).await
+    }
+
+    /// Resolve arrival against Avaia's ordinary items and the paid items already
+    /// occupying her grid. The host supplies the current normal-inventory view.
+    pub async fn deliver_special_item(
+        &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
+        avaia: &nilxone_contracts::Backpack,
+    ) -> Result<bool, RepositoryError> {
+        self.resolve_special_item(owner, order_id, session_hash, now_ms, Some(avaia)).await
+    }
+
+    async fn resolve_special_item(
+        &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
+        arrival: Option<&nilxone_contracts::Backpack>,
+    ) -> Result<bool, RepositoryError> {
         let now = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if !spend_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
@@ -458,8 +490,20 @@ impl IdentityRepository {
         let Some(item) = item else { return Ok(false); };
         match item.try_get::<String, _>("state")?.as_str() {
             "activated" => return Ok(true),
+            "stored" if arrival.is_some() => return Ok(true),
             "in_transit" | "stored" => {}
             _ => return Ok(false),
+        }
+        if let Some(bag) = arrival {
+            let reserved: Vec<(u8, u8)> = sqlx::query_as(
+                "SELECT slot_x, slot_y FROM paid_special_items WHERE owner_pub_dress = ? AND state = 'stored'",
+            ).bind(owner.as_str()).fetch_all(&mut *tx).await?;
+            if let Some((x, y)) = bag.subscription_slot(&reserved) {
+                sqlx::query("UPDATE paid_special_items SET state = 'stored', slot_x = ?, slot_y = ? WHERE order_id = ?")
+                    .bind(x).bind(y).bind(order_id).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Ok(true);
+            }
         }
         let sku: String = item.try_get("sku")?;
         let months = sku.strip_prefix("0x1_special_").and_then(|s| s.strip_suffix('m'))
@@ -477,7 +521,7 @@ impl IdentityRepository {
             VALUES (?, ?) ON CONFLICT(owner_pub_dress) DO UPDATE SET clock_json = excluded.clock_json")
             .bind(owner.as_str()).bind(serde_json::to_string(&next).map_err(|_| RepositoryError::CorruptSubscriptionClock)?)
             .execute(&mut *tx).await?;
-        sqlx::query("UPDATE paid_special_items SET state = 'activated', activated_at_ms = ? WHERE order_id = ?")
+        sqlx::query("UPDATE paid_special_items SET state = 'activated', slot_x = NULL, slot_y = NULL, activated_at_ms = ? WHERE order_id = ?")
             .bind(now).bind(order_id).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(true)
@@ -657,6 +701,32 @@ mod special_seeds_tests {
         let clock = repository.read_subscription_clock(&owner, 400).await.unwrap();
         assert_eq!(clock.settled_at_ms.get(), 300);
         assert_eq!(clock.special_remaining_ms.get(), JANUARY_MS);
+    }
+
+    #[tokio::test]
+    async fn arrival_stores_once_or_activates_if_the_grid_is_too_small() {
+        use nilxone_contracts::{Backpack, Carry};
+        for carry in [Carry::Pocket, Carry::Backpack] {
+            let (repository, owner) = setup().await;
+            fund_fixture(&repository, &owner, 1000).await;
+            let id = "arrival-item-01";
+            let session = [9; 32];
+            repository.settle_special_order(&owner, &order(id), 100, true).await.unwrap();
+            let visit = "v".repeat(43);
+            repository.create_market_visit(&visit, &owner, &session, 100, 1000).await.unwrap();
+            assert!(repository.collect_special_item(&owner, id, &visit, &session, 200).await.unwrap());
+            let bag = Backpack::new(carry);
+            for now in [300, 400] {
+                assert!(repository.deliver_special_item(&owner, id, &session, now, &bag).await.unwrap());
+            }
+            let state: String = sqlx::query_scalar("SELECT state FROM paid_special_items WHERE order_id = ?")
+                .bind(id).fetch_one(&repository.pool).await.unwrap();
+            assert_eq!(state, if carry == Carry::Pocket { "activated" } else { "stored" });
+            let clock = repository.read_subscription_clock(&owner, 400).await.unwrap();
+            assert_eq!(clock.special_remaining_ms.get(), if carry == Carry::Pocket { JANUARY_MS } else { 0 });
+            assert!(repository.activate_special_item(&owner, id, &session, 500).await.unwrap());
+            assert_eq!(repository.read_subscription_clock(&owner, 500).await.unwrap().special_remaining_ms.get(), JANUARY_MS);
+        }
     }
 
     #[tokio::test]

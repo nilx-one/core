@@ -9,7 +9,11 @@ CREATE TABLE IF NOT EXISTS paid_special_items (
     amount_minor INTEGER NOT NULL CHECK(amount_minor > 0),
     paid_at_ms INTEGER NOT NULL CHECK(paid_at_ms >= 0),
     state TEXT NOT NULL CHECK(state IN ('paid','in_transit','stored','activated')),
+    slot_x INTEGER CHECK(slot_x BETWEEN 0 AND 254),
+    slot_y INTEGER CHECK(slot_y BETWEEN 0 AND 254),
     activated_at_ms INTEGER,
+    CHECK ((state = 'stored') = (slot_x IS NOT NULL)),
+    CHECK ((state = 'stored') = (slot_y IS NOT NULL)),
     CHECK ((state = 'activated') = (activated_at_ms IS NOT NULL)),
     CHECK (activated_at_ms >= paid_at_ms)
 ) STRICT;
