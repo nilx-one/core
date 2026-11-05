@@ -105,9 +105,13 @@ pub fn market_return_confirmed(
         && a.status == "fulfilled"
         && a.issuer == ISSUER
         && a.denomination == "seeds"
-        && a.link_provider == VISIT_PROVIDER
-        && a.link_provider_user_id == claim.visit_id
-        && a.recipient_subject == visit.recipient_pub_dress
+        // A paid item may be collected at any later owner visit, including
+        // purchases originating in Telegram. Its committed receipt already
+        // fixes ownership. Legacy grants remain tied to the original visit.
+        && (receipt.duration_ms == 0
+            || (a.link_provider == VISIT_PROVIDER
+                && a.link_provider_user_id == claim.visit_id
+                && a.recipient_subject == visit.recipient_pub_dress))
         && receipt.owner_pub_dress == visit.owner.as_str()
         && receipt.sku == a.sku
         && receipt.price_id == a.price_id
@@ -192,6 +196,28 @@ mod tests {
             order_id: "order-1234",
         };
         assert!(!market_return_confirmed(wrong, &visit, &receipt, &order));
+    }
+
+    #[test]
+    fn a_paid_item_can_be_collected_at_a_later_owner_visit_from_any_channel() {
+        let (_, visit, mut receipt, mut order) = fixture();
+        receipt.duration_ms = 0;
+        order.attributes.link_provider = "telegram".into();
+        order.attributes.link_provider_user_id = "42".into();
+        let claim = MarketReturn {
+            visit_id: &"w".repeat(43),
+            order_id: &order.id,
+        };
+        assert!(market_return_confirmed(claim, &visit, &receipt, &order));
+        receipt.owner_pub_dress = "0x0other".into();
+        assert!(!market_return_confirmed(claim, &visit, &receipt, &order));
+        receipt.owner_pub_dress = visit.owner.as_str().to_owned();
+        let mut wrong = order.clone();
+        wrong.attributes.status = "processing".into();
+        assert!(!market_return_confirmed(claim, &visit, &receipt, &wrong));
+        wrong = order.clone();
+        wrong.attributes.amount_minor += 1;
+        assert!(!market_return_confirmed(claim, &visit, &receipt, &wrong));
     }
 
     #[test]

@@ -194,6 +194,7 @@ impl Placed {
 pub struct Backpack {
     carry: Carry,
     placed: Vec<Placed>,
+    reserved: Vec<(u8, u8)>,
 }
 
 impl Backpack {
@@ -203,7 +204,39 @@ impl Backpack {
         Self {
             carry,
             placed: Vec::new(),
+            reserved: Vec::new(),
         }
+    }
+
+    /// Reserve authority-owned 2×2 items for this operation. Reservations are
+    /// geometry only and cannot be sold, transferred or turned into entitlement.
+    ///
+    /// # Errors
+    /// [`EconomyError::NoRoom`] if any square overlaps or exceeds this carry.
+    pub fn reserve_squares(&mut self, squares: &[(u8, u8)]) -> Result<(), EconomyError> {
+        let grid = self.carry.grid();
+        let mut checked = Vec::new();
+        for &(x, y) in squares {
+            let overlaps = |left: u8, top: u8, width: u8, height: u8| {
+                u16::from(x) < u16::from(left) + u16::from(width)
+                    && u16::from(left) < u16::from(x) + 2
+                    && u16::from(y) < u16::from(top) + u16::from(height)
+                    && u16::from(top) < u16::from(y) + 2
+            };
+            if u16::from(x) + 2 > u16::from(grid.width)
+                || u16::from(y) + 2 > u16::from(grid.height)
+                || self.placed.iter().any(|item| {
+                    let size = item.size();
+                    overlaps(item.x, item.y, size.width, size.height)
+                })
+                || checked.iter().any(|&(left, top)| overlaps(left, top, 2, 2))
+            {
+                return Err(EconomyError::NoRoom);
+            }
+            checked.push((x, y));
+        }
+        self.reserved = checked;
+        Ok(())
     }
 
     /// What it is carried in.
@@ -261,7 +294,10 @@ impl Backpack {
                 let size = placed.size();
                 u32::from(size.width) * u32::from(size.height)
             })
-            .sum()
+            .sum::<u32>()
+            + u32::try_from(self.reserved.len())
+                .unwrap_or(u32::MAX)
+                .saturating_mul(4)
     }
 
     /// Whether `id` could go with its top-left cell at `x`, `y`.
@@ -274,6 +310,12 @@ impl Backpack {
         u16::from(x) + u16::from(size.width) <= u16::from(grid.width)
             && u16::from(y) + u16::from(size.height) <= u16::from(grid.height)
             && !self.placed.iter().any(|placed| placed.overlaps(candidate))
+            && !self.reserved.iter().any(|&(left, top)| {
+                u16::from(x) < u16::from(left) + 2
+                    && u16::from(left) < u16::from(x) + u16::from(size.width)
+                    && u16::from(y) < u16::from(top) + 2
+                    && u16::from(top) < u16::from(y) + u16::from(size.height)
+            })
     }
 
     /// Puts `id` with its top-left cell at `x`, `y`.
@@ -358,6 +400,7 @@ impl Backpack {
     /// [`EconomyError::NoRoom`] when the things do not fit the new grid.
     pub fn switch_to(&mut self, carry: Carry) -> Result<(), EconomyError> {
         let mut kept = Self::new(carry);
+        kept.reserve_squares(&self.reserved)?;
         if self
             .placed
             .iter()
@@ -367,6 +410,7 @@ impl Backpack {
             return Ok(());
         }
         let mut repacked = Self::new(carry);
+        repacked.reserve_squares(&self.reserved)?;
         let mut things: Vec<_> = self.placed.iter().map(|placed| placed.id).collect();
         things.sort_by_key(|id| {
             let size = size_of(id).unwrap_or(Size {

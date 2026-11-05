@@ -351,10 +351,26 @@ pub fn xping_repair_wire(engine: &str, inventory: &str, now_ms: u64) -> String {
 /// command. A refused command leaves the stored state as it was.
 #[must_use]
 pub fn apply_inventory_command(state: &str, command: &str, now_ms: u64) -> String {
+    apply_inventory_command_with_reserved(state, command, now_ms, &[])
+}
+
+/// Apply a normal inventory command while preserving externally owned 2×2
+/// Avaia items. The authority supplies the squares independently of the command.
+/// The result stores only ordinary items, never receipts or activation rights.
+#[must_use]
+pub fn apply_inventory_command_with_reserved(
+    state: &str,
+    command: &str,
+    now_ms: u64,
+    reserved: &[(u8, u8)],
+) -> String {
     let mut inventory = match read_state(state) {
         Ok(inventory) => inventory,
         Err(code) => return failure(code),
     };
+    if let Err(error) = inventory.reserve_avaia_squares(reserved) {
+        return failure(error.code());
+    }
     let Ok(command) = serde_json::from_str::<Command>(command) else {
         return failure(INVALID);
     };
@@ -557,6 +573,59 @@ mod tests {
 
     fn apply(state: &str, command: &str, now_ms: u64) -> Value {
         serde_json::from_str(&apply_inventory_command(state, command, now_ms)).unwrap()
+    }
+
+    #[test]
+    fn reserved_squares_survive_normal_inventory_operations_without_becoming_items() {
+        let gifted = apply("", r#"{"op":"gift_backpacks","bond_level":3}"#, 0);
+        let state = gifted["state"].to_string();
+        let execute = |state: &str, command: &str, squares: &[(u8, u8)]| -> Value {
+            serde_json::from_str(&super::apply_inventory_command_with_reserved(
+                state, command, 0, squares,
+            ))
+            .unwrap()
+        };
+        let picked = execute(
+            &state,
+            &format!(r#"{{"op":"pick_up","holder":"avaia","artifact_id":"{KYIV}","tier":1}}"#),
+            &[(0, 0)],
+        );
+        assert_eq!(picked["ok"], true);
+        assert_eq!(
+            picked["state"]["avaia"]["things"],
+            serde_json::json!([{"id":"bottle_cap","x":2,"y":0}])
+        );
+        let state = picked["state"].to_string();
+        assert_eq!(
+            execute(
+                &state,
+                r#"{"op":"rearrange","holder":"avaia","from":[2,0],"to":[1,1]}"#,
+                &[(0, 0)]
+            )["error"],
+            "no_room"
+        );
+        assert_eq!(
+            execute(
+                &state,
+                r#"{"op":"switch_carry","holder":"avaia","carry":"pocket"}"#,
+                &[(0, 0)]
+            )["error"],
+            "no_room"
+        );
+        assert_eq!(
+            execute(
+                &state,
+                r#"{"op":"rearrange","holder":"avaia","from":[2,0],"to":[1,1]}"#,
+                &[]
+            )["ok"],
+            true
+        );
+        for squares in [vec![(0, 0), (1, 1)], vec![(2, 3)], vec![(255, 255)]] {
+            assert_eq!(
+                execute(&state, r#"{"op":"normalize"}"#, &squares)["error"],
+                "no_room"
+            );
+        }
     }
 
     #[test]
