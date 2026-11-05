@@ -52,10 +52,21 @@ impl SpendAuthorization {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, sqlx::FromRow)]
+pub struct SpecialItemView {
+    pub order_id: String,
+    pub sku: String,
+    pub state: String,
+    pub slot_x: Option<u8>,
+    pub slot_y: Option<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpecialSeedsOutcome {
     /// The debit and Special grant were committed together.
     Granted,
+    /// Committed a paid item without starting the subscription clock.
+    IssuedItem,
     /// Exact replay of an already committed issuer operation.
     AlreadyGranted,
     /// No credited authoritative seeds exist (or not enough).
@@ -222,6 +233,16 @@ impl IdentityRepository {
         order: &IssuerSpecialOrderSnapshot,
         now_ms: u64,
     ) -> Result<SpecialSeedsOutcome, RepositoryError> {
+        self.settle_special_order(owner, order, now_ms, false).await
+    }
+
+    pub(crate) async fn settle_special_order(
+        &self,
+        owner: &PubDress,
+        order: &IssuerSpecialOrderSnapshot,
+        now_ms: u64,
+        issue_item: bool,
+    ) -> Result<SpecialSeedsOutcome, RepositoryError> {
         let valid_order_id = (8..=128).contains(&order.order_id.len())
             && order.order_id.bytes().all(|c| {
                 c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':' | b'.')
@@ -256,7 +277,9 @@ impl IdentityRepository {
         // to on the clock at the original grant, so a replay never recomputes it.
         let prior = sqlx::query(
             "SELECT owner_pub_dress, sku, price_id, amount_minor \
-             FROM bond_seed_subscription_debits WHERE order_id = ?",
+             FROM bond_seed_subscription_debits WHERE order_id = ?1
+             UNION ALL SELECT owner_pub_dress, sku, price_id, amount_minor
+             FROM paid_special_items WHERE order_id = ?1",
         )
         .bind(&order.order_id)
         .fetch_optional(&mut *transaction)
@@ -336,17 +359,6 @@ impl IdentityRepository {
         {
             return Ok(SpecialSeedsOutcome::SpecialActive);
         }
-        let next = current.grant_special_months(order.term_months, now_ms)
-            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
-        let granted_ms = next.special_remaining_ms.get()
-            .checked_sub(current.special_remaining_ms.get())
-            .filter(|granted| *granted > 0)
-            .ok_or(RepositoryError::CorruptSubscriptionClock)?;
-        let duration = i64::try_from(granted_ms)
-            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
-        let serialized = serde_json::to_string(&next)
-            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
-
         let debit = sqlx::query(
             "UPDATE bond_seeds SET balance = balance - ? \
              WHERE owner_pub_dress = ? AND balance >= ?",
@@ -359,6 +371,34 @@ impl IdentityRepository {
         if debit.rows_affected() != 1 {
             return Ok(SpecialSeedsOutcome::InsufficientSeeds);
         }
+
+        if issue_item {
+            sqlx::query(
+                "INSERT INTO paid_special_items
+                 (order_id, owner_pub_dress, sku, price_id, amount_minor, paid_at_ms, state)
+                 VALUES (?, ?, ?, ?, ?, ?, 'paid')",
+            )
+            .bind(&order.order_id)
+            .bind(owner.as_str())
+            .bind(&order.sku)
+            .bind(price_id)
+            .bind(amount)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Ok(SpecialSeedsOutcome::IssuedItem);
+        }
+        let next = current.grant_special_months(order.term_months, now_ms)
+            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
+        let granted_ms = next.special_remaining_ms.get()
+            .checked_sub(current.special_remaining_ms.get())
+            .filter(|granted| *granted > 0)
+            .ok_or(RepositoryError::CorruptSubscriptionClock)?;
+        let duration = i64::try_from(granted_ms)
+            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
+        let serialized = serde_json::to_string(&next)
+            .map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
 
         sqlx::query(
             "INSERT INTO bond_subscription_clocks (owner_pub_dress, clock_json) \
@@ -387,6 +427,104 @@ impl IdentityRepository {
 
         transaction.commit().await?;
         Ok(SpecialSeedsOutcome::Granted)
+    }
+
+    /// Paid inventory and transit projection for the authenticated owner.
+    pub async fn special_items(&self, owner: &PubDress) -> Result<Vec<SpecialItemView>, RepositoryError> {
+        Ok(sqlx::query_as("SELECT order_id, sku, state, slot_x, slot_y FROM paid_special_items
+            WHERE owner_pub_dress = ? AND state != 'activated' ORDER BY paid_at_ms, order_id")
+            .bind(owner.as_str()).fetch_all(&self.pool).await?)
+    }
+
+    /// Collect at an authorized Market visit. The item stays paid if the caller
+    /// leaves the flight before pickup, or if the active client changes.
+    pub async fn collect_special_item(
+        &self, owner: &PubDress, order_id: &str, visit_id: &str, session_hash: &[u8], now_ms: u64,
+    ) -> Result<bool, RepositoryError> {
+        let now = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSeedsBalance)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if !spend_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
+            return Ok(false);
+        }
+        let changed = sqlx::query(
+            "UPDATE paid_special_items SET state = 'in_transit'
+             WHERE owner_pub_dress = ?1 AND order_id = ?2 AND state IN ('paid','in_transit')
+             AND paid_at_ms <= ?3 AND EXISTS (
+               SELECT 1 FROM market_visits WHERE visit_id = ?4 AND owner_pub_dress = ?1
+               AND session_token_hash = ?5 AND created_at_ms <= ?3 AND spend_until_ms > ?3)",
+        ).bind(owner.as_str()).bind(order_id).bind(now).bind(visit_id).bind(session_hash)
+            .execute(&mut *tx).await?.rows_affected();
+        tx.commit().await?;
+        Ok(changed == 1)
+    }
+
+    /// Activate in flight or from inventory. The paid order supplies the term.
+    /// Retrying a successful activation never adds the same term again.
+    pub async fn activate_special_item(
+        &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
+    ) -> Result<bool, RepositoryError> {
+        self.resolve_special_item(owner, order_id, session_hash, now_ms, None).await
+    }
+
+    /// Resolve arrival against Avaia's ordinary items and the paid items already
+    /// occupying her grid. The host supplies the current normal-inventory view.
+    pub async fn deliver_special_item(
+        &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
+        avaia: &nilxone_contracts::Backpack,
+    ) -> Result<bool, RepositoryError> {
+        self.resolve_special_item(owner, order_id, session_hash, now_ms, Some(avaia)).await
+    }
+
+    async fn resolve_special_item(
+        &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
+        arrival: Option<&nilxone_contracts::Backpack>,
+    ) -> Result<bool, RepositoryError> {
+        let now = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if !spend_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
+            return Ok(false);
+        }
+        let item = sqlx::query("SELECT state, sku FROM paid_special_items
+            WHERE owner_pub_dress = ? AND order_id = ? AND paid_at_ms <= ?")
+            .bind(owner.as_str()).bind(order_id).bind(now).fetch_optional(&mut *tx).await?;
+        let Some(item) = item else { return Ok(false); };
+        match item.try_get::<String, _>("state")?.as_str() {
+            "activated" => return Ok(true),
+            "stored" if arrival.is_some() => return Ok(true),
+            "in_transit" | "stored" => {}
+            _ => return Ok(false),
+        }
+        if let Some(bag) = arrival {
+            let reserved: Vec<(u8, u8)> = sqlx::query_as(
+                "SELECT slot_x, slot_y FROM paid_special_items WHERE owner_pub_dress = ? AND state = 'stored'",
+            ).bind(owner.as_str()).fetch_all(&mut *tx).await?;
+            if let Some((x, y)) = bag.subscription_slot(&reserved) {
+                sqlx::query("UPDATE paid_special_items SET state = 'stored', slot_x = ?, slot_y = ? WHERE order_id = ?")
+                    .bind(x).bind(y).bind(order_id).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Ok(true);
+            }
+        }
+        let sku: String = item.try_get("sku")?;
+        let months = sku.strip_prefix("0x1_special_").and_then(|s| s.strip_suffix('m'))
+            .and_then(|s| s.parse().ok()).ok_or(RepositoryError::CorruptSubscriptionClock)?;
+        let previous: Option<String> = sqlx::query_scalar(
+            "SELECT clock_json FROM bond_subscription_clocks WHERE owner_pub_dress = ?",
+        ).bind(owner.as_str()).fetch_optional(&mut *tx).await?;
+        let clock: SubscriptionClock = match previous {
+            Some(json) => serde_json::from_str(&json).map_err(|_| RepositoryError::CorruptSubscriptionClock)?,
+            None => SubscriptionClock::new(owner.as_str(), now_ms).map_err(|_| RepositoryError::CorruptSubscriptionClock)?,
+        };
+        if clock.bond_pub_dress != owner.as_str() { return Err(RepositoryError::CorruptSubscriptionClock); }
+        let next = clock.grant_special_months(months, now_ms).map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
+        sqlx::query("INSERT INTO bond_subscription_clocks(owner_pub_dress, clock_json)
+            VALUES (?, ?) ON CONFLICT(owner_pub_dress) DO UPDATE SET clock_json = excluded.clock_json")
+            .bind(owner.as_str()).bind(serde_json::to_string(&next).map_err(|_| RepositoryError::CorruptSubscriptionClock)?)
+            .execute(&mut *tx).await?;
+        sqlx::query("UPDATE paid_special_items SET state = 'activated', slot_x = NULL, slot_y = NULL, activated_at_ms = ? WHERE order_id = ?")
+            .bind(now).bind(order_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Read the authority's effective Core clock. This does not grant access
@@ -540,6 +678,55 @@ mod special_seeds_tests {
             repository.read_subscription_clock(&owner, 100).await.unwrap().special_remaining_ms.get(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn paid_item_is_collectible_once_and_starts_time_only_at_activation() {
+        let (repository, owner) = setup().await;
+        fund_fixture(&repository, &owner, 1000).await;
+        let id = "paid-order-01";
+        let verified = order(id);
+        let session = [9_u8; 32];
+        assert_eq!(repository.settle_special_order(&owner, &verified, 100, true).await.unwrap(), SpecialSeedsOutcome::IssuedItem);
+        assert_eq!(repository.settle_special_seeds(&owner, &verified, 200).await.unwrap(), SpecialSeedsOutcome::AlreadyGranted);
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
+        assert_eq!(repository.read_subscription_clock(&owner, 200).await.unwrap().special_remaining_ms.get(), 0);
+        assert!(!repository.activate_special_item(&owner, id, &session, 200).await.unwrap());
+        let visit = "v".repeat(43);
+        repository.create_market_visit(&visit, &owner, &session, 200, 1000).await.unwrap();
+        assert!(!repository.collect_special_item(&owner, id, &visit, &[7; 32], 250).await.unwrap());
+        assert!(repository.collect_special_item(&owner, id, &visit, &session, 250).await.unwrap());
+        assert!(repository.activate_special_item(&owner, id, &session, 300).await.unwrap());
+        assert!(repository.activate_special_item(&owner, id, &session, 400).await.unwrap());
+        let clock = repository.read_subscription_clock(&owner, 400).await.unwrap();
+        assert_eq!(clock.settled_at_ms.get(), 300);
+        assert_eq!(clock.special_remaining_ms.get(), JANUARY_MS);
+    }
+
+    #[tokio::test]
+    async fn arrival_stores_once_or_activates_if_the_grid_is_too_small() {
+        use nilxone_contracts::{Backpack, Carry};
+        for carry in [Carry::Pocket, Carry::Backpack] {
+            let (repository, owner) = setup().await;
+            fund_fixture(&repository, &owner, 1000).await;
+            let id = "arrival-item-01";
+            let session = [9; 32];
+            repository.settle_special_order(&owner, &order(id), 100, true).await.unwrap();
+            let visit = "v".repeat(43);
+            repository.create_market_visit(&visit, &owner, &session, 100, 1000).await.unwrap();
+            assert!(repository.collect_special_item(&owner, id, &visit, &session, 200).await.unwrap());
+            let bag = Backpack::new(carry);
+            for now in [300, 400] {
+                assert!(repository.deliver_special_item(&owner, id, &session, now, &bag).await.unwrap());
+            }
+            let state: String = sqlx::query_scalar("SELECT state FROM paid_special_items WHERE order_id = ?")
+                .bind(id).fetch_one(&repository.pool).await.unwrap();
+            assert_eq!(state, if carry == Carry::Pocket { "activated" } else { "stored" });
+            let clock = repository.read_subscription_clock(&owner, 400).await.unwrap();
+            assert_eq!(clock.special_remaining_ms.get(), if carry == Carry::Pocket { JANUARY_MS } else { 0 });
+            assert!(repository.activate_special_item(&owner, id, &session, 500).await.unwrap());
+            assert_eq!(repository.read_subscription_clock(&owner, 500).await.unwrap().special_remaining_ms.get(), JANUARY_MS);
+        }
     }
 
     #[tokio::test]

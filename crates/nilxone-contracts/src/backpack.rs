@@ -218,6 +218,33 @@ impl Backpack {
         &self.placed
     }
 
+    /// First free contiguous 2×2 square, including previously delivered
+    /// subscription items that are reserved by the authority.
+    #[must_use]
+    pub fn subscription_slot(&self, reserved: &[(u8, u8)]) -> Option<(u8, u8)> {
+        let grid = self.carry.grid();
+        for y in 0..grid.height.saturating_sub(1) {
+            for x in 0..grid.width.saturating_sub(1) {
+                let overlaps = |left: u8, top: u8, width: u8, height: u8| {
+                    x < left.saturating_add(width)
+                        && left < x + 2
+                        && y < top.saturating_add(height)
+                        && top < y + 2
+                };
+                if !self.placed.iter().any(|item| {
+                    let size = item.size();
+                    overlaps(item.x, item.y, size.width, size.height)
+                }) && !reserved
+                    .iter()
+                    .any(|&(left, top)| overlaps(left, top, 2, 2))
+                {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
     /// How many of `id` it holds.
     #[must_use]
     pub fn count(&self, id: &str) -> u32 {
