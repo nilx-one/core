@@ -286,6 +286,14 @@ impl Inventory {
         }
     }
 
+    /// Supply externally owned Avaia squares for a single inventory operation.
+    ///
+    /// # Errors
+    /// [`EconomyError::NoRoom`] if they overlap or fall outside the grid.
+    pub fn reserve_avaia_squares(&mut self, squares: &[(u8, u8)]) -> Result<(), EconomyError> {
+        self.avaia.reserve_squares(squares)
+    }
+
     fn backpack_mut(&mut self, holder: Holder) -> &mut Backpack {
         match holder {
             Holder::Bond => &mut self.bond,

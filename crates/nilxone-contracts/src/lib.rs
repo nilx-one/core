@@ -98,8 +98,8 @@ pub use identifier::{
 };
 pub use inventory::{CraftJob, GIFT_LEVEL, Holder, Inventory, Outcome, STARTER_SEEDS};
 pub use inventory_wire::{
-    apply_inventory_command, backpack_gift_due_wire, economy_catalog_json, find_item_wire,
-    picks_up_wire, xping_repair_wire,
+    apply_inventory_command, apply_inventory_command_with_reserved, backpack_gift_due_wire,
+    economy_catalog_json, find_item_wire, picks_up_wire, xping_repair_wire,
 };
 pub use landmark_map::{MAX_RARITY_MAP_LANDMARKS, landmark_map_view_wire};
 pub use landmark_rarity::{
