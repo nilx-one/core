@@ -87,3 +87,8 @@ server-only and is not a dependency of the portable kernel or client bindings.
 Common non-UI rules belong in Core; clients own platform-specific adapters,
 including authentication, payment presentation and navigation. A client payment
 callback cannot authorize a shared grant.
+
+The [AIS/public-information boundary](docs/ais-public-info.md) adds a separate
+0x1 product store keyed by the verified pairwise subject of the `nilx-one`
+OIDC client. AIS owns the shared identity; Core owns its 0x1 public projection.
+This service is not activated by existing hosts yet.

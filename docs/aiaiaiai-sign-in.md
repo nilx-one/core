@@ -4,7 +4,14 @@
 # Sign-in through aiaiaiai Identity
 
 Status: v1 client contract  
-Owner: Core (client); the issuer is the Identity service in `nilx-one/web`
+Owner: Core (client); the current issuer implementation is in `nilx-one/web`.
+The shared AIS service is being separated into `aiaiaiai-org/4x-ais`.
+
+The new product service uses [`ais-public-info.md`](ais-public-info.md): a
+separate 0x1 store keyed only by verified `(issuer, subject)`. Its
+`PublicInfoService` calls `SignInFlow::verify_callback`, then attaches product
+state without the legacy address-based link below. Existing hosts still use
+the original `finish` path until their adapter is explicitly moved.
 
 aiaiaiai Identity (`auth.aiaiaiai.org`) is the authority for who a person is.
 0x1 is one of its clients, and Core is how 0x1 talks to it: over OpenID

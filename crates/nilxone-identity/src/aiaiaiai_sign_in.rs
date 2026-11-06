@@ -588,6 +588,30 @@ pub struct Finished {
     pub clear_cookie: String,
 }
 
+/// A completed OIDC callback, before any 0x1 storage is consulted.
+/// The identity is accessible only after transaction and token verification.
+#[derive(Clone)]
+pub struct VerifiedCallback {
+    identity: VerifiedSignIn,
+    return_path: String,
+}
+
+impl VerifiedCallback {
+    pub fn identity(&self) -> &VerifiedSignIn {
+        &self.identity
+    }
+
+    pub fn return_path(&self) -> &str {
+        &self.return_path
+    }
+}
+
+/// Verification clears the transaction cookie on both success and failure.
+pub struct VerifiedFinished {
+    pub outcome: Result<VerifiedCallback, SignInFailure>,
+    pub clear_cookie: String,
+}
+
 /// 0x1's sign-in through aiaiaiai Identity, end to end. The host passes the
 /// request's query and `Cookie` header in, and applies the redirect and the
 /// `Set-Cookie` values it gets back. It decides nothing itself.
@@ -606,6 +630,10 @@ impl SignInFlow {
 
     pub fn issuer(&self) -> &str {
         self.client.config().issuer()
+    }
+
+    pub fn client_id(&self) -> &str {
+        self.client.config().client_id()
     }
 
     /// Sends the person to the issuer. `requested_return` is the page they
@@ -635,21 +663,54 @@ impl SignInFlow {
         callback: Callback<'_>,
         now: u64,
     ) -> Finished {
+        let verified = self.verify_callback(cookie_header, callback, now).await;
+        let outcome = match verified.outcome {
+            Ok(verified) => match repository
+                .resolve_aiaiaiai_account(verified.identity(), now)
+                .await
+            {
+                Ok(crate::AiaiaiaiAccountOutcome::Linked { pub_dress, .. }) => Ok(SignedIn {
+                    pub_dress,
+                    return_path: verified.return_path,
+                }),
+                Ok(crate::AiaiaiaiAccountOutcome::Unknown) => Err(SignInFailure::AccountUnknown),
+                Ok(crate::AiaiaiaiAccountOutcome::BondLinkedElsewhere) => {
+                    Err(SignInFailure::AccountConflict)
+                }
+                Err(_) => Err(SignInFailure::Unavailable),
+            },
+            Err(error) => Err(error),
+        };
         Finished {
-            outcome: self.resolve(repository, cookie_header, callback, now).await,
+            outcome,
+            clear_cookie: verified.clear_cookie,
+        }
+    }
+
+    /// Verifies the issuer callback without reading the legacy identity/game
+    /// database. Product services can attach their own state by `(iss, sub)`.
+    pub async fn verify_callback(
+        &self,
+        cookie_header: Option<&str>,
+        callback: Callback<'_>,
+        now: u64,
+    ) -> VerifiedFinished {
+        VerifiedFinished {
+            outcome: self
+                .verify_callback_inner(cookie_header, callback, now)
+                .await,
             clear_cookie: format!(
                 "{TRANSACTION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"
             ),
         }
     }
 
-    async fn resolve(
+    async fn verify_callback_inner(
         &self,
-        repository: &crate::IdentityRepository,
         cookie_header: Option<&str>,
         callback: Callback<'_>,
         now: u64,
-    ) -> Result<SignedIn, SignInFailure> {
+    ) -> Result<VerifiedCallback, SignInFailure> {
         let raw = cookie_header
             .and_then(|header| cookie_value(header, TRANSACTION_COOKIE))
             .ok_or(SignInFailure::Expired)?;
@@ -677,17 +738,10 @@ impl SignInFlow {
             Err(SignInError::Unavailable) => return Err(SignInFailure::Unavailable),
             Err(_) => return Err(SignInFailure::Invalid),
         };
-        match repository.resolve_aiaiaiai_account(&verified, now).await {
-            Ok(crate::AiaiaiaiAccountOutcome::Linked { pub_dress, .. }) => Ok(SignedIn {
-                pub_dress,
-                return_path: stored.return_path,
-            }),
-            Ok(crate::AiaiaiaiAccountOutcome::Unknown) => Err(SignInFailure::AccountUnknown),
-            Ok(crate::AiaiaiaiAccountOutcome::BondLinkedElsewhere) => {
-                Err(SignInFailure::AccountConflict)
-            }
-            Err(_) => Err(SignInFailure::Unavailable),
-        }
+        Ok(VerifiedCallback {
+            identity: verified,
+            return_path: stored.return_path,
+        })
     }
 
     fn seal(&self, stored: &StoredTransaction) -> Option<String> {

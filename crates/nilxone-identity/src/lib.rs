@@ -14,6 +14,7 @@ pub mod market_issuer;
 pub mod market_visit;
 pub mod provider_link;
 pub mod provider_secret;
+pub mod public_info;
 pub mod rate_limit;
 pub mod repository {
     include!("repository.rs");
