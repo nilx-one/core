@@ -184,8 +184,9 @@ pub struct VerifiedSignIn {
     /// Identity's pairwise subject for this client. Stable for 0x1, opaque,
     /// never Identity's private identifier.
     pub subject: String,
-    /// The public address at the moment of the sign-in. Mutable, so it is
-    /// only used to link a subject the first time, never as a key.
+    /// The public address at sign-in: a mutable display snapshot, never the
+    /// identity key. Only the legacy account resolver uses it for a first link;
+    /// the separate product store attaches exclusively by `(issuer, subject)`.
     pub pub_dress: Option<String>,
     pub auth_time: u64,
 }

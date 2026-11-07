@@ -196,6 +196,119 @@ async fn profile_survives_reopening_and_concurrent_first_sign_ins() {
 }
 
 #[tokio::test]
+async fn file_store_allows_writes_while_another_pool_holds_a_read_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}",
+        directory.path().join("product.sqlite").display()
+    );
+    let reader = PublicInfoRepository::connect(&url).await.unwrap();
+    let writer = PublicInfoRepository::connect(&url).await.unwrap();
+    assert_eq!(reader.pool.options().get_max_connections(), 5);
+    assert_eq!(repository().await.pool.options().get_max_connections(), 1);
+    // Check a second simultaneous connection too: options must apply to every
+    // pooled connection, not just the one that initialized the schema.
+    let mut first = reader.pool.acquire().await.unwrap();
+    let mut second = reader.pool.acquire().await.unwrap();
+    for connection in [&mut first, &mut second] {
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut **connection)
+            .await
+            .unwrap();
+        let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&mut **connection)
+            .await
+            .unwrap();
+        let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&mut **connection)
+            .await
+            .unwrap();
+        assert_eq!(journal, "wal");
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(busy_timeout, 5_000);
+    }
+    drop(first);
+    drop(second);
+    let owner = reader
+        .attach(&identity("subject", Some("0x0sky"), NOW))
+        .await
+        .unwrap();
+    let mut snapshot = reader.pool.begin().await.unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT bond_xp FROM public_profiles WHERE profile_id = ?")
+            .bind(&owner.profile.profile_id)
+            .fetch_one(&mut *snapshot)
+            .await
+            .unwrap();
+    assert_eq!(before, 0);
+    let committed = tokio::time::timeout(
+        Duration::from_secs(2),
+        writer.publish_experience_carry(&owner, 120, 45),
+    )
+    .await
+    .expect("WAL writer must not wait for the read snapshot")
+    .unwrap();
+    assert_eq!(committed.experience.bond_xp, 120);
+    let still_before: i64 =
+        sqlx::query_scalar("SELECT bond_xp FROM public_profiles WHERE profile_id = ?")
+            .bind(&owner.profile.profile_id)
+            .fetch_one(&mut *snapshot)
+            .await
+            .unwrap();
+    assert_eq!(still_before, 0);
+    snapshot.rollback().await.unwrap();
+    assert_eq!(
+        reader
+            .read_public(&owner.profile.profile_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        committed
+    );
+}
+
+#[tokio::test]
+async fn malformed_display_claim_on_a_known_subject_leaves_the_entire_row_unchanged() {
+    let repository = repository().await;
+    let owner = repository
+        .attach(&identity("subject", Some("0x0sky"), NOW))
+        .await
+        .unwrap();
+    let published = repository
+        .publish_experience_carry(&owner, 120, 45)
+        .await
+        .unwrap();
+    for auth_time in [NOW - 1, NOW, NOW + 1] {
+        assert!(matches!(
+            repository
+                .attach(&identity("subject", Some("not an address"), auth_time))
+                .await,
+            Err(PublicInfoError::InvalidPublicAddress)
+        ));
+        assert_eq!(
+            repository
+                .read_public(&published.profile_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            published
+        );
+        let stored_auth_time: i64 =
+            sqlx::query_scalar("SELECT last_auth_time FROM public_profiles WHERE profile_id = ?")
+                .bind(&published.profile_id)
+                .fetch_one(&repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_auth_time, i64::try_from(NOW).unwrap());
+    }
+    let missing = repository
+        .attach(&identity("subject", None, NOW + 2))
+        .await
+        .unwrap();
+    assert_eq!(missing.profile, published);
+}
+
+#[tokio::test]
 async fn malformed_display_claim_is_not_persisted() {
     let repository = repository().await;
     assert!(matches!(

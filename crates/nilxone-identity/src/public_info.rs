@@ -5,12 +5,12 @@
 //! database: no passwords, providers, issuer keys or private AIS identifiers.
 //! A public profile is a projection, never evidence of a BondChain interaction.
 
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use serde::Serialize;
 use sqlx::{
     Row, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 
 use crate::{
@@ -85,9 +85,18 @@ pub struct PublicInfoRepository {
 
 impl PublicInfoRepository {
     pub async fn connect(database_url: &str) -> Result<Self, PublicInfoError> {
-        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+        let max_connections = if database_url.contains(":memory:") {
+            1
+        } else {
+            5
+        };
+        let options = SqliteConnectOptions::from_str(database_url)?
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
+            .max_connections(max_connections)
             .connect_with(options)
             .await?;
         sqlx::raw_sql(include_str!("../public_info_schema.sql"))
@@ -141,6 +150,9 @@ impl PublicInfoRepository {
         &self,
         identity: &VerifiedSignIn,
     ) -> Result<AuthenticatedProfile, PublicInfoError> {
+        // An absent display claim preserves the stored snapshot. A supplied
+        // but malformed claim is an invalid issuer response: fail closed,
+        // even for a known subject or a stale callback, before changing a row.
         if let Some(address) = &identity.pub_dress {
             PubDress::from_str(address).map_err(|_| PublicInfoError::InvalidPublicAddress)?;
         }

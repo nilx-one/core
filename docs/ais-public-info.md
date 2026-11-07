@@ -55,6 +55,16 @@ snapshot. Equally timed changes wait for a later authentication or the future
 ordered identity-event channel; this slice does not claim real-time rename
 synchronization.
 
+A supplied but malformed `pub_dress` claim rejects product sign-in before any
+write, even for a known subject or a stale callback. This is an invalid issuer
+response, distinct from an absent optional claim. The stored name, XP and last
+authentication timestamp remain unchanged.
+
+The product store follows the other Core SQLite stores: WAL, foreign keys,
+five connections for a file and one for `:memory:`. A five-second busy timeout
+bounds writer contention; WAL permits a writer to commit while another
+connection holds a read snapshot, but does not allow concurrent writers.
+
 The legacy `SignInFlow::finish(IdentityRepository, ...)` is retained for
 existing hosts. It still has the old first-sight address link. New hosts must
 use `PublicInfoService`; changing the legacy method's behavior would activate
@@ -104,6 +114,9 @@ Subsequent independently reviewable changes:
    session binding, CSRF/rate limits, public DTO routes and Web sign-in
    redirect. It must not mint sessions for the legacy native identity by
    matching a public address. Core owns shared behavior; the host owns HTTP.
+   A multi-process host also needs a privileged session-restore path that
+   rechecks `(issuer, subject, profile_id)` in SQL after validating the session.
+   It must not deserialize an `AuthenticatedProfile` supplied by a client.
 3. Move the remaining product state behind the same stable product key in
    small changes: committed awards, Avaia, subscriptions, business data and
    game authorization. The existing visit-bound issuer worker remains the
