@@ -39,7 +39,15 @@ grant economic authority.
 
 ## Persistence and rollout
 
-The consuming process continues to open the same `DATABASE_URL` and owns the
+The new [`public_info` service](../../docs/ais-public-info.md) is a separate
+product-side store attached to verified AIS `(issuer, sub)` for client
+`nilx-one`. Its Core flow creates a product profile without a second native
+identity or a first-sight address link. It opens its own product database only
+when explicitly composed by a host; no current host activates it yet. This
+is the 2026-11-06 direction for the 0x1 service, superseding the earlier
+proposal for a new game repository under `aiaiaiai-org`.
+
+The existing consuming process continues to open the same `DATABASE_URL` and owns the
 same volume. There is no second database, data copy or balance migration.
 Migration bytes and ordering are preserved. Legacy provider-specific tables
 remain in the repository migration unit so existing databases remain compatible;
