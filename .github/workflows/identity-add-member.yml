@@ -1,0 +1,36 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+name: Add Business Bond member
+run-name: Add ${{ inputs.member }} to ${{ inputs.business }} as ${{ inputs.role }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      business:
+        description: Existing Business Bond pub_dress
+        required: true
+        type: string
+      member:
+        description: Existing human Bond pub_dress
+        required: true
+        type: string
+      role:
+        description: Explicit owner promotes an existing member; duplicate role fails
+        required: true
+        default: member
+        type: choice
+        options: [member, owner]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  request:
+    uses: ./.github/workflows/identity-operator.yml
+    with:
+      operation: add-member
+      business: ${{ inputs.business }}
+      member: ${{ inputs.member }}
+      role: ${{ inputs.role }}

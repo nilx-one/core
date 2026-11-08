@@ -1,0 +1,102 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+name: Prepare Identity operator request
+
+on:
+  workflow_call:
+    inputs:
+      operation:
+        description: Operation (execution is separately started in infra)
+        required: true
+        type: string
+      business:
+        description: Business pub_dress (required for create/add)
+        type: string
+      member:
+        description: Existing human pub_dress (required owner for create)
+        type: string
+      role:
+        description: Role for add-member; create-business always assigns owner
+        required: true
+        default: member
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  prepare:
+    if: github.repository == 'nilx-one/core' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require verified Core revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | {name, conclusion, status}' > checks.jsonl
+          python3 - <<'PY'
+          import json
+          rows = [json.loads(line) for line in open('checks.jsonl')]
+          required = ('correctness', 'dependency-policy', 'Wasm bindings', 'UniFFI Swift bindings')
+          for name in required:
+              matches = [r for r in rows if r['name'] == name]
+              assert matches and matches[0]['status'] == 'completed' and matches[0]['conclusion'] == 'success', f'Unverified Core check: {name}'
+          PY
+      - name: Prepare static operator toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+      - name: Build verified operator adapter
+        run: |
+          test -f Cargo.lock || cargo generate-lockfile
+          cargo build --locked --release --target x86_64-unknown-linux-musl -p nilxone-identity-operator
+          mkdir bundle
+          cp target/x86_64-unknown-linux-musl/release/nilxone-identity-operator bundle/
+      - name: Validate operator inputs with Core
+        env:
+          OPERATION: ${{ inputs.operation }}
+          BUSINESS: ${{ inputs.business }}
+          MEMBER: ${{ inputs.member }}
+          ROLE: ${{ inputs.role }}
+        run: |
+          set -Eeuo pipefail
+          case "$OPERATION" in
+            list-bonds) args=(list bonds) ;;
+            list-business-bonds) args=(list business-bonds) ;;
+            create-business)
+              test -n "$BUSINESS" && test -n "$MEMBER"
+              args=(create-business "$BUSINESS" "$MEMBER") ;;
+            add-member)
+              test -n "$BUSINESS" && test -n "$MEMBER"
+              args=(add-member "$BUSINESS" "$MEMBER" "$ROLE") ;;
+            *) exit 1 ;;
+          esac
+          bundle/nilxone-identity-operator --validate "${args[@]}" > bundle/request.json
+          (cd bundle && sha256sum nilxone-identity-operator request.json > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identity-operator-request
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 1
+      - name: Explain execution boundary
+        run: |
+          {
+            echo '## Request prepared; production has not been changed'
+            echo
+            echo "Core source: $GITHUB_SHA"
+            echo "Request run ID: $GITHUB_RUN_ID"
+            echo
+            echo 'Open Identity operator in aiaiaiai-org/infra and enter this run ID.'
+            echo 'Infra validates provenance, selects edge-prod-1 and the existing volume, then executes once.'
+            echo 'A green request workflow is not evidence of a membership grant.'
+          } >> "$GITHUB_STEP_SUMMARY"

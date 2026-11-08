@@ -1,0 +1,24 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+name: List registered Bonds
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: Registered human Bonds or Business Bonds
+        required: true
+        default: list-bonds
+        type: choice
+        options: [list-bonds, list-business-bonds]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  request:
+    uses: ./.github/workflows/identity-operator.yml
+    with:
+      operation: ${{ inputs.kind }}

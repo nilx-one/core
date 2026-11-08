@@ -1,0 +1,30 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+name: Create Business Bond
+run-name: Create BBond ${{ inputs.business }} with owner ${{ inputs.owner }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      business:
+        description: New Business Bond pub_dress
+        required: true
+        type: string
+      owner:
+        description: Existing human Bond pub_dress; receives role owner
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  request:
+    uses: ./.github/workflows/identity-operator.yml
+    with:
+      operation: create-business
+      business: ${{ inputs.business }}
+      member: ${{ inputs.owner }}
+      role: owner
