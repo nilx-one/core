@@ -324,6 +324,20 @@ async fn commit_award(
     }
 
     if let Some(claim) = &award.claim {
+        // A find another Bond had attested (docs/find-attestation.md) is
+        // theirs, whichever of the two paths reached the service first.
+        let attested_by_other = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM find_attestations \
+             WHERE artifact_sha = ? AND owner_pub_dress != ?)",
+        )
+        .bind(&claim.artifact_sha)
+        .bind(owner.as_str())
+        .fetch_one(&mut **transaction)
+        .await?
+            != 0;
+        if attested_by_other {
+            return Ok(AwardOutcome::Taken);
+        }
         let claimed = sqlx::query(
             "INSERT INTO find_claims (artifact_sha, epoch, tier, owner_pub_dress) \
              VALUES (?, ?, ?, ?) ON CONFLICT(artifact_sha) DO NOTHING",
