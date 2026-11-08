@@ -103,6 +103,10 @@ enum Command {
         recipe: String,
         place: String,
     },
+    StartPaidCraft {
+        recipe: String,
+        place: String,
+    },
     FinishCraft,
     FinishPaid,
     BuyCarry {
@@ -418,6 +422,16 @@ pub fn apply_inventory_command_with_reserved(
                 .map(|_| Outcome::default())
                 .map_err(Ok)
         }
+        Command::StartPaidCraft {
+            recipe: id,
+            place: at,
+        } => {
+            let recipe = recipe(&id).ok_or(Ok(EconomyError::UnknownItem))?;
+            inventory
+                .start_paid_craft(recipe, place(&at).map_err(Err)?, now_ms)
+                .map(|_| Outcome::default())
+                .map_err(Ok)
+        }
         Command::FinishCraft => inventory.finish_craft(now_ms).map_err(Ok),
         Command::FinishPaid => inventory.finish_paid().map_err(Ok),
         Command::BuyCarry { holder: who, carry } => inventory
@@ -664,6 +678,39 @@ mod tests {
         );
         assert_eq!(sold["outcome"]["seeds_gained"], "2");
         assert_eq!(sold["state"]["seeds"], "2");
+    }
+
+    #[test]
+    fn a_craft_paid_by_identity_takes_its_inputs_and_none_of_the_local_seeds() {
+        let state = r#"{"bond":{"carry":"backpack","things":[{"id":"broken_cd_player","x":0,"y":0}]},"avaia":{"carry":"pocket","things":[]},"seeds":"0","craft":null}"#;
+        let unpaid = apply(
+            state,
+            r#"{"op":"start_craft","recipe":"repair_cd_player","place":"repair_workshop"}"#,
+            1_000,
+        );
+        assert_eq!(unpaid["error"], "not_enough_seeds");
+        let paid = apply(
+            state,
+            r#"{"op":"start_paid_craft","recipe":"repair_cd_player","place":"repair_workshop"}"#,
+            1_000,
+        );
+        assert_eq!(paid["ok"], true);
+        assert_eq!(paid["state"]["seeds"], "0");
+        assert_eq!(paid["state"]["craft"]["recipe"], "repair_cd_player");
+        assert_eq!(paid["state"]["bond"]["things"], serde_json::json!([]));
+        // The place and the inputs are checked as ever.
+        let elsewhere = apply(
+            state,
+            r#"{"op":"start_paid_craft","recipe":"repair_cd_player","place":"anywhere"}"#,
+            1_000,
+        );
+        assert_eq!(elsewhere["error"], "wrong_place");
+        let nothing = apply(
+            &paid["state"].to_string(),
+            r#"{"op":"start_paid_craft","recipe":"repair_headphones","place":"anywhere"}"#,
+            2_000,
+        );
+        assert_eq!(nothing["error"], "busy");
     }
 
     #[test]
