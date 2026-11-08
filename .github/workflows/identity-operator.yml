@@ -41,15 +41,27 @@ jobs:
         run: |
           set -Eeuo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
-            --jq '.check_runs[] | select(.app.slug == "github-actions") | {name, conclusion, status}' > checks.jsonl
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | {name, conclusion, status, details_url}' > checks.jsonl
           python3 - <<'PY'
-          import json
+          import json, os, re
           rows = [json.loads(line) for line in open('checks.jsonl')]
           required = ('correctness', 'dependency-policy', 'Wasm bindings', 'UniFFI Swift bindings')
           for name in required:
               matches = [r for r in rows if r['name'] == name]
               assert matches and matches[0]['status'] == 'completed' and matches[0]['conclusion'] == 'success', f'Unverified Core check: {name}'
+          correctness = next(r for r in rows if r['name'] == 'correctness')
+          match = re.fullmatch(r'https://github.com/nilx-one/core/actions/runs/(\d+)/job/\d+', correctness['details_url'])
+          assert match, 'Unexpected correctness provenance'
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'CI_RUN={match[1]}\n')
           PY
+      - name: Reuse the exact CI lockfile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "core-cargo-lock-$GITHUB_SHA" --dir verified-lock
+          cp verified-lock/Cargo.lock Cargo.lock
       - name: Prepare static operator toolchain
         run: |
           sudo apt-get update -qq
@@ -57,7 +69,6 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
       - name: Build verified operator adapter
         run: |
-          test -f Cargo.lock || cargo generate-lockfile
           cargo build --locked --release --target x86_64-unknown-linux-musl -p nilxone-identity-operator
           mkdir bundle
           cp target/x86_64-unknown-linux-musl/release/nilxone-identity-operator bundle/

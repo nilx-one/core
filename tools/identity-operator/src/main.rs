@@ -14,13 +14,24 @@ use nilxone_identity::{
 
 enum Command {
     List(OperatorBondKind),
-    Create { business: PubDress, owner: PubDress },
-    Add { business: PubDress, member: PubDress, role: OperatorMemberRole },
+    Create {
+        business: PubDress,
+        owner: PubDress,
+    },
+    Add {
+        business: PubDress,
+        member: PubDress,
+        role: OperatorMemberRole,
+    },
 }
 
 fn parse(words: &[String]) -> Result<Command, String> {
     let args: Vec<&str> = words.iter().map(String::as_str).collect();
-    let address = |value: &str| value.parse::<PubDress>().map_err(|_| "invalid pub_dress".to_owned());
+    let address = |value: &str| {
+        value
+            .parse::<PubDress>()
+            .map_err(|_| "invalid pub_dress".to_owned())
+    };
     match args.as_slice() {
         ["list", "bonds"] => Ok(Command::List(OperatorBondKind::Human)),
         ["list", "business-bonds"] => Ok(Command::List(OperatorBondKind::Business)),
@@ -61,7 +72,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::json!({"bonds": repo.operator_bonds(kind).await?})
         }
         Command::Create { business, owner } => {
-            let status = match repo.operator_create_business(&business, &owner, now).await? {
+            let status = match repo
+                .operator_create_business(&business, &owner, now)
+                .await?
+            {
                 CreateBusinessOrganizationOutcome::Created => "created",
                 CreateBusinessOrganizationOutcome::IdempotentReplay => "already_owned",
                 other => return Err(format!("business creation refused: {other:?}").into()),
@@ -69,8 +83,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             serde_json::json!({"status": status, "business": business.as_str(),
                 "owner": owner.as_str(), "role": "owner"})
         }
-        Command::Add { business, member, role } => {
-            let status = match repo.operator_add_member(&business, &member, role, now).await? {
+        Command::Add {
+            business,
+            member,
+            role,
+        } => {
+            let status = match repo
+                .operator_add_member(&business, &member, role, now)
+                .await?
+            {
                 OperatorMembershipOutcome::Added => "added",
                 OperatorMembershipOutcome::Promoted => "promoted",
                 other => return Err(format!("membership refused: {other:?}").into()),
@@ -105,7 +126,15 @@ mod tests {
             "freed 0xdstudio 0x1alice",
             "delete 0xdstudio",
         ] {
-            assert!(parse(&line.split_whitespace().map(String::from).collect::<Vec<_>>()).is_err());
+            assert!(
+                parse(
+                    &line
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect::<Vec<_>>()
+                )
+                .is_err()
+            );
         }
     }
 }

@@ -193,57 +193,136 @@ mod business_operator_tests {
 
     #[tokio::test]
     async fn lists_people_separately_and_never_claims_existing_business() {
-        let repo = IdentityRepository::connect("sqlite::memory:").await.unwrap();
+        let repo = IdentityRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let alice: PubDress = "0x1alice".parse().unwrap();
         let bob: PubDress = "0x1bob".parse().unwrap();
         let business: PubDress = "0xdstudio".parse().unwrap();
         let missing: PubDress = "0x1missing".parse().unwrap();
-        repo.register(&alice, &ProviderIdentity::telegram(401), 1).await.unwrap();
-        repo.register(&bob, &ProviderIdentity::telegram(402), 1).await.unwrap();
-        assert_eq!(repo.operator_create_business(&business, &missing, 2).await.unwrap(),
-            CreateBusinessOrganizationOutcome::CreatorNotHuman);
-        assert!(repo.operator_bonds(OperatorBondKind::Business).await.unwrap().is_empty());
-        assert_eq!(repo.operator_create_business(&business, &alice, 3).await.unwrap(),
-            CreateBusinessOrganizationOutcome::Created);
-        assert_eq!(repo.operator_create_business(&business, &bob, 4).await.unwrap(),
-            CreateBusinessOrganizationOutcome::AddressUnavailable);
-        assert_eq!(repo.operator_create_business(&business, &alice, 4).await.unwrap(),
-            CreateBusinessOrganizationOutcome::IdempotentReplay);
+        repo.register(&alice, &ProviderIdentity::telegram(401), 1)
+            .await
+            .unwrap();
+        repo.register(&bob, &ProviderIdentity::telegram(402), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.operator_create_business(&business, &missing, 2)
+                .await
+                .unwrap(),
+            CreateBusinessOrganizationOutcome::CreatorNotHuman
+        );
+        assert!(
+            repo.operator_bonds(OperatorBondKind::Business)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repo.operator_create_business(&business, &alice, 3)
+                .await
+                .unwrap(),
+            CreateBusinessOrganizationOutcome::Created
+        );
+        assert_eq!(
+            repo.operator_create_business(&business, &bob, 4)
+                .await
+                .unwrap(),
+            CreateBusinessOrganizationOutcome::AddressUnavailable
+        );
+        assert_eq!(
+            repo.operator_create_business(&business, &alice, 4)
+                .await
+                .unwrap(),
+            CreateBusinessOrganizationOutcome::IdempotentReplay
+        );
         let people = repo.operator_bonds(OperatorBondKind::Human).await.unwrap();
-        assert_eq!(people.iter().map(|b| b.pub_dress.as_str()).collect::<Vec<_>>(),
-            ["0x1alice", "0x1bob"]);
-        assert_eq!(repo.operator_bonds(OperatorBondKind::Business).await.unwrap(),
-            [OperatorBond { pub_dress: business.to_string(), global_role: "business".into() }]);
+        assert_eq!(
+            people
+                .iter()
+                .map(|b| b.pub_dress.as_str())
+                .collect::<Vec<_>>(),
+            ["0x1alice", "0x1bob"]
+        );
+        assert_eq!(
+            repo.operator_bonds(OperatorBondKind::Business)
+                .await
+                .unwrap(),
+            [OperatorBond {
+                pub_dress: business.to_string(),
+                global_role: "business".into()
+            }]
+        );
     }
 
     #[tokio::test]
     async fn duplicates_fail_and_only_explicit_owner_promotes() {
-        let repo = IdentityRepository::connect("sqlite::memory:").await.unwrap();
+        let repo = IdentityRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
         let person: PubDress = "0x1alice".parse().unwrap();
         let business: PubDress = "0xdstudio".parse().unwrap();
-        repo.register(&person, &ProviderIdentity::telegram(411), 1).await.unwrap();
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 2).await.unwrap(),
-            OperatorMembershipOutcome::BusinessNotFound);
+        repo.register(&person, &ProviderIdentity::telegram(411), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 2)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::BusinessNotFound
+        );
         repo.register_business(&business, 2).await.unwrap();
-        assert_eq!(repo.operator_add_member(&business, &business, OperatorMemberRole::Owner, 3).await.unwrap(),
-            OperatorMembershipOutcome::MemberNotHuman);
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 3).await.unwrap(),
-            OperatorMembershipOutcome::Added);
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 4).await.unwrap(),
-            OperatorMembershipOutcome::AlreadyMember);
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Owner, 5).await.unwrap(),
-            OperatorMembershipOutcome::Promoted);
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Owner, 6).await.unwrap(),
-            OperatorMembershipOutcome::AlreadyMember);
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 7).await.unwrap(),
-            OperatorMembershipOutcome::RoleConflict);
+        assert_eq!(
+            repo.operator_add_member(&business, &business, OperatorMemberRole::Owner, 3)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::MemberNotHuman
+        );
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 3)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::Added
+        );
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 4)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::AlreadyMember
+        );
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Owner, 5)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::Promoted
+        );
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Owner, 6)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::AlreadyMember
+        );
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Member, 7)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::RoleConflict
+        );
         let created: i64 = sqlx::query_scalar("SELECT created_at FROM business_memberships")
-            .fetch_one(&repo.pool).await.unwrap();
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
         assert_eq!(created, 3);
         sqlx::query("UPDATE business_memberships SET role = 'maintainer'")
-            .execute(&repo.pool).await.unwrap();
-        assert_eq!(repo.operator_add_member(&business, &person, OperatorMemberRole::Owner, 8).await.unwrap(),
-            OperatorMembershipOutcome::RoleConflict);
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.operator_add_member(&business, &person, OperatorMemberRole::Owner, 8)
+                .await
+                .unwrap(),
+            OperatorMembershipOutcome::RoleConflict
+        );
     }
 
     #[tokio::test]
@@ -251,24 +330,48 @@ mod business_operator_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity.db");
         let url = format!("sqlite://{}", path.display());
-        assert!(IdentityRepository::connect_operator(&url, true).await.is_err());
+        assert!(
+            IdentityRepository::connect_operator(&url, true)
+                .await
+                .is_err()
+        );
         assert!(!path.exists());
         let repo = IdentityRepository::connect(&url).await.unwrap();
         let person: PubDress = "0x1alice".parse().unwrap();
-        repo.register(&person, &ProviderIdentity::telegram(421), 1).await.unwrap();
+        repo.register(&person, &ProviderIdentity::telegram(421), 1)
+            .await
+            .unwrap();
         repo.pool.close().await;
-        let ro = IdentityRepository::connect_operator(&url, true).await.unwrap();
-        assert_eq!(ro.operator_bonds(OperatorBondKind::Human).await.unwrap().len(), 1);
-        assert!(sqlx::query("DELETE FROM identities").execute(&ro.pool).await.is_err());
+        let ro = IdentityRepository::connect_operator(&url, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            ro.operator_bonds(OperatorBondKind::Human)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            sqlx::query("DELETE FROM identities")
+                .execute(&ro.pool)
+                .await
+                .is_err()
+        );
         ro.pool.close().await;
         // A database with no service tables must remain unmigrated.
         let blank = dir.path().join("blank.db");
         std::fs::File::create(&blank).unwrap();
-        let ro = IdentityRepository::connect_operator(&format!("sqlite://{}", blank.display()), true)
-            .await.unwrap();
+        let ro =
+            IdentityRepository::connect_operator(&format!("sqlite://{}", blank.display()), true)
+                .await
+                .unwrap();
         assert!(ro.operator_bonds(OperatorBondKind::Human).await.is_err());
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
-            .fetch_one(&ro.pool).await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
+                .fetch_one(&ro.pool)
+                .await
+                .unwrap();
         assert_eq!(count, 0);
     }
 }
