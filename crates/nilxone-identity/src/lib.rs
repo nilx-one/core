@@ -8,6 +8,7 @@
 pub mod aiaiaiai_sign_in;
 pub mod cell_orbs;
 pub mod credentials;
+pub mod find_attestation;
 pub mod finds;
 pub mod location;
 pub mod market_issuer;
@@ -33,6 +34,7 @@ pub mod repository {
     include!("repository_business_creation.rs");
     include!("repository_xping.rs");
     include!("repository_aiaiaiai_accounts.rs");
+    include!("repository_find_attestations.rs");
 }
 pub use credentials::{
     NativeAuthConfig, PasswordEngine, PasswordPolicyError, RememberedBondSigner, SecretDigester,
@@ -49,11 +51,11 @@ pub use provider_secret::{ProviderSecretCipher, ProviderSecretError};
 pub use repository::{
     ActivationRequest, ActivationRequestStatus, AdminRoleDecision, AdminRoleRequest,
     AdminRoleTelegramConfirmation, AdminRoleTelegramDelivery, AiaiaiaiAccountOutcome,
-    AvaiaConfigurationState, AvaiaIdentityRecord, AvaiaLocation, AvaiaTravelOutcome,
+    AttestOutcome, AvaiaConfigurationState, AvaiaIdentityRecord, AvaiaLocation, AvaiaTravelOutcome,
     AvaiaUpdateOutcome, BusinessRegistrationOutcome, BusinessStation, BusinessStationOutcome,
     IdentityProvider, IdentityRecord, IdentityRepository, NativeCredentialRecord,
     NativeRegistrationOutcome, ProviderIdentity, PubDressRenameOutcome, PublicIdentityRecord,
-    RegistrationOutcome, RepositoryError, TelegramMessageSlot,
+    RegistrationOutcome, RepositoryError, SaleOutcome, TelegramMessageSlot,
 };
 pub mod github_evidence;
 pub mod speech;

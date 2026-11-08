@@ -113,7 +113,7 @@ Commands (`op`): `buy_carry` (`holder`, `carry`), `gift_backpacks` (`bond_level`
 ## What the host still owns
 
 - **Storing the inventory** (both grids, the Seeds and the running craft). It lives on the device, in the encrypted finds journal, like the finds themselves.
-- **The authoritative total.** The service holds the Seed balance, the experience and the craft's times against a commitment (an HMAC), as with committed experience. It does not store which things the Bond holds or where it sold them.
+- **The authoritative total.** The Identity service holds the Seed balance. Seeds are credited only by the once-only starter credit and by [attested finds](find-attestation.md): money at the pick-up, a thing when it is sold, each by its attestation id. The device keeps the things themselves and only the attestation id leaves it again.
 - **The real-money payment** for a legendary craft, and its confirmation. Decided: it goes through **0xda-market**, later. The market confirms the payment to the service, the service lets the host call `finish_paid`, and Core's rule stays as it is.
 - **The confirmation prompt** before a craft, and its notice when the craft is done.
 - **Item and recipe names** in each language, by `id`.
