@@ -57,7 +57,10 @@ jobs:
           bundler-cache: true
           working-directory: .market
       - name: Shared handoff secret for this run only
-        run: echo "NILX_BROWSER_HANDOFF_TOKEN=$(openssl rand -hex 32)" >>"$GITHUB_ENV"
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "NILX_BROWSER_HANDOFF_TOKEN=$token" >>"$GITHUB_ENV"
       - name: Migrate Market and activate the staged Special in this disposable database
         working-directory: .market
         run: |
