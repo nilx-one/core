@@ -49,7 +49,7 @@ A craft or repair is paid from the Identity wallet (`start_craft_with_seeds`). T
 
 A retry with the same craft id, recipe and inputs answers `already_started` and debits nothing; the same id with anything else is `conflicting_replay`. A refusal commits nothing. A recipe that uses up a crafted thing (the Kyiv anthology) is `unverifiable_inputs` until crafted things have attestations. Tools are kept and are not checked.
 
-Running the craft (its timer, the finished thing, its experience) stays on the device under Core's `start_craft` and `finish_craft`.
+Running the craft (its timer, the finished thing, its experience) stays on the device: once the service answered `started` or `already_started`, the host applies Core's `start_paid_craft`, which takes the inputs and checks the tools and the place but leaves the device's own Seeds alone, then `finish_craft` when it is due.
 
 ## What is stored
 
