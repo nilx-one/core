@@ -19,6 +19,9 @@ on:
 permissions:
   contents: read
   actions: read
+  packages: write
+  attestations: write
+  id-token: write
 
 jobs:
   request:

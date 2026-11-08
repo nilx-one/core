@@ -3,10 +3,16 @@
 The **List registered Bonds**, **Create Business Bond** and **Add Business Bond
 member** workflows in Core prepare a validated request
 and a static Linux operator binary from the exact master revision whose Rust CI
-is green. It does not hold production SSH credentials, deploy a service, or open
+is green. It reuses the static operator binary verified by the Operator package
+CI job; operator preparation does not rebuild it or resolve new dependencies.
+It does not hold production SSH credentials, deploy a service, or open
 a database on a GitHub runner. To execute the prepared request, an operator
 separately starts **Identity operator** in `aiaiaiai-org/infra`, entering the Core
-request run ID. Until that infra workflow is installed, preparation is not a
+request run ID. The bundle is transported as an attested OCI image using the
+existing registry delivery pattern; there is no cross-repository Actions artifact
+download or producer PAT. The package `core-identity-operator` must be public
+before infra can consume it across organizations without a new token. Until
+that infra workflow is installed, preparation is not a
 working production operation. Neither PR merges nor successful request builds
 prove a grant.
 
@@ -16,7 +22,7 @@ prove a grant.
 | --- | --- | --- |
 | `list-bonds` | none | All registered humans except businesses; excludes Avaia/stations |
 | `list-business-bonds` | none | All registered Business Bonds |
-| `create-business` | `business`, `member` (the owner) | Atomic business allocation + owner membership |
+| `create-business` | `business`, `owner` | Atomic business allocation + owner membership |
 | `add-member` | `business`, `member`, `role` | Add a member/owner, or explicitly promote member to owner |
 
 `owner` is a required existing human's exact `pub_dress` for creation; there is
