@@ -35,6 +35,7 @@ pub mod repository {
     include!("repository_xping.rs");
     include!("repository_aiaiaiai_accounts.rs");
     include!("repository_find_attestations.rs");
+    include!("repository_crafts.rs");
 }
 pub use credentials::{
     NativeAuthConfig, PasswordEngine, PasswordPolicyError, RememberedBondSigner, SecretDigester,
@@ -53,7 +54,7 @@ pub use repository::{
     AdminRoleTelegramConfirmation, AdminRoleTelegramDelivery, AiaiaiaiAccountOutcome,
     AttestOutcome, AvaiaConfigurationState, AvaiaIdentityRecord, AvaiaLocation, AvaiaTravelOutcome,
     AvaiaUpdateOutcome, BusinessRegistrationOutcome, BusinessStation, BusinessStationOutcome,
-    IdentityProvider, IdentityRecord, IdentityRepository, NativeCredentialRecord,
+    CraftOutcome, IdentityProvider, IdentityRecord, IdentityRepository, NativeCredentialRecord,
     NativeRegistrationOutcome, ProviderIdentity, PubDressRenameOutcome, PublicIdentityRecord,
     RegistrationOutcome, RepositoryError, SaleOutcome, TelegramMessageSlot,
 };

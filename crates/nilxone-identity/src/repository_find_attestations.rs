@@ -24,6 +24,8 @@ pub enum SaleOutcome {
     Unknown,
     /// Money, a flyer: nothing a buyer pays for.
     NotForSale,
+    /// Used up in a craft or repair.
+    UsedUp,
 }
 
 fn new_attestation_id() -> Result<String, RepositoryError> {
@@ -171,6 +173,16 @@ impl IdentityRepository {
         if let Some(credit) = sold {
             let credit = u64::try_from(credit).map_err(|_| RepositoryError::CorruptSeedsBalance)?;
             return Ok(SaleOutcome::AlreadySold { credit });
+        }
+        let used_up = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM craft_inputs WHERE attestation_id = ?)",
+        )
+        .bind(attestation_id)
+        .fetch_one(&mut *transaction)
+        .await?
+            != 0;
+        if used_up {
+            return Ok(SaleOutcome::UsedUp);
         }
         let Some(price) = crate::find_attestation::sale_price(&item_id) else {
             return Ok(SaleOutcome::NotForSale);

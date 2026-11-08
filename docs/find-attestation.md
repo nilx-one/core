@@ -37,6 +37,20 @@ The device removes the thing from its grid only after the service answered `sold
 
 Crafted things have no attestation yet and cannot be sold until their provenance contract exists.
 
+A thing used up in a craft or repair answers `used_up` and is never sold.
+
+## Crafting and repairs
+
+A craft or repair is paid from the Identity wallet (`start_craft_with_seeds`). The device sends a craft id it chose (8–64 characters, its idempotency key), the recipe and the attestation ids of the things it uses up. Core's recipe says the price and which things it consumes; the device only says which of its attested finds they are. In one `BEGIN IMMEDIATE` transaction, under the active client session (like any spend), the service:
+
+1. checks the inputs are exactly the recipe's found things, attested to this Bond, unsold and not used before;
+2. debits Core's price (`not_enough_seeds` otherwise);
+3. records the receipt and marks each input used up.
+
+A retry with the same craft id, recipe and inputs answers `already_started` and debits nothing; the same id with anything else is `conflicting_replay`. A refusal commits nothing. A recipe that uses up a crafted thing (the Kyiv anthology) is `unverifiable_inputs` until crafted things have attestations. Tools are kept and are not checked.
+
+Running the craft (its timer, the finished thing, its experience) stays on the device under Core's `start_craft` and `finish_craft`.
+
 ## What is stored
 
 `find_attestations` keeps, per attestation: the Bond, the artifact id and its sha, week, tier, item, finder, pick-up time and **position**, when it was attested, the money it credited, and when it was sold and for how much. The row is the provenance of every seeds credit a find makes.
