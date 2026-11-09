@@ -30,6 +30,8 @@ pub enum PublicInfoError {
     InvalidExperience,
     #[error("the authenticated product profile no longer exists")]
     ProfileGone,
+    #[error("the product session cannot be opened with this token or lifetime")]
+    InvalidSession,
     #[error("public information storage is unavailable")]
     Storage(#[from] sqlx::Error),
 }
@@ -144,6 +146,103 @@ impl PublicInfoRepository {
         public_profile(row)
     }
 
+    /// Opens a product session for the owner a verified callback just
+    /// returned. `token_hash` is the host's digest of the session token; the
+    /// token itself never reaches this store. Expired rows of the same owner
+    /// are dropped here, so the table needs no separate sweeper.
+    pub async fn open_session(
+        &self,
+        owner: &AuthenticatedProfile,
+        token_hash: &str,
+        now: u64,
+        expires_at: u64,
+    ) -> Result<(), PublicInfoError> {
+        let now = i64::try_from(now).map_err(|_| PublicInfoError::InvalidSession)?;
+        let expires_at = i64::try_from(expires_at).map_err(|_| PublicInfoError::InvalidSession)?;
+        if expires_at <= now {
+            return Err(PublicInfoError::InvalidSession);
+        }
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM product_sessions WHERE issuer = ? AND subject = ? AND expires_at <= ?",
+        )
+        .bind(&owner.issuer)
+        .bind(&owner.subject)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        // The profile is re-read inside the insert: a session is never
+        // opened for a binding that no longer exists.
+        let opened = sqlx::query(
+            "INSERT INTO product_sessions (token_hash, issuer, subject, profile_id, created_at, expires_at) \
+             SELECT ?, issuer, subject, profile_id, ?, ? FROM public_profiles \
+             WHERE issuer = ? AND subject = ? AND profile_id = ?",
+        )
+        .bind(token_hash)
+        .bind(now)
+        .bind(expires_at)
+        .bind(&owner.issuer)
+        .bind(&owner.subject)
+        .bind(&owner.profile.profile_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::Database(database)
+                if database.is_unique_violation() || database.is_check_violation() =>
+            {
+                PublicInfoError::InvalidSession
+            }
+            other => PublicInfoError::Storage(other),
+        })?;
+        if opened.rows_affected() != 1 {
+            return Err(PublicInfoError::ProfileGone);
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// The privileged restore path for a later request or another process:
+    /// the owner of a live session, re-proved in SQL. The session row must
+    /// still match its profile's (issuer, subject, profile_id); nothing the
+    /// browser sent other than the token digest takes part.
+    pub async fn restore_session(
+        &self,
+        token_hash: &str,
+        now: u64,
+    ) -> Result<Option<AuthenticatedProfile>, PublicInfoError> {
+        let Ok(now) = i64::try_from(now) else {
+            return Ok(None);
+        };
+        let row = sqlx::query(
+            "SELECT p.issuer, p.subject, p.profile_id, p.pub_dress, p.bond_xp, p.avaia_xp \
+             FROM product_sessions s JOIN public_profiles p \
+               ON p.issuer = s.issuer AND p.subject = s.subject AND p.profile_id = s.profile_id \
+             WHERE s.token_hash = ? AND s.expires_at > ?",
+        )
+        .bind(token_hash)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(AuthenticatedProfile {
+                issuer: row.try_get("issuer")?,
+                subject: row.try_get("subject")?,
+                profile: public_profile(row)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Sign-out. Idempotent: closing an unknown or expired session is not an
+    /// error, and says nothing about whether it existed.
+    pub async fn close_session(&self, token_hash: &str) -> Result<(), PublicInfoError> {
+        sqlx::query("DELETE FROM product_sessions WHERE token_hash = ?")
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // This function is deliberately private. The service calls it only with
     // the result of SignInFlow's callback verification for client nilx-one.
     async fn attach(
@@ -211,6 +310,17 @@ impl PublicInfoService {
             return Err(PublicInfoError::WrongClient);
         }
         Ok(Self { flow, repository })
+    }
+
+    /// The product store, for the host's session and public-read routes.
+    pub fn repository(&self) -> &PublicInfoRepository {
+        &self.repository
+    }
+
+    /// The issuer this service signs in through, for the host's public
+    /// configuration answer.
+    pub fn issuer(&self) -> &str {
+        self.flow.issuer()
     }
 
     pub fn start(&self, return_path: Option<&str>, now: u64) -> Result<Started, SignInError> {
