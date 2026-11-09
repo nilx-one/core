@@ -11,7 +11,10 @@ separately starts **Identity operator** in `aiaiaiai-org/infra`, entering the Co
 request run ID. The bundle is transported as an attested OCI image using the
 existing registry delivery pattern; there is no cross-repository Actions artifact
 download or producer PAT. The package `core-identity-operator` must be public
-before infra can consume it across organizations without a new token. Until
+before infra can consume it across organizations without a new token. Every
+request image is then public, including `request.json` with the requested
+`pub_dress` values and role; it never contains database results. The verified
+CI package is retained for 90 days; after that, re-run Rust CI on master first. Until
 that infra workflow is installed, preparation is not a
 working production operation. Neither PR merges nor successful request builds
 prove a grant.
