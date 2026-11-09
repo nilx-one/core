@@ -1,0 +1,145 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+name: Prepare Identity operator request
+
+on:
+  workflow_call:
+    inputs:
+      operation:
+        description: Operation (execution is separately started in infra)
+        required: true
+        type: string
+      business:
+        description: Business pub_dress (required for create/add)
+        type: string
+      member:
+        description: Existing human pub_dress (required owner for create)
+        type: string
+      role:
+        description: Role for add-member; create-business always assigns owner
+        required: false
+        default: member
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  prepare:
+    if: github.repository == 'nilx-one/core' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require verified Core revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | {id, name, conclusion, status, details_url} | @json' > checks.jsonl
+          python3 - <<'PY'
+          import json, os, re
+          rows = [json.loads(line) for line in open('checks.jsonl')]
+          required = ('correctness', 'dependency-policy', 'Wasm bindings', 'UniFFI Swift bindings', 'Operator package')
+          latest = {}
+          for name in required:
+              # Re-runs add check runs with the same name; only the newest counts.
+              matches = sorted((r for r in rows if r['name'] == name), key=lambda r: r['id'])
+              assert matches, f'Missing Core check: {name}'
+              latest[name] = matches[-1]
+              assert latest[name]['status'] == 'completed' and latest[name]['conclusion'] == 'success', f'Unverified Core check: {name}'
+          def run_id(name):
+              match = re.fullmatch(r'https://github.com/nilx-one/core/actions/runs/(\d+)/job/\d+', latest[name]['details_url'])
+              assert match, f'Unexpected {name} provenance'
+              return match[1]
+          ci_run = run_id('correctness')
+          assert run_id('Operator package') == ci_run, 'Operator package was not built in the verified correctness run'
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'CI_RUN={ci_run}\n')
+          PY
+      - name: Reuse the exact verified CI operator binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          mkdir bundle
+          if ! gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "core-identity-operator-$GITHUB_SHA" --dir bundle; then
+            echo "::error::Verified operator package for $GITHUB_SHA is unavailable (expired or missing). Re-run Rust CI run $CI_RUN on master, then retry."
+            exit 1
+          fi
+          chmod 0555 bundle/nilxone-identity-operator
+      - name: Validate operator inputs with Core
+        env:
+          OPERATION: ${{ inputs.operation }}
+          BUSINESS: ${{ inputs.business }}
+          MEMBER: ${{ inputs.member }}
+          ROLE: ${{ inputs.role }}
+        run: |
+          set -Eeuo pipefail
+          case "$OPERATION" in
+            list-bonds) args=(list bonds) ;;
+            list-business-bonds) args=(list business-bonds) ;;
+            create-business)
+              test -n "$BUSINESS" && test -n "$MEMBER"
+              args=(create-business "$BUSINESS" "$MEMBER") ;;
+            add-member)
+              test -n "$BUSINESS" && test -n "$MEMBER"
+              args=(add-member "$BUSINESS" "$MEMBER" "$ROLE") ;;
+            *) exit 1 ;;
+          esac
+          bundle/nilxone-identity-operator --validate "${args[@]}" > bundle/request.json
+          (cd bundle && sha256sum nilxone-identity-operator request.json > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: identity-operator-request
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 1
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Prepare portable request image
+        run: |
+          printf 'FROM scratch\nCOPY nilxone-identity-operator request.json SHA256SUMS /bundle/\n' > bundle/Dockerfile
+      - name: Publish request without producer infrastructure credentials
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: bundle
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/nilx-one/core-identity-operator:request-${{ github.run_id }}-${{ github.run_attempt }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/nilx-one/core
+            org.opencontainers.image.revision=${{ github.sha }}
+            one.nilx.operator.run-id=${{ github.run_id }}
+      - name: Attest exact request image
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ghcr.io/nilx-one/core-identity-operator
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - name: Explain execution boundary
+        run: |
+          {
+            echo '## Request prepared; production has not been changed'
+            echo
+            echo "Core source: $GITHUB_SHA"
+            echo "Request run ID: $GITHUB_RUN_ID"
+            echo
+            echo 'Open Identity operator in aiaiaiai-org/infra and enter this run ID.'
+            echo 'Infra validates provenance, selects edge-prod-1 and the existing volume, then executes once.'
+            echo 'A green request workflow is not evidence of a membership grant.'
+          } >> "$GITHUB_STEP_SUMMARY"

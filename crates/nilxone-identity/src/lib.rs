@@ -32,6 +32,7 @@ pub mod repository {
     include!("repository_business_memberships.rs");
     include!("repository_business_membership_bootstrap.rs");
     include!("repository_business_creation.rs");
+    include!("repository_business_operator.rs");
     include!("repository_xping.rs");
     include!("repository_aiaiaiai_accounts.rs");
     include!("repository_find_attestations.rs");
