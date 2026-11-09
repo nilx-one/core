@@ -39,17 +39,24 @@ jobs:
 
   operator-package:
     name: Operator package
+    # Build only from the lockfile that correctness formatted, linted and tested.
+    needs: correctness
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reuse the tested lockfile
+        uses: actions/download-artifact@v4
+        with:
+          name: core-cargo-lock-${{ github.sha }}
+          path: .
       - name: Prepare static operator toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends musl-tools
           rustup target add x86_64-unknown-linux-musl
-      - name: Bootstrap lockfile
-        run: test -f Cargo.lock || cargo generate-lockfile
       - name: Validate static operator package
         run: |
           cargo build --locked --release --target x86_64-unknown-linux-musl -p nilxone-identity-operator
@@ -57,14 +64,18 @@ jobs:
           "$tool" --validate list bonds
           "$tool" --validate list business-bonds
           "$tool" --validate create-business 0xdstudio 0x1alice
+          "$tool" --validate add-member 0xdstudio 0x1alice owner
           if "$tool" --validate create-business 0xdstudio; then exit 1; fi
+          if "$tool" --validate add-member 0xdstudio 0x1alice maintainer; then exit 1; fi
       - name: Preserve verified operator package
         uses: actions/upload-artifact@v4
         with:
           name: core-identity-operator-${{ github.sha }}
           path: target/x86_64-unknown-linux-musl/release/nilxone-identity-operator
           if-no-files-found: error
-          retention-days: 7
+          # Operator requests reuse this from the latest master run; keep it
+          # available through long periods without a master push.
+          retention-days: 90
 
   dependency-policy:
     runs-on: ubuntu-latest

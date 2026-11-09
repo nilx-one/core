@@ -44,27 +44,38 @@ jobs:
         run: |
           set -Eeuo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100" \
-            --jq '.check_runs[] | select(.app.slug == "github-actions") | {name, conclusion, status, details_url} | @json' > checks.jsonl
+            --jq '.check_runs[] | select(.app.slug == "github-actions") | {id, name, conclusion, status, details_url} | @json' > checks.jsonl
           python3 - <<'PY'
           import json, os, re
           rows = [json.loads(line) for line in open('checks.jsonl')]
           required = ('correctness', 'dependency-policy', 'Wasm bindings', 'UniFFI Swift bindings', 'Operator package')
+          latest = {}
           for name in required:
-              matches = [r for r in rows if r['name'] == name]
-              assert matches and matches[0]['status'] == 'completed' and matches[0]['conclusion'] == 'success', f'Unverified Core check: {name}'
-          correctness = next(r for r in rows if r['name'] == 'correctness')
-          match = re.fullmatch(r'https://github.com/nilx-one/core/actions/runs/(\d+)/job/\d+', correctness['details_url'])
-          assert match, 'Unexpected correctness provenance'
+              # Re-runs add check runs with the same name; only the newest counts.
+              matches = sorted((r for r in rows if r['name'] == name), key=lambda r: r['id'])
+              assert matches, f'Missing Core check: {name}'
+              latest[name] = matches[-1]
+              assert latest[name]['status'] == 'completed' and latest[name]['conclusion'] == 'success', f'Unverified Core check: {name}'
+          def run_id(name):
+              match = re.fullmatch(r'https://github.com/nilx-one/core/actions/runs/(\d+)/job/\d+', latest[name]['details_url'])
+              assert match, f'Unexpected {name} provenance'
+              return match[1]
+          ci_run = run_id('correctness')
+          assert run_id('Operator package') == ci_run, 'Operator package was not built in the verified correctness run'
           with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write(f'CI_RUN={match[1]}\n')
+              output.write(f'CI_RUN={ci_run}\n')
           PY
       - name: Reuse the exact verified CI operator binary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -Eeuo pipefail
           mkdir bundle
-          gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" \
-            --name "core-identity-operator-$GITHUB_SHA" --dir bundle
+          if ! gh run download "$CI_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "core-identity-operator-$GITHUB_SHA" --dir bundle; then
+            echo "::error::Verified operator package for $GITHUB_SHA is unavailable (expired or missing). Re-run Rust CI run $CI_RUN on master, then retry."
+            exit 1
+          fi
           chmod 0555 bundle/nilxone-identity-operator
       - name: Validate operator inputs with Core
         env:
