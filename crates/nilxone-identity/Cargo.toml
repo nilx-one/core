@@ -33,6 +33,11 @@ tracing = "0.1"
 unicode-normalization = "0.1"
 url = "2"
 
+[features]
+# Builds the loopback-only issuer configuration that tests/market_e2e.rs uses
+# against a disposable Market. Never enabled by a deployed service.
+market-e2e = []
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

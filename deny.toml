@@ -9,6 +9,12 @@ ignore = [
     # templates, so it runs at build time and never ships in a binding. Drop
     # this once uniffi's askama moves off it.
     { id = "RUSTSEC-2026-0374", reason = "build-time only, via uniffi_bindgen's askama; no maintained release" },
+    # SQLite before 3.54.0 can return stale page-cache memory when a process opens
+    # a database together with a `-wal` file a less trusted party wrote. Core opens
+    # only its own server-side database files. The fix is in libsqlite3-sys >= 0.39,
+    # but sqlx-sqlite (0.8.6, and the latest, 0.9.0) requires < 0.38, so no dependency
+    # update reaches it. Drop this once sqlx accepts libsqlite3-sys 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "local-only; Core opens its own database files; sqlx caps libsqlite3-sys below the fixed 0.39" },
 ]
 
 [licenses]

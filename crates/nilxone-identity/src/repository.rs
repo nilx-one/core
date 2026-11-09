@@ -361,6 +361,12 @@ impl IdentityRepository {
         sqlx::raw_sql(include_str!("../migrations/0043_paid_special_items.sql"))
             .execute(&self.pool)
             .await?;
+        sqlx::raw_sql(include_str!("../migrations/0044_find_attestations.sql"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::raw_sql(include_str!("../migrations/0045_craft_receipts.sql"))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

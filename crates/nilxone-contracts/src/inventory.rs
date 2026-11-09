@@ -444,6 +444,34 @@ impl Inventory {
         place: Place,
         now_ms: u64,
     ) -> Result<CraftJob, EconomyError> {
+        self.start(recipe, place, now_ms, true)
+    }
+
+    /// Starts `recipe` like [`Self::start_craft`], with its Seeds already paid
+    /// elsewhere: the host calls this only after the Identity service debited
+    /// the Bond's wallet for this craft (`docs/find-attestation.md`), and Core
+    /// cannot tell that it did. The inputs are taken and the tools checked as
+    /// ever; this inventory's own Seeds are left as they are.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start_craft`], except never [`EconomyError::NotEnoughSeeds`].
+    pub fn start_paid_craft(
+        &mut self,
+        recipe: &'static Recipe,
+        place: Place,
+        now_ms: u64,
+    ) -> Result<CraftJob, EconomyError> {
+        self.start(recipe, place, now_ms, false)
+    }
+
+    fn start(
+        &mut self,
+        recipe: &'static Recipe,
+        place: Place,
+        now_ms: u64,
+        charge: bool,
+    ) -> Result<CraftJob, EconomyError> {
         if self.job.is_some() {
             return Err(EconomyError::Busy);
         }
@@ -453,7 +481,7 @@ impl Inventory {
         if recipe.tools.iter().any(|tool| self.bond.count(tool) == 0) {
             return Err(EconomyError::Missing);
         }
-        if self.seeds < recipe.seeds {
+        if charge && self.seeds < recipe.seeds {
             return Err(EconomyError::NotEnoughSeeds);
         }
         let mut bond = self.bond.clone();
@@ -470,7 +498,9 @@ impl Inventory {
             ready_ms,
         };
         self.bond = bond;
-        self.seeds -= recipe.seeds;
+        if charge {
+            self.seeds -= recipe.seeds;
+        }
         self.job = Some(job);
         Ok(job)
     }

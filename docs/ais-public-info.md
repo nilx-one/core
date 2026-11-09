@@ -46,6 +46,22 @@ location does not make it part of AIS's data authority.
    request, and apply CSRF protection before mutations. The Rust object is
    an in-process authorization result, not a client bearer token.
 
+### Product sessions
+
+The host owns the session cookie, its lifetime, CSRF and rate limits. Core
+stores what makes a session trustworthy on a later request or in another
+process: `PublicInfoRepository::open_session` records a digest of the host's
+token against the exact `(issuer, subject, profile_id)` of the owner a
+verified callback returned. `restore_session` is the privileged restore path:
+it returns an `AuthenticatedProfile` only while the row is unexpired and still
+matches its profile in SQL. Nothing the browser sends, other than the token
+whose digest is looked up, takes part. `close_session` is sign-out.
+
+A session is never opened for a profile that no longer exists, a token digest
+cannot be opened twice, and deleting a profile deletes its sessions. Opening
+a session drops that owner's expired rows. The restored profile carries the
+current display name and experience, not a snapshot from sign-in.
+
 The local `profile_id` is a randomly allocated, stable public product id.
 It is neither AIS's private identifier nor an authentication credential.
 Display-name changes do not alter it or the experience attached to it. The
@@ -114,9 +130,8 @@ Subsequent independently reviewable changes:
    session binding, CSRF/rate limits, public DTO routes and Web sign-in
    redirect. It must not mint sessions for the legacy native identity by
    matching a public address. Core owns shared behavior; the host owns HTTP.
-   A multi-process host also needs a privileged session-restore path that
-   rechecks `(issuer, subject, profile_id)` in SQL after validating the session.
-   It must not deserialize an `AuthenticatedProfile` supplied by a client.
+   Sessions go through `open_session` / `restore_session` above; the host
+   must not deserialize an `AuthenticatedProfile` supplied by a client.
 3. Move the remaining product state behind the same stable product key in
    small changes: committed awards, Avaia, subscriptions, business data and
    game authorization. The existing visit-bound issuer worker remains the
@@ -132,6 +147,8 @@ Subsequent independently reviewable changes:
 
 Storage tests cover persistence, concurrent first entry, rename stability,
 stale callbacks, conflicting public names, issuer separation, carry retries,
-publication caps, missing profiles and the public allowlist. A local substitute
+publication caps, missing profiles, the public allowlist, and product sessions
+(expiry, sign-out, a refused duplicate token, a mismatched binding, and a
+deleted profile). A local substitute
 issuer exercises HTTP token exchange, JWKS, signature/audience verification
 and profile creation through the real Core flow. It is not a live AIS E2E run.

@@ -87,7 +87,7 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
             .fetch_all(&repository.pool)
             .await
             .unwrap();
-    assert_eq!(tables, ["public_profiles"]);
+    assert_eq!(tables, ["public_profiles", "product_sessions"]);
 }
 
 #[tokio::test]
@@ -474,4 +474,170 @@ async fn oidc_callback_creates_product_profile_only_for_a_valid_nilx_one_token()
             assert_eq!(count, 0);
         }
     }
+}
+
+const TOKEN_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const OTHER_HASH: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+#[tokio::test]
+async fn a_session_restores_its_owner_until_it_expires_or_is_closed() {
+    let repository = repository().await;
+    let owner = repository
+        .attach(&identity("subject-1", Some("0x0sky"), NOW))
+        .await
+        .unwrap();
+    repository
+        .open_session(&owner, TOKEN_HASH, NOW, NOW + 60)
+        .await
+        .unwrap();
+
+    // The restored owner is a full authorization result: it can mutate its
+    // own row, and it reflects what the profile is now, not at sign-in.
+    let restored = repository
+        .restore_session(TOKEN_HASH, NOW + 1)
+        .await
+        .unwrap()
+        .expect("live session");
+    assert_eq!(restored.profile, owner.profile);
+    repository
+        .publish_experience_carry(&restored, 7, 3)
+        .await
+        .unwrap();
+    let again = repository
+        .restore_session(TOKEN_HASH, NOW + 2)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.profile.experience.bond_xp, 7);
+
+    assert!(
+        repository
+            .restore_session(OTHER_HASH, NOW + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repository
+            .restore_session(TOKEN_HASH, NOW + 60)
+            .await
+            .unwrap()
+            .is_none(),
+        "expired exactly at expires_at"
+    );
+    repository.close_session(TOKEN_HASH).await.unwrap();
+    repository.close_session(TOKEN_HASH).await.unwrap();
+    assert!(
+        repository
+            .restore_session(TOKEN_HASH, NOW + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_session_is_refused_or_dies_when_its_binding_does_not_hold() {
+    let repository = repository().await;
+    let owner = repository
+        .attach(&identity("subject-1", Some("0x0sky"), NOW))
+        .await
+        .unwrap();
+    let other = repository
+        .attach(&identity("subject-2", Some("0x0sea"), NOW))
+        .await
+        .unwrap();
+
+    // No lifetime, and no second session under one token digest.
+    assert!(matches!(
+        repository.open_session(&owner, TOKEN_HASH, NOW, NOW).await,
+        Err(PublicInfoError::InvalidSession)
+    ));
+    repository
+        .open_session(&owner, TOKEN_HASH, NOW, NOW + 60)
+        .await
+        .unwrap();
+    assert!(matches!(
+        repository
+            .open_session(&other, TOKEN_HASH, NOW, NOW + 60)
+            .await,
+        Err(PublicInfoError::InvalidSession)
+    ));
+    let still_owner = repository
+        .restore_session(TOKEN_HASH, NOW + 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_owner.profile.profile_id, owner.profile.profile_id);
+
+    // A row whose profile id no longer matches its subject restores nobody,
+    // even though the token digest and the subject are both real.
+    sqlx::query("UPDATE product_sessions SET profile_id = ? WHERE token_hash = ?")
+        .bind(&other.profile.profile_id)
+        .bind(TOKEN_HASH)
+        .execute(&repository.pool)
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .restore_session(TOKEN_HASH, NOW + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // A deleted profile takes its sessions with it and cannot open new ones.
+    repository
+        .open_session(&other, OTHER_HASH, NOW, NOW + 60)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM public_profiles WHERE subject = 'subject-2'")
+        .execute(&repository.pool)
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .restore_session(OTHER_HASH, NOW + 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        repository
+            .open_session(&other, OTHER_HASH, NOW, NOW + 60)
+            .await,
+        Err(PublicInfoError::ProfileGone)
+    ));
+}
+
+#[tokio::test]
+async fn opening_a_session_drops_the_owners_expired_ones_only() {
+    let repository = repository().await;
+    let owner = repository
+        .attach(&identity("subject-1", Some("0x0sky"), NOW))
+        .await
+        .unwrap();
+    let other = repository
+        .attach(&identity("subject-2", Some("0x0sea"), NOW))
+        .await
+        .unwrap();
+    repository
+        .open_session(&owner, TOKEN_HASH, NOW, NOW + 10)
+        .await
+        .unwrap();
+    repository
+        .open_session(&other, OTHER_HASH, NOW, NOW + 10)
+        .await
+        .unwrap();
+    let third = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    repository
+        .open_session(&owner, third, NOW + 20, NOW + 80)
+        .await
+        .unwrap();
+    let left: Vec<String> =
+        sqlx::query_scalar("SELECT token_hash FROM product_sessions ORDER BY token_hash")
+            .fetch_all(&repository.pool)
+            .await
+            .unwrap();
+    assert_eq!(left, [third, OTHER_HASH]);
 }

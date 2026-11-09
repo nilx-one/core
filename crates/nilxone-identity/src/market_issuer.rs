@@ -450,6 +450,25 @@ impl MarketIssuerConfig {
         handoff_secret: &str,
         base_url: Option<&str>,
     ) -> Result<Self, MarketIssuerConfigError> {
+        Self::build(handoff_secret, base_url, false)
+    }
+
+    /// The same, for the cross-service end-to-end check only
+    /// (`tests/market_e2e.rs`): it also accepts plain `http` to a loopback
+    /// Market, which a production build cannot even compile.
+    #[cfg(feature = "market-e2e")]
+    pub fn loopback_for_e2e(
+        handoff_secret: &str,
+        base_url: &str,
+    ) -> Result<Self, MarketIssuerConfigError> {
+        Self::build(handoff_secret, Some(base_url), true)
+    }
+
+    fn build(
+        handoff_secret: &str,
+        base_url: Option<&str>,
+        loopback_http: bool,
+    ) -> Result<Self, MarketIssuerConfigError> {
         if handoff_secret.len() < 32 {
             return Err(MarketIssuerConfigError::WeakHandoffSecret);
         }
@@ -464,7 +483,10 @@ impl MarketIssuerConfig {
             .collect();
         let mut base_url = url::Url::parse(base_url.unwrap_or(DEFAULT_MARKET_ISSUER_URL))
             .map_err(|_| MarketIssuerConfigError::InvalidUrl)?;
-        if base_url.scheme() != "https"
+        let loopback = loopback_http
+            && base_url.scheme() == "http"
+            && matches!(base_url.host_str(), Some("127.0.0.1" | "localhost"));
+        if (base_url.scheme() != "https" && !loopback)
             || !base_url.username().is_empty()
             || base_url.password().is_some()
             || base_url.query().is_some()

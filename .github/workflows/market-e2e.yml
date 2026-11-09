@@ -1,0 +1,98 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+# The Special-for-seeds purchase end to end (nilx-one/web#567): a real
+# 0xda-market on PostgreSQL, Identity's store and issuer worker from this
+# repository. Market's database is disposable and lives only in this job; the
+# staged Special SKU is activated there and nowhere else. No secret is used:
+# the shared handoff secret is generated per run.
+
+name: Market end to end
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The reviewed Market revision this check runs against.
+  MARKET_REVISION: 0662863fc5625624460ac699d1d57a5340693650
+
+jobs:
+  special-for-seeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/market_e2e
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: market_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d market_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned Market
+        uses: actions/checkout@v4
+        with:
+          repository: 0xda-market/core
+          ref: ${{ env.MARKET_REVISION }}
+          path: .market
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3.11"
+          bundler-cache: true
+          working-directory: .market
+      - name: Shared handoff secret for this run only
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "NILX_BROWSER_HANDOFF_TOKEN=$token" >>"$GITHUB_ENV"
+      - name: Migrate Market and activate the staged Special in this disposable database
+        working-directory: .market
+        run: |
+          set -Eeuo pipefail
+          bundle exec ruby bin/migrate
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+            "UPDATE market.products SET status = 'active' WHERE sku = '0x1_special_1m'"
+      - name: Start Market on loopback
+        working-directory: .market
+        env:
+          DEPLOY_ENV: development
+          ENABLE_NILX_SEEDS_CHECKOUT: "1"
+          PORT: "10000"
+        run: |
+          set -Eeuo pipefail
+          nohup bundle exec puma -C config/puma.rb >"$RUNNER_TEMP/market.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:10000/; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/market.log"
+          exit 1
+      - name: Toolchain
+        run: rustc --version && cargo --version
+      - name: Bootstrap lockfile
+        run: test -f Cargo.lock || cargo generate-lockfile
+      - name: Special for seeds, end to end
+        env:
+          MARKET_E2E_URL: http://127.0.0.1:10000
+        run: >-
+          cargo test --locked -p nilxone-identity --features market-e2e
+          --test market_e2e -- --nocapture
+      - name: Market log
+        if: always()
+        run: cat "$RUNNER_TEMP/market.log" || true
