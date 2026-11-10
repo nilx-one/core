@@ -92,3 +92,8 @@ The [AIS/public-information boundary](docs/ais-public-info.md) adds a separate
 0x1 product store keyed by the verified pairwise subject of the `nilx-one`
 OIDC client. AIS owns the shared identity; Core owns its 0x1 public projection.
 This service is not activated by existing hosts yet.
+
+Core is the engine and the API for every interface: the rules, the wire
+contract and the host ports live here, and Web, iOS and a command-line client
+are adapters. [Core as the engine and the API](docs/core-api-boundary.md)
+records the decision and the order of work.
