@@ -11,6 +11,7 @@
 //! find's week, not in the future and not older than [`PICKUP_MAX_AGE_MS`].
 //! Core then names the item and its prices.
 
+use nilxone_api::finds::AttestRefusal;
 use nilxone_contracts::{FindTier, item_for_find, item_kind};
 
 use crate::finds::{self, FindRoll};
@@ -32,31 +33,9 @@ const METERS_PER_DEGREE: f64 = 111_195.0;
 const ROW_DEGREES: f64 = 50.0 / METERS_PER_DEGREE;
 const COLUMN_DEGREES: f64 = ROW_DEGREES * 1.5698;
 
-/// Who picked the find up.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Finder {
-    Bond,
-    Avaia,
-}
-
-impl Finder {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "bond" => Some(Self::Bond),
-            "avaia" => Some(Self::Avaia),
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Bond => "bond",
-            Self::Avaia => "avaia",
-        }
-    }
-}
+// Who picked the find up is part of the wire contract: one definition for the
+// service and every client.
+pub use nilxone_api::finds::Finder;
 
 /// A pick-up as a device reports it.
 #[derive(Clone, Debug, PartialEq)]
@@ -95,14 +74,21 @@ pub enum PickupRefusal {
 }
 
 impl PickupRefusal {
+    /// The wire contract's refusal for this: its code and HTTP status are
+    /// defined there, once.
+    #[must_use]
+    pub const fn wire(self) -> AttestRefusal {
+        match self {
+            Self::UnknownFind => AttestRefusal::UnknownFind,
+            Self::OutOfTime => AttestRefusal::OutOfTime,
+            Self::TooFar => AttestRefusal::TooFar,
+            Self::NotTheAvaias => AttestRefusal::NotTheAvaias,
+        }
+    }
+
     #[must_use]
     pub const fn code(self) -> &'static str {
-        match self {
-            Self::UnknownFind => "unknown_find",
-            Self::OutOfTime => "out_of_time",
-            Self::TooFar => "too_far",
-            Self::NotTheAvaias => "not_the_avaias",
-        }
+        self.wire().code()
     }
 }
 
@@ -181,6 +167,30 @@ fn distance_to_segment_meters(row: i64, column: i64, longitude_e7: i32, latitude
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refusal_codes_are_the_contracts_and_have_not_changed() {
+        let codes: Vec<_> = [
+            PickupRefusal::UnknownFind,
+            PickupRefusal::OutOfTime,
+            PickupRefusal::TooFar,
+            PickupRefusal::NotTheAvaias,
+        ]
+        .iter()
+        .map(|refusal| (refusal.code(), refusal.wire().http_status()))
+        .collect();
+        assert_eq!(
+            codes,
+            [
+                ("unknown_find", 422),
+                ("out_of_time", 422),
+                ("too_far", 422),
+                ("not_the_avaias", 422)
+            ]
+        );
+        assert_eq!(Finder::parse("avaia"), Some(Finder::Avaia));
+        assert_eq!(Finder::Bond.as_str(), "bond");
+    }
 
     /// A find the pack rolls, and a moment in its week.
     fn rolled() -> (FindRoll, i64, i64) {

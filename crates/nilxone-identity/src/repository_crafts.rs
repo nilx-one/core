@@ -26,12 +26,26 @@ impl CraftOutcome {
         match self {
             Self::Started { .. } => "started",
             Self::AlreadyStarted { .. } => "already_started",
-            Self::ConflictingReplay => "conflicting_replay",
             Self::SessionChanged => "session_changed",
-            Self::UnknownRecipe => "unknown_recipe",
-            Self::UnverifiableInputs => "unverifiable_inputs",
-            Self::WrongInputs => "wrong_inputs",
-            Self::InsufficientSeeds => "not_enough_seeds",
+            Self::ConflictingReplay => nilxone_api::finds::CraftRefusal::ConflictingReplay.code(),
+            Self::UnknownRecipe => nilxone_api::finds::CraftRefusal::UnknownRecipe.code(),
+            Self::UnverifiableInputs => nilxone_api::finds::CraftRefusal::UnverifiableInputs.code(),
+            Self::WrongInputs => nilxone_api::finds::CraftRefusal::WrongInputs.code(),
+            Self::InsufficientSeeds => nilxone_api::finds::CraftRefusal::NotEnoughSeeds.code(),
+        }
+    }
+
+    /// The wire contract's refusal for this outcome, or `None` when it is not
+    /// one (a started craft, or a session that is no longer the active one).
+    #[must_use]
+    pub const fn refusal(&self) -> Option<nilxone_api::finds::CraftRefusal> {
+        match self {
+            Self::Started { .. } | Self::AlreadyStarted { .. } | Self::SessionChanged => None,
+            Self::ConflictingReplay => Some(nilxone_api::finds::CraftRefusal::ConflictingReplay),
+            Self::UnknownRecipe => Some(nilxone_api::finds::CraftRefusal::UnknownRecipe),
+            Self::UnverifiableInputs => Some(nilxone_api::finds::CraftRefusal::UnverifiableInputs),
+            Self::WrongInputs => Some(nilxone_api::finds::CraftRefusal::WrongInputs),
+            Self::InsufficientSeeds => Some(nilxone_api::finds::CraftRefusal::NotEnoughSeeds),
         }
     }
 }
@@ -177,6 +191,36 @@ mod craft_tests {
     use super::{AttestOutcome, CraftOutcome, IdentityRepository, SaleOutcome};
     use crate::find_attestation::{Finder, ReportedPickup, VerifiedPickup};
     use crate::{ProviderIdentity, PubDress};
+
+    #[test]
+    fn outcome_codes_are_the_contracts_and_have_not_changed() {
+        let codes: Vec<_> = [
+            CraftOutcome::Started { seeds: 1 },
+            CraftOutcome::AlreadyStarted { seeds: 1 },
+            CraftOutcome::ConflictingReplay,
+            CraftOutcome::SessionChanged,
+            CraftOutcome::UnknownRecipe,
+            CraftOutcome::UnverifiableInputs,
+            CraftOutcome::WrongInputs,
+            CraftOutcome::InsufficientSeeds,
+        ]
+        .iter()
+        .map(|outcome| (outcome.code(), outcome.refusal().map(nilxone_api::finds::CraftRefusal::http_status)))
+        .collect();
+        assert_eq!(
+            codes,
+            [
+                ("started", None),
+                ("already_started", None),
+                ("conflicting_replay", Some(409)),
+                ("session_changed", None),
+                ("unknown_recipe", Some(404)),
+                ("unverifiable_inputs", Some(409)),
+                ("wrong_inputs", Some(409)),
+                ("not_enough_seeds", Some(409)),
+            ]
+        );
+    }
 
     const SESSION: [u8; 32] = [7; 32];
 
