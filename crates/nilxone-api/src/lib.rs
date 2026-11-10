@@ -13,8 +13,42 @@
 //! directory holds the JSON bodies the tests pin; a client in another language
 //! checks its parser against the same files.
 //!
-//! Only the routes of the purchase path so far: [`finds`]. See
-//! `docs/core-api-boundary.md` for the order of the rest.
+//! Only the routes of the purchase path so far: [`finds`], [`wallet`] and
+//! [`market`]. See `docs/core-api-boundary.md` for the order of the rest.
+
+macro_rules! refusals {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident => ($code:literal, $status:literal)),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum $name { $($variant),+ }
+
+        impl $name {
+            /// Every refusal of this route, in a stable order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// The code in the error body.
+            #[must_use]
+            pub const fn code(self) -> &'static str {
+                match self { $(Self::$variant => $code),+ }
+            }
+
+            /// The HTTP status that carries it.
+            #[must_use]
+            pub const fn http_status(self) -> u16 {
+                match self { $(Self::$variant => $status),+ }
+            }
+
+            /// Reads a code from an error body.
+            #[must_use]
+            pub fn from_code(code: &str) -> Option<Self> {
+                Self::ALL.iter().copied().find(|refusal| refusal.code() == code)
+            }
+        }
+    };
+}
 
 pub mod error;
 pub mod finds;
+pub mod market;
+pub mod value;
+pub mod wallet;

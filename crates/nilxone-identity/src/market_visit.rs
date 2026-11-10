@@ -11,6 +11,9 @@
 //!
 //! HTTP routes, sessions and the Market wire belong to the adapters.
 
+// The shapes of a visit reference, an order id and a return page are part of
+// the wire contract, so a client can check them too.
+pub use nilxone_api::market::{is_market_order_id, is_market_return_path, is_market_visit_id};
 use nilxone_contracts::special_sku_months;
 
 use crate::{
@@ -24,8 +27,6 @@ pub const MARKET_VISIT_SPEND_WINDOW_MS: u64 = 60 * 60 * 1000;
 
 /// A visit reference is 32 random bytes, unpadded base64url.
 const VISIT_ID_BYTES: usize = 32;
-const VISIT_ID_LEN: usize = 43;
-const ORDER_ID_MAX: usize = 128;
 
 /// A fresh, unguessable visit reference.
 ///
@@ -38,41 +39,6 @@ pub fn new_market_visit_id() -> Result<String, getrandom::Error> {
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         bytes,
     ))
-}
-
-/// Whether `value` has the shape of a visit reference.
-#[must_use]
-pub fn is_market_visit_id(value: &str) -> bool {
-    value.len() == VISIT_ID_LEN
-        && value
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-}
-
-/// Whether `value` has the shape of a Market order id.
-#[must_use]
-pub fn is_market_order_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= ORDER_ID_MAX
-        && value
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b':' | b'-'))
-}
-
-/// Whether `path` is a 0x1 host page a visit may return to: `/` or one
-/// lowercase segment such as `/telegram/`. Never a URL.
-#[must_use]
-pub fn is_market_return_path(path: &str) -> bool {
-    let Some(rest) = path.strip_prefix('/') else {
-        return false;
-    };
-    rest.is_empty()
-        || rest.strip_suffix('/').is_some_and(|segment| {
-            !segment.is_empty()
-                && segment
-                    .bytes()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-        })
 }
 
 /// The visit and order a returning tab names.

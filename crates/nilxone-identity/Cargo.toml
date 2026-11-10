@@ -18,6 +18,7 @@ ed25519-dalek = "2"
 getrandom = "0.3"
 h3o = "0.11"
 hmac = "0.12"
+nilxone-api = { path = "../nilxone-api", version = "0.1.0" }
 nilxone-contracts = { path = "../nilxone-contracts", version = "0.1.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
