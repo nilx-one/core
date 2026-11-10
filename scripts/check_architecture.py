@@ -11,6 +11,13 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 FORBIDDEN = {
+    "crates/nilxone-api/Cargo.toml": {
+        "tokio",
+        "axum",
+        "reqwest",
+        "wasm-bindgen",
+        "uniffi",
+    },
     "crates/nilxone-contracts/Cargo.toml": {
         "tokio",
         "wasm-bindgen",

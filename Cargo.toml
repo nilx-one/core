@@ -3,6 +3,7 @@
 
 [workspace]
 members = [
+    "crates/nilxone-api",
     "crates/nilxone-contracts",
     "crates/nilxone-kernel",
     "crates/nilxone-bindings-wasm",
