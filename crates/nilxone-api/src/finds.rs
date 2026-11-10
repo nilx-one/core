@@ -8,10 +8,11 @@
 //! Core's prices. Seeds in an answer are decimal strings so no client rounds a
 //! large balance through a float.
 
-use std::fmt;
 use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
+
+pub use crate::value::{InvalidValue, Seeds};
 
 /// `POST`: report a pick-up and get its attestation.
 pub const ATTEST_PATH: &str = "/api/v1/identity/finds/attest";
@@ -32,18 +33,6 @@ pub const CRAFT_INPUTS_MAX: usize = 8;
 const LONGITUDE_LIMIT_DEGREES: f64 = 180.0;
 const LATITUDE_LIMIT_DEGREES: f64 = 90.0;
 const ITEM_ID_MAX_LEN: usize = 64;
-
-/// A value that is not shaped as the contract requires.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InvalidValue(&'static str);
-
-impl fmt::Display for InvalidValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl std::error::Error for InvalidValue {}
 
 /// Whose hands picked the find up.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -73,39 +62,6 @@ impl Finder {
             "avaia" => Some(Self::Avaia),
             _ => None,
         }
-    }
-}
-
-/// An amount of seeds, written as a decimal string with no sign, no leading
-/// zero and at most 19 digits.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Seeds(pub u64);
-
-impl TryFrom<String> for Seeds {
-    type Error = InvalidValue;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let digits = value.as_bytes();
-        let canonical = !digits.is_empty()
-            && digits.len() <= 19
-            && digits.iter().all(u8::is_ascii_digit)
-            && (digits.len() == 1 || digits[0] != b'0');
-        if !canonical {
-            return Err(InvalidValue(
-                "seeds are a canonical decimal string of at most 19 digits",
-            ));
-        }
-        value
-            .parse()
-            .map(Self)
-            .map_err(|_| InvalidValue("seeds do not fit 64 bits"))
-    }
-}
-
-impl From<Seeds> for String {
-    fn from(seeds: Seeds) -> Self {
-        seeds.0.to_string()
     }
 }
 
@@ -181,37 +137,6 @@ impl From<ItemId> for String {
     fn from(id: ItemId) -> Self {
         id.0
     }
-}
-
-macro_rules! refusals {
-    ($(#[$meta:meta])* $name:ident { $($variant:ident => ($code:literal, $status:literal)),+ $(,)? }) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub enum $name { $($variant),+ }
-
-        impl $name {
-            /// Every refusal of this route, in a stable order.
-            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
-
-            /// The code in the error body.
-            #[must_use]
-            pub const fn code(self) -> &'static str {
-                match self { $(Self::$variant => $code),+ }
-            }
-
-            /// The HTTP status that carries it.
-            #[must_use]
-            pub const fn http_status(self) -> u16 {
-                match self { $(Self::$variant => $status),+ }
-            }
-
-            /// Reads a code from an error body.
-            #[must_use]
-            pub fn from_code(code: &str) -> Option<Self> {
-                Self::ALL.iter().copied().find(|refusal| refusal.code() == code)
-            }
-        }
-    };
 }
 
 refusals! {
