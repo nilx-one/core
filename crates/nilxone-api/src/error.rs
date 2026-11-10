@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 /// `{ "error": { "code": …, "message": … } }`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ErrorEnvelope {
     /// What went wrong.
     pub error: ErrorBody,
@@ -15,7 +14,6 @@ pub struct ErrorEnvelope {
 
 /// The code a client branches on and a message for a person.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ErrorBody {
     /// A stable snake-case code. Clients branch on this, never on the message.
     pub code: String,
@@ -44,3 +42,11 @@ pub const SESSION_INACTIVE: &str = "session_inactive";
 pub const RATE_LIMITED: &str = "rate_limited";
 /// The service cannot answer now; try again later (HTTP 503).
 pub const IDENTITY_SERVICE_UNAVAILABLE: &str = "identity_service_unavailable";
+
+/// The code of an error body, or `None` when `body` is not one. Only the code
+/// is required: a client branches on nothing else.
+#[must_use]
+pub fn error_code(body: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(body).ok()?;
+    body.get("error")?.get("code")?.as_str().map(str::to_owned)
+}

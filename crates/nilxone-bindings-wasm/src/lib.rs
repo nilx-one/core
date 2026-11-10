@@ -517,3 +517,44 @@ mod tests {
         );
     }
 }
+
+/// What a client makes of the answer to a find attestation
+/// (`POST /api/v1/identity/finds/attest`): `ok` is whether the HTTP status was
+/// a success, `body` the response text. Answers
+/// `{"kind":"attested","outcome":…,"attestation_id":…,"item_id":…,"seeds_credited":"25"}`,
+/// `{"kind":"refused","reason":…}` or `{"kind":"unavailable"}`.
+#[must_use]
+#[wasm_bindgen]
+pub fn read_find_attestation(ok: bool, body: &str) -> String {
+    nilxone_api::finds::read_attest_wire(ok, body)
+}
+
+/// What a client makes of the answer to a sale
+/// (`POST /api/v1/identity/finds/sell`):
+/// `{"kind":"sold","outcome":…,"seeds_credited":"40"}`,
+/// `{"kind":"refused","reason":…}` or `{"kind":"unavailable"}`.
+#[must_use]
+#[wasm_bindgen]
+pub fn read_find_sale(ok: bool, body: &str) -> String {
+    nilxone_api::finds::read_sale_wire(ok, body)
+}
+
+/// What a client makes of the answer to a paid craft
+/// (`POST /api/v1/identity/crafts`):
+/// `{"kind":"paid","outcome":…,"seeds_debited":"120"}`,
+/// `{"kind":"refused","reason":…}`, `{"kind":"inactive"}` or
+/// `{"kind":"unavailable"}`.
+#[must_use]
+#[wasm_bindgen]
+pub fn read_craft_payment(ok: bool, body: &str) -> String {
+    nilxone_api::finds::read_craft_wire(ok, body)
+}
+
+/// What a client makes of the seeds wallet answer
+/// (`GET /api/v1/identity/seeds`): `{"kind":"read","balance":"10000"}` or
+/// `{"kind":"unavailable"}`. A device never shows a balance of its own instead.
+#[must_use]
+#[wasm_bindgen]
+pub fn read_seeds_wallet(ok: bool, body: &str) -> String {
+    nilxone_api::wallet::read_seeds_wire(ok, body)
+}

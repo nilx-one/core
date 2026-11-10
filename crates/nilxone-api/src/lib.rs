@@ -13,6 +13,10 @@
 //! directory holds the JSON bodies the tests pin; a client in another language
 //! checks its parser against the same files.
 //!
+//! Requests are strict: a body with a field the contract does not name is
+//! refused. Answers are read tolerantly: a client ignores a field it does not
+//! know, so the service can add one without breaking it.
+//!
 //! Only the routes of the purchase path so far: [`finds`], [`wallet`] and
 //! [`market`]. See `docs/core-api-boundary.md` for the order of the rest.
 
@@ -42,6 +46,12 @@ macro_rules! refusals {
             #[must_use]
             pub fn from_code(code: &str) -> Option<Self> {
                 Self::ALL.iter().copied().find(|refusal| refusal.code() == code)
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.code())
             }
         }
     };
