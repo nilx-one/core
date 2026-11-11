@@ -172,3 +172,34 @@ impl WalkGraph {
         }
     }
 }
+
+/// The surface a road feature is walked on, or `None` when it is not walked
+/// along.
+#[must_use]
+#[uniffi::export]
+#[allow(clippy::needless_pass_by_value, reason = "UniFFI inputs are owned")]
+pub fn walk_surface_of(kind: String, kind_detail: Option<String>) -> Option<String> {
+    core::surface_of(&kind, kind_detail.as_deref()).map(|surface| surface.as_str().to_owned())
+}
+
+/// Cost of one metre on each surface: footway, track, steps, street,
+/// carriageway.
+#[must_use]
+#[uniffi::export]
+pub fn walk_surface_weights() -> Vec<f64> {
+    core::SURFACE_CODES.map(core::Surface::weight).to_vec()
+}
+
+/// Cost of one metre of grass, between a point and the graph.
+#[must_use]
+#[uniffi::export]
+pub fn walk_grass_weight() -> f64 {
+    core::GRASS_WEIGHT
+}
+
+/// Farthest a point may be from the graph and still be on it.
+#[must_use]
+#[uniffi::export]
+pub fn walk_snap_distance_m() -> f64 {
+    core::SNAP_DISTANCE_M
+}

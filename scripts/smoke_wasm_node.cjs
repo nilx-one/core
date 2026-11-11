@@ -132,6 +132,12 @@ assert.deepEqual(JSON.parse(core.market_return_policy()), { pending_ms: 86400000
   const closed = new Uint8Array(4);
   assert.equal(graph.route(start[0], start[1], start[2], start[3], end[0], end[1], end[2], end[3], closed), undefined);
   const reach = graph.reach(start[0], start[1], Infinity);
+  assert.equal(core.walk_surface_of('path', 'steps'), 'steps');
+  assert.equal(core.walk_surface_of('major_road', 'trunk'), undefined);
+  assert.equal(core.walk_surface_of('medium_road', undefined), 'street');
+  assert.deepEqual(Array.from(core.walk_surface_weights()), [1, 1.3, 2, 1.5, 3]);
+  assert.equal(core.walk_grass_weight(), 4);
+  assert.equal(core.walk_snap_distance_m(), 30);
   assert.equal(reach.cost().length, 4);
   assert.ok(reach.cost().every((c) => c >= 0));
 }

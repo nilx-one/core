@@ -218,3 +218,37 @@ impl WalkReach {
         self.length_m.clone()
     }
 }
+
+/// The surface a road feature is walked on (`footway`, `track`, `steps`,
+/// `street`, `carriageway`), or `undefined` when it is not walked along.
+#[must_use]
+#[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen takes an optional string by value"
+)]
+pub fn walk_surface_of(kind: &str, kind_detail: Option<String>) -> Option<String> {
+    core::surface_of(kind, kind_detail.as_deref()).map(|surface| surface.as_str().to_owned())
+}
+
+/// Cost of one metre on each surface, in the order of
+/// [`WalkGraph::surface_names`].
+#[must_use]
+#[wasm_bindgen]
+pub fn walk_surface_weights() -> Vec<f64> {
+    core::SURFACE_CODES.map(core::Surface::weight).to_vec()
+}
+
+/// Cost of one metre of grass, between a point and the graph.
+#[must_use]
+#[wasm_bindgen]
+pub fn walk_grass_weight() -> f64 {
+    core::GRASS_WEIGHT
+}
+
+/// Farthest a point may be from the graph and still be on it.
+#[must_use]
+#[wasm_bindgen]
+pub fn walk_snap_distance_m() -> f64 {
+    core::SNAP_DISTANCE_M
+}
