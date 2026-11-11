@@ -49,10 +49,28 @@ hemispheres with clipped tiles, duplicates, bridges and broken lines, two
 random networks and an empty one), their graphs, snaps, routes and reach,
 with and without fog.
 
-## Not here yet
+## Bindings
 
-No binding exports it yet; a host calls it through Wasm or UniFFI once the
-bindings do. Web keeps its TypeScript copy until it switches.
+Wasm and UniFFI expose the graph as an object that stays in the runtime's
+memory: a host builds it once and snaps, routes and reaches on it without
+sending it back.
+
+- **Input.** Road features as JSON *without* coordinates
+  (`{"kind","kind_detail"?,"is_bridge"?,"lines":<count>}`), the number of
+  points of every line, and every point's longitude and latitude as one
+  `Float64Array`. Numbers never pass through text, so no bit is lost and no
+  exact float parser is needed.
+- **Views.** Node coordinates, edge nodes, lengths, surface codes and bridges,
+  and adjacency as offsets into one array: the same graph, as typed arrays.
+- **Fog stays the host's.** Core cannot call back into the host, so routing
+  and reach take a mask of the nodes a walk may enter, and snapping returns
+  every candidate nearest first; the first one the host's fog lets in is the
+  snapped place. `snap_candidates`, `route_on_graph_where` and
+  `reach_from_where` are the same algorithms the parity test checks.
+
+The binding adds about 107 KB to the Wasm runtime.
+
+Web still uses its TypeScript copy; switching it is a separate change.
 
 ---
 

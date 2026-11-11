@@ -246,6 +246,9 @@ pub fn business_point_view(state: String, now_s: String, organization_verified: 
     }
 }
 
+mod walk_graph;
+pub use walk_graph::*;
+
 #[cfg(test)]
 mod tests {
     use super::{
