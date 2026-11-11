@@ -238,6 +238,146 @@ pub struct WalkGraph {
     pub adjacency: Vec<Vec<usize>>,
 }
 
+/// Surfaces in the order of their codes in [`WalkGraph::edge_surface_codes`].
+pub const SURFACE_CODES: [Surface; 5] = [
+    Surface::Footway,
+    Surface::Track,
+    Surface::Steps,
+    Surface::Street,
+    Surface::Carriageway,
+];
+
+// Flat views for bindings, which pass typed arrays rather than objects. Node
+// and edge indices of a real graph fit `u32`.
+#[allow(clippy::cast_possible_truncation)]
+impl WalkGraph {
+    /// Longitude and latitude of every node, interleaved.
+    #[must_use]
+    pub fn node_coordinates(&self) -> Vec<f64> {
+        self.nodes
+            .iter()
+            .flat_map(|node| [node[0], node[1]])
+            .collect()
+    }
+
+    /// The two node indices of every edge, interleaved.
+    #[must_use]
+    pub fn edge_nodes(&self) -> Vec<u32> {
+        self.edges
+            .iter()
+            .flat_map(|edge| [edge.a as u32, edge.b as u32])
+            .collect()
+    }
+
+    /// The length of every edge.
+    #[must_use]
+    pub fn edge_lengths(&self) -> Vec<f64> {
+        self.edges.iter().map(|edge| edge.length_m).collect()
+    }
+
+    /// Every edge's surface, as its index in [`SURFACE_CODES`].
+    #[must_use]
+    pub fn edge_surface_codes(&self) -> Vec<u8> {
+        self.edges
+            .iter()
+            .map(|edge| {
+                SURFACE_CODES
+                    .iter()
+                    .position(|s| *s == edge.surface)
+                    .unwrap_or(0) as u8
+            })
+            .collect()
+    }
+
+    /// 1 for every edge that is a bridge, 0 otherwise.
+    #[must_use]
+    pub fn edge_bridges(&self) -> Vec<u8> {
+        self.edges
+            .iter()
+            .map(|edge| u8::from(edge.bridge))
+            .collect()
+    }
+
+    /// Adjacency as offsets into [`Self::adjacency_edges`]: node `i`'s edges
+    /// are `adjacency_edges[offsets[i]..offsets[i + 1]]`.
+    #[must_use]
+    pub fn adjacency_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::with_capacity(self.adjacency.len() + 1);
+        let mut at = 0_u32;
+        offsets.push(at);
+        for edges in &self.adjacency {
+            at += edges.len() as u32;
+            offsets.push(at);
+        }
+        offsets
+    }
+
+    /// Every node's edge indices, ascending, one node after another.
+    #[must_use]
+    pub fn adjacency_edges(&self) -> Vec<u32> {
+        self.adjacency
+            .iter()
+            .flatten()
+            .map(|&edge| edge as u32)
+            .collect()
+    }
+}
+
+/// What a road feature is, without its coordinates: they travel separately
+/// as numbers, so no text encoding can round them.
+#[derive(Clone, Debug, Deserialize)]
+struct FeatureShape {
+    kind: String,
+    #[serde(default)]
+    kind_detail: Option<String>,
+    #[serde(default)]
+    is_bridge: bool,
+    /// How many lines the feature has.
+    lines: usize,
+}
+
+/// Builds the graph from flat input, as a binding passes it: `features` is a
+/// JSON array of `{"kind","kind_detail"?,"is_bridge"?,"lines":<count>}`,
+/// `line_points` the number of points of every line in order, and
+/// `coordinates` every point's longitude and latitude, interleaved. `None`
+/// when the JSON is malformed or the counts do not add up.
+#[must_use]
+pub fn build_walk_graph_flat(
+    features: &str,
+    line_points: &[u32],
+    coordinates: &[f64],
+) -> Option<WalkGraph> {
+    let shapes: Vec<FeatureShape> = serde_json::from_str(features).ok()?;
+    if shapes.iter().map(|shape| shape.lines).sum::<usize>() != line_points.len()
+        || line_points.iter().map(|&n| n as usize).sum::<usize>() * 2 != coordinates.len()
+    {
+        return None;
+    }
+    let mut lines = line_points.iter();
+    let mut points = coordinates.as_chunks::<2>().0.iter().copied();
+    let features: Vec<RoadFeature> = shapes
+        .into_iter()
+        .map(|shape| RoadFeature {
+            kind: shape.kind,
+            kind_detail: shape.kind_detail,
+            is_bridge: shape.is_bridge,
+            lines: lines
+                .by_ref()
+                .take(shape.lines)
+                .map(|&n| points.by_ref().take(n as usize).collect())
+                .collect(),
+        })
+        .collect();
+    Some(build_walk_graph(&features))
+}
+
+/// Applies a binding's mask: one byte per node, non-zero where a walk may
+/// enter. Without a mask every node may be entered; nodes past a short mask
+/// may not.
+pub fn mask_enterable(mask: Option<&[u8]>) -> impl Fn(usize) -> bool + '_ {
+    move |node| mask.is_none_or(|mask| mask.get(node).is_some_and(|&byte| byte != 0))
+}
+
 /// Cost of walking an edge end to end.
 #[must_use]
 pub fn edge_cost(edge: &WalkEdge) -> f64 {
@@ -574,6 +714,44 @@ pub fn snap_to_graph(
     best
 }
 
+/// Every place on the graph within `max_distance_m` of `point`, nearest
+/// first, ties by edge index: one per edge. The first a caller may enter is
+/// what [`snap_to_graph`] answers with that caller's `can_enter`, so a host
+/// that cannot hand Core a callback (a binding) applies its own fog here. A
+/// point that is not finite is on no graph.
+#[must_use]
+pub fn snap_candidates(
+    graph: &WalkGraph,
+    point: LonLat,
+    max_distance_m: f64,
+) -> Vec<GraphPosition> {
+    if !point[0].is_finite() || !point[1].is_finite() {
+        return Vec::new();
+    }
+    let mut candidates: Vec<GraphPosition> = graph
+        .edges
+        .iter()
+        .enumerate()
+        .filter_map(|(index, edge)| {
+            let (a, b) = (*graph.nodes.get(edge.a)?, *graph.nodes.get(edge.b)?);
+            let projection = project_on_segment(point, a, b);
+            (projection.distance_m <= max_distance_m).then_some(GraphPosition {
+                edge: index,
+                t: projection.t,
+                point: projection.point,
+                distance_m: projection.distance_m,
+            })
+        })
+        .collect();
+    candidates.sort_by(|x, y| {
+        x.distance_m
+            .partial_cmp(&y.distance_m)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(x.edge.cmp(&y.edge))
+    });
+    candidates
+}
+
 /// A walk between two graph positions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WalkRoute {
@@ -650,14 +828,30 @@ pub fn route_on_graph(
     to: &GraphPosition,
     can_enter: CanEnter<'_>,
 ) -> Option<WalkRoute> {
+    route_on_graph_where(graph, from, to, &|node| enters_node(graph, can_enter, node))
+}
+
+fn enters_node(graph: &WalkGraph, can_enter: CanEnter<'_>, node: usize) -> bool {
+    graph
+        .nodes
+        .get(node)
+        .is_some_and(|&point| enters(can_enter, point))
+}
+
+/// [`route_on_graph`] with the nodes a walk may enter named by index: a host
+/// that cannot hand Core a callback (a binding) passes a mask instead. Nodes
+/// `enterable` refuses, and indices the graph does not hold, are never
+/// entered.
+#[must_use]
+pub fn route_on_graph_where(
+    graph: &WalkGraph,
+    from: &GraphPosition,
+    to: &GraphPosition,
+    enterable: &dyn Fn(usize) -> bool,
+) -> Option<WalkRoute> {
     let start_edge = graph.edges.get(from.edge)?;
     let end_edge = graph.edges.get(to.edge)?;
-    let enterable = |node: usize| {
-        graph
-            .nodes
-            .get(node)
-            .is_some_and(|&point| enters(can_enter, point))
-    };
+    let enterable = |node: usize| node < graph.nodes.len() && enterable(node);
 
     let n = graph.nodes.len();
     let mut cost = vec![f64::INFINITY; n];
@@ -780,18 +974,27 @@ pub fn reach_from(
     max_cost: f64,
     can_enter: CanEnter<'_>,
 ) -> Reach {
+    reach_from_where(graph, from, max_cost, &|node| {
+        enters_node(graph, can_enter, node)
+    })
+}
+
+/// [`reach_from`] with the nodes a walk may enter named by index, as in
+/// [`route_on_graph_where`].
+#[must_use]
+pub fn reach_from_where(
+    graph: &WalkGraph,
+    from: &GraphPosition,
+    max_cost: f64,
+    enterable: &dyn Fn(usize) -> bool,
+) -> Reach {
     let n = graph.nodes.len();
     let mut cost = vec![f64::INFINITY; n];
     let mut length_m = vec![f64::INFINITY; n];
     let Some(start_edge) = graph.edges.get(from.edge) else {
         return Reach { cost, length_m };
     };
-    let enterable = |node: usize| {
-        graph
-            .nodes
-            .get(node)
-            .is_some_and(|&point| enters(can_enter, point))
-    };
+    let enterable = |node: usize| node < n && enterable(node);
     let mut done = vec![false; n];
     let mut heap = MinHeap::default();
     let start_cost = edge_cost(start_edge);
@@ -897,6 +1100,71 @@ mod tests {
         };
         let _ = route_on_graph(&short, &at(0, 0.0), &at(0, 1.0), None);
         let _ = reach_from(&short, &at(0, 0.0), f64::INFINITY, None);
+    }
+
+    #[test]
+    fn flat_input_and_views_describe_the_same_graph() {
+        let shapes = r#"[{"kind":"path","lines":1},
+            {"kind":"major_road","kind_detail":"primary","is_bridge":true,"lines":1}]"#;
+        let coordinates = [
+            30.5, 50.4, 30.501, 50.4, 30.501, 50.401, 30.501, 50.4, 30.502, 50.4,
+        ];
+        let graph = build_walk_graph_flat(shapes, &[3, 2], &coordinates).expect("features");
+        assert_eq!(
+            graph,
+            build_walk_graph(&[
+                RoadFeature {
+                    kind: "path".to_owned(),
+                    kind_detail: None,
+                    is_bridge: false,
+                    lines: vec![vec![[30.5, 50.4], [30.501, 50.4], [30.501, 50.401]]],
+                },
+                RoadFeature {
+                    kind: "major_road".to_owned(),
+                    kind_detail: Some("primary".to_owned()),
+                    is_bridge: true,
+                    lines: vec![vec![[30.501, 50.4], [30.502, 50.4]]],
+                },
+            ])
+        );
+        assert_eq!(graph.node_coordinates().len(), graph.nodes.len() * 2);
+        assert_eq!(graph.edge_nodes().len(), graph.edges.len() * 2);
+        let codes = graph.edge_surface_codes();
+        for (edge, code) in graph.edges.iter().zip(&codes) {
+            assert_eq!(SURFACE_CODES[usize::from(*code)], edge.surface);
+        }
+        assert_eq!(
+            graph
+                .edge_bridges()
+                .iter()
+                .map(|&b| usize::from(b))
+                .sum::<usize>(),
+            1
+        );
+        let (offsets, edges) = (graph.adjacency_offsets(), graph.adjacency_edges());
+        for (node, adjacent) in graph.adjacency.iter().enumerate() {
+            let range = offsets[node] as usize..offsets[node + 1] as usize;
+            let flat: Vec<usize> = edges[range].iter().map(|&e| e as usize).collect();
+            assert_eq!(&flat, adjacent);
+        }
+        assert!(build_walk_graph_flat("{", &[], &[]).is_none());
+        assert!(build_walk_graph_flat(r#"[{"kind":"path"}]"#, &[], &[]).is_none());
+        // Counts that do not add up are refused, never read past.
+        assert!(build_walk_graph_flat(shapes, &[3], &coordinates).is_none());
+        assert!(build_walk_graph_flat(shapes, &[3, 2], &coordinates[..9]).is_none());
+        assert!(build_walk_graph_flat(shapes, &[3, 3], &coordinates).is_none());
+    }
+
+    #[test]
+    fn a_mask_names_the_nodes_a_walk_may_enter() {
+        let open = mask_enterable(None);
+        assert!(open(0) && open(99));
+        let mask = [1_u8, 0, 2];
+        let masked = mask_enterable(Some(&mask));
+        assert_eq!(
+            (masked(0), masked(1), masked(2), masked(3)),
+            (true, false, true, false)
+        );
     }
 
     #[test]

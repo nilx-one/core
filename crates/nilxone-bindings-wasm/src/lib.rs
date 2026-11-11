@@ -327,6 +327,9 @@ pub fn core_failure_report(surface: &str, code: &str) -> String {
     }
 }
 
+mod walk_graph;
+pub use walk_graph::*;
+
 #[cfg(test)]
 mod tests {
     use super::{

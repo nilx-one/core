@@ -10,7 +10,7 @@
 
 use nilxone_contracts::walk_graph::{
     GraphPosition, LonLat, RoadFeature, SNAP_DISTANCE_M, WalkGraph, build_walk_graph, reach_from,
-    route_on_graph, snap_to_graph,
+    route_on_graph, snap_candidates, snap_to_graph,
 };
 use serde_json::Value;
 
@@ -166,6 +166,15 @@ fn the_walking_graph_matches_the_typescript_implementation() {
                 }
                 (actual, expected) => panic!("{what}: {actual:?} != {expected}"),
             }
+            // The first candidate the fog lets in is the same place.
+            let candidate = snap_candidates(&graph, point(&snap["point"]), max)
+                .into_iter()
+                .find(|c| fog.as_ref().is_none_or(|f| f(c.point)));
+            assert_eq!(
+                candidate.map(|c| (c.edge, c.t.to_bits(), c.distance_m.to_bits())),
+                position.map(|p| (p.edge, p.t.to_bits(), p.distance_m.to_bits())),
+                "{what}: candidates"
+            );
             snapped.push(position);
             checked.1 += 1;
         }

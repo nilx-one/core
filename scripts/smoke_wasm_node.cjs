@@ -106,6 +106,36 @@ assert.deepEqual(
 );
 assert.deepEqual(JSON.parse(core.market_return_policy()), { pending_ms: 86400000, recheck_ms: [30000, 120000, 600000] });
 
+// Core's walking graph stays in Wasm memory; numbers cross as typed arrays.
+{
+  const shapes = JSON.stringify([
+    { kind: 'path', lines: 1 },
+    { kind: 'major_road', kind_detail: 'primary', is_bridge: true, lines: 1 },
+    { kind: 'highway', lines: 1 },
+  ]);
+  const linePoints = new Uint32Array([3, 2, 2]);
+  const coordinates = new Float64Array([30.5, 50.4, 30.501, 50.4, 30.501, 50.401, 30.501, 50.4, 30.502, 50.4, 30.5, 50.4, 30.5, 50.41]);
+  assert.equal(core.WalkGraph.build('{', linePoints, coordinates), undefined);
+  assert.equal(core.WalkGraph.build(shapes, new Uint32Array([3, 2]), coordinates), undefined);
+  const graph = core.WalkGraph.build(shapes, linePoints, coordinates);
+  assert.equal(core.WalkGraph.surface_names(), 'footway,track,steps,street,carriageway');
+  assert.equal(graph.node_coordinates().length, 8);
+  assert.deepEqual(Array.from(graph.edge_surfaces()).sort(), [0, 0, 4]);
+  assert.deepEqual(Array.from(graph.edge_bridges()).sort(), [0, 0, 1]);
+  const start = graph.snap_candidates(30.5002, 50.40001, 30);
+  const end = graph.snap_candidates(30.5018, 50.40001, 30);
+  assert.ok(start.length >= 5 && start.length % 5 === 0);
+  const route = graph.route(start[0], start[1], start[2], start[3], end[0], end[1], end[2], end[3]);
+  assert.ok(route.length_m() > 100 && route.cost() >= route.length_m());
+  assert.equal(route.points().length, (route.nodes().length + 2) * 2);
+  // Fog over every node but the start's: no way through.
+  const closed = new Uint8Array(4);
+  assert.equal(graph.route(start[0], start[1], start[2], start[3], end[0], end[1], end[2], end[3], closed), undefined);
+  const reach = graph.reach(start[0], start[1], Infinity);
+  assert.equal(reach.cost().length, 4);
+  assert.ok(reach.cost().every((c) => c >= 0));
+}
+
 // The wire contract's readings: a client hands the response over and branches on `kind`.
 assert.deepEqual(
   JSON.parse(core.read_find_attestation(true, '{"outcome":"attested","attestation_id":"3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b","item_id":"seed_pouch","seeds_credited":"25"}')),
