@@ -14,6 +14,7 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+nilxone-api = { version = "0.1.0", path = "../nilxone-api" }
 nilxone-contracts = { version = "0.1.0", path = "../nilxone-contracts" }
 nilxone-kernel = { version = "0.1.0", path = "../nilxone-kernel" }
 wasm-bindgen = "=0.2.127"

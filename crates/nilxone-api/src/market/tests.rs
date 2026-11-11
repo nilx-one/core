@@ -83,9 +83,12 @@ fn malformed_bodies_are_rejected() {
     rejected::<VisitAnswer>(include_str!(
         "../../fixtures/market/rejected/visit_answer_short_code.json"
     ));
-    rejected::<ReturnAnswer>(include_str!(
-        "../../fixtures/market/rejected/return_answer_extra_field.json"
-    ));
+    // An answer may gain a field: a client ignores what it does not know.
+    let future: ReturnAnswer = serde_json::from_str(include_str!(
+        "../../fixtures/market/return_answer_future_field.json"
+    ))
+    .expect("tolerant");
+    assert!(future.confirmed);
 }
 
 #[test]

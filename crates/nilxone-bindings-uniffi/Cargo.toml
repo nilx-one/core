@@ -23,6 +23,7 @@ default = []
 bindgen = ["uniffi/cli"]
 
 [dependencies]
+nilxone-api = { version = "0.1.0", path = "../nilxone-api" }
 nilxone-contracts = { version = "0.1.0", path = "../nilxone-contracts" }
 nilxone-kernel = { version = "0.1.0", path = "../nilxone-kernel" }
 uniffi = { version = "=0.32.0", default-features = false }

@@ -19,8 +19,8 @@ impl fmt::Display for InvalidValue {
 
 impl std::error::Error for InvalidValue {}
 
-/// An amount of seeds, written as a decimal string with no sign, no leading
-/// zero and at most 19 digits.
+/// An amount of seeds, written as a decimal string with no sign and no leading
+/// zero, within 64 bits.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Seeds(pub u64);
@@ -31,7 +31,7 @@ impl TryFrom<String> for Seeds {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let digits = value.as_bytes();
         let canonical = !digits.is_empty()
-            && digits.len() <= 19
+            && digits.len() <= 20
             && digits.iter().all(u8::is_ascii_digit)
             && (digits.len() == 1 || digits[0] != b'0');
         if !canonical {

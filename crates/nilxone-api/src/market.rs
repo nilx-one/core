@@ -186,7 +186,6 @@ impl From<HandoffCode> for String {
 
 /// The answer to [`VisitRequest`], with HTTP 201.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct VisitAnswer {
     /// The code to post to `action`.
     pub code: HandoffCode,
@@ -226,7 +225,6 @@ impl ReturnQuery {
 
 /// The answer to [`ReturnQuery`]: the order is confirmed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReturnAnswer {
     /// Always `true`: an unconfirmed return answers
     /// [`ReturnRefusal::PurchaseNotConfirmed`].

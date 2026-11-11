@@ -106,6 +106,18 @@ assert.deepEqual(
 );
 assert.deepEqual(JSON.parse(core.market_return_policy()), { pending_ms: 86400000, recheck_ms: [30000, 120000, 600000] });
 
+// The wire contract's readings: a client hands the response over and branches on `kind`.
+assert.deepEqual(
+  JSON.parse(core.read_find_attestation(true, '{"outcome":"attested","attestation_id":"3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b","item_id":"seed_pouch","seeds_credited":"25"}')),
+  { kind: 'attested', outcome: 'attested', attestation_id: '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b', item_id: 'seed_pouch', seeds_credited: '25' },
+);
+assert.deepEqual(JSON.parse(core.read_find_attestation(false, '{"error":{"code":"taken","message":"x"}}')), { kind: 'refused', reason: 'taken' });
+assert.deepEqual(JSON.parse(core.read_find_sale(true, '{"outcome":"sold","seeds_credited":40}')), { kind: 'unavailable' });
+assert.deepEqual(JSON.parse(core.read_craft_payment(false, '{"error":{"code":"session_inactive","message":"x"}}')), { kind: 'inactive' });
+assert.deepEqual(JSON.parse(core.read_seeds_wallet(true, '{"balance":"10000","denomination":"seeds","symbol":"s","authority":"identity"}')), { kind: 'read', balance: '10000' });
+assert.deepEqual(JSON.parse(core.read_seeds_wallet(true, '{"balance":"10000","denomination":"seeds","symbol":"s","authority":"client"}')), { kind: 'unavailable' });
+assert.deepEqual(JSON.parse(core.read_seeds_wallet(false, '{"error":{"code":"session_inactive","message":"x"}}')), { kind: 'inactive' });
+
 const engine = JSON.parse(core.xping_engine_command('', '{"op":"force","forced_ms":"15000"}', '1000'));
 assert.equal(engine.ok, true);
 assert.equal(engine.view.energy_permille, 500);

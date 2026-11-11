@@ -273,7 +273,6 @@ pub enum AttestOutcome {
 
 /// The answer to [`AttestRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AttestAnswer {
     /// Attested now or before.
     pub outcome: AttestOutcome,
@@ -329,7 +328,6 @@ pub enum SaleOutcome {
 
 /// The answer to [`SellRequest`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SellAnswer {
     /// Sold now or before.
     pub outcome: SaleOutcome,
@@ -398,12 +396,167 @@ pub enum CraftStart {
 
 /// The answer to [`CraftRequest`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CraftAnswer {
     /// Started now or before.
     pub outcome: CraftStart,
     /// What the craft debited.
     pub seeds_debited: Seeds,
+}
+
+/// What a client makes of the answer to [`AttestRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AttestReading {
+    /// The pick-up is attested, now or before.
+    Attested {
+        /// Now or before.
+        outcome: AttestOutcome,
+        /// The id every later request names.
+        attestation_id: AttestationId,
+        /// What was found.
+        item_id: ItemId,
+        /// What the pick-up credited.
+        seeds_credited: Seeds,
+    },
+    /// The service refused, for a reason that will not change on a retry.
+    Refused {
+        /// Why.
+        reason: AttestRefusal,
+    },
+    /// No usable answer: the service was unreachable, answered something this
+    /// contract does not know, or refused for a reason outside it. Try later.
+    Unavailable,
+}
+
+/// What a client makes of the answer to [`SellRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SaleReading {
+    /// The find is sold, now or before.
+    Sold {
+        /// Now or before.
+        outcome: SaleOutcome,
+        /// What the sale credited.
+        seeds_credited: Seeds,
+    },
+    /// The service refused.
+    Refused {
+        /// Why.
+        reason: SaleRefusal,
+    },
+    /// No usable answer. Try later.
+    Unavailable,
+}
+
+/// What a client makes of the answer to [`CraftRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CraftReading {
+    /// The craft is paid for and started, now or before.
+    Paid {
+        /// Now or before.
+        outcome: CraftStart,
+        /// What the craft debited.
+        seeds_debited: Seeds,
+    },
+    /// The service refused; nothing was debited.
+    Refused {
+        /// Why.
+        reason: CraftRefusal,
+    },
+    /// This client is signed in but is not the active one; nothing was debited.
+    Inactive,
+    /// No usable answer. Try later.
+    Unavailable,
+}
+
+/// Reads the answer to [`AttestRequest`]: `ok` is whether the HTTP status was
+/// a success, `body` the response text.
+#[must_use]
+pub fn read_attest(ok: bool, body: &str) -> AttestReading {
+    if !ok {
+        return crate::error::error_code(body)
+            .and_then(|code| AttestRefusal::from_code(&code))
+            .map_or(AttestReading::Unavailable, |reason| {
+                AttestReading::Refused { reason }
+            });
+    }
+    serde_json::from_str::<AttestAnswer>(body).map_or(AttestReading::Unavailable, |answer| {
+        AttestReading::Attested {
+            outcome: answer.outcome,
+            attestation_id: answer.attestation_id,
+            item_id: answer.item_id,
+            seeds_credited: answer.seeds_credited,
+        }
+    })
+}
+
+/// Reads the answer to [`SellRequest`].
+#[must_use]
+pub fn read_sale(ok: bool, body: &str) -> SaleReading {
+    if !ok {
+        return crate::error::error_code(body)
+            .and_then(|code| SaleRefusal::from_code(&code))
+            .map_or(SaleReading::Unavailable, |reason| SaleReading::Refused {
+                reason,
+            });
+    }
+    serde_json::from_str::<SellAnswer>(body).map_or(SaleReading::Unavailable, |answer| {
+        SaleReading::Sold {
+            outcome: answer.outcome,
+            seeds_credited: answer.seeds_credited,
+        }
+    })
+}
+
+/// Reads the answer to [`CraftRequest`].
+#[must_use]
+pub fn read_craft(ok: bool, body: &str) -> CraftReading {
+    if !ok {
+        let Some(code) = crate::error::error_code(body) else {
+            return CraftReading::Unavailable;
+        };
+        if code == crate::error::SESSION_INACTIVE {
+            return CraftReading::Inactive;
+        }
+        return CraftRefusal::from_code(&code).map_or(CraftReading::Unavailable, |reason| {
+            CraftReading::Refused { reason }
+        });
+    }
+    serde_json::from_str::<CraftAnswer>(body).map_or(CraftReading::Unavailable, |answer| {
+        CraftReading::Paid {
+            outcome: answer.outcome,
+            seeds_debited: answer.seeds_debited,
+        }
+    })
+}
+
+fn wire<T: Serialize>(reading: &T) -> String {
+    // A reading is plain enums and strings: serializing it cannot fail.
+    serde_json::to_string(reading).unwrap_or_else(|_| r#"{"kind":"unavailable"}"#.to_owned())
+}
+
+/// [`read_attest`] as JSON, for a binding that passes strings:
+/// `{"kind":"attested","outcome":…,"attestation_id":…,"item_id":…,"seeds_credited":"25"}`,
+/// `{"kind":"refused","reason":"taken"}` or `{"kind":"unavailable"}`.
+#[must_use]
+pub fn read_attest_wire(ok: bool, body: &str) -> String {
+    wire(&read_attest(ok, body))
+}
+
+/// [`read_sale`] as JSON: `{"kind":"sold","outcome":…,"seeds_credited":"40"}`,
+/// `{"kind":"refused","reason":…}` or `{"kind":"unavailable"}`.
+#[must_use]
+pub fn read_sale_wire(ok: bool, body: &str) -> String {
+    wire(&read_sale(ok, body))
+}
+
+/// [`read_craft`] as JSON: `{"kind":"paid","outcome":…,"seeds_debited":"120"}`,
+/// `{"kind":"refused","reason":…}`, `{"kind":"inactive"}` or
+/// `{"kind":"unavailable"}`.
+#[must_use]
+pub fn read_craft_wire(ok: bool, body: &str) -> String {
+    wire(&read_craft(ok, body))
 }
 
 #[cfg(test)]
