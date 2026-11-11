@@ -17,6 +17,8 @@ idna = "=1.1.0"
 # behavior cannot drift when a different runtime resolves dependencies.
 idna_adapter = "=1.1.0"
 idna_mapping = "=1.1.0"
+# Portable trigonometry: the walking graph must give the same bits on every client.
+libm = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 unicode-bidi = "=0.3.18"
