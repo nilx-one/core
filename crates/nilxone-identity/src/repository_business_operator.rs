@@ -2,11 +2,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /// A deliberately small operator projection. Never includes provider subjects,
-/// sessions, password hashes, private subjects, balances or recovery material.
+/// sessions, password hashes, private subjects or recovery material.
+///
+/// The last four fields exist so an operator can snapshot who held what before
+/// a reset (to honour a bonus, or to see who ever came back). They are the
+/// least that serves that: when the Bond was made, whether it ever got a
+/// password, its seeds balance, and whether a subscription clock exists.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct OperatorBond {
     pub pub_dress: String,
     pub global_role: String,
+    pub created_at: String,
+    pub has_password: bool,
+    pub seeds: u64,
+    pub has_subscription: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,7 +79,14 @@ impl IdentityRepository {
         kind: OperatorBondKind,
     ) -> Result<Vec<OperatorBond>, RepositoryError> {
         let rows = sqlx::query(
-            "SELECT i.pub_dress, COALESCE(r.role, 'user') AS global_role
+            "SELECT i.pub_dress, COALESCE(r.role, 'user') AS global_role,
+                    CAST(i.created_at AS TEXT) AS created_at,
+                    EXISTS (SELECT 1 FROM native_credentials c
+                            WHERE c.pub_dress = i.pub_dress) AS has_password,
+                    COALESCE((SELECT balance FROM bond_seeds s
+                              WHERE s.owner_pub_dress = i.pub_dress), 0) AS seeds,
+                    EXISTS (SELECT 1 FROM bond_subscription_clocks k
+                            WHERE k.owner_pub_dress = i.pub_dress) AS has_subscription
              FROM identities i LEFT JOIN bond_roles r ON r.pub_dress = i.pub_dress
              WHERE i.identity_kind = 'human'
                AND ((COALESCE(r.role, 'user') = 'business') = ?)
@@ -84,6 +100,11 @@ impl IdentityRepository {
                 Ok(OperatorBond {
                     pub_dress: row.try_get("pub_dress")?,
                     global_role: row.try_get("global_role")?,
+                    created_at: row.try_get("created_at")?,
+                    has_password: row.try_get("has_password")?,
+                    seeds: u64::try_from(row.try_get::<i64, _>("seeds")?)
+                        .map_err(|_| RepositoryError::CorruptSeedsBalance)?,
+                    has_subscription: row.try_get("has_subscription")?,
                 })
             })
             .collect()
@@ -244,15 +265,25 @@ mod business_operator_tests {
                 .collect::<Vec<_>>(),
             ["0x1alice", "0x1bob"]
         );
-        assert_eq!(
-            repo.operator_bonds(OperatorBondKind::Business)
-                .await
-                .unwrap(),
-            [OperatorBond {
-                pub_dress: business.to_string(),
-                global_role: "business".into()
-            }]
-        );
+        // Telegram-registered and never given a password or a clock; seeds
+        // are whatever the fixed starter rule credits, read straight from the wallet.
+        assert!(people.iter().all(|b| !b.has_password && !b.has_subscription));
+        assert!(people.iter().all(|b| !b.created_at.is_empty()));
+        repo.grant_starter_seeds_once(&alice, 5_000).await.unwrap();
+        let after = repo.operator_bonds(OperatorBondKind::Human).await.unwrap();
+        assert_eq!(after[0].seeds, repo.read_seeds_balance(&alice).await.unwrap());
+        assert!(after[0].seeds > 0);
+        assert_eq!(after[1].seeds, 0);
+        let businesses = repo
+            .operator_bonds(OperatorBondKind::Business)
+            .await
+            .unwrap();
+        assert_eq!(businesses.len(), 1);
+        assert_eq!(businesses[0].pub_dress, business.to_string());
+        assert_eq!(businesses[0].global_role, "business");
+        assert!(!businesses[0].has_password);
+        assert_eq!(businesses[0].seeds, 0);
+        assert!(!businesses[0].has_subscription);
     }
 
     #[tokio::test]

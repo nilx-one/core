@@ -40,8 +40,11 @@ creation time. Existing owner cannot be demoted by requesting member. Legacy
 roles remain readable and cannot be overwritten by this two-role surface.
 Adding another owner does not transfer or remove an existing owner's role.
 
-The JSON listing exposes only pub_dress and global role, in binary address
-order. It never exports private subjects, providers, credentials or sessions.
+The JSON listing exposes pub_dress, global role, creation time, whether the
+Bond has a password, its seeds balance and whether it has a subscription clock,
+in binary address order. The last four are there to snapshot who held what
+before a reset. It never exports private subjects, providers, credentials,
+recovery material or sessions.
 Results from infra must be handled as operator data, not public profile data.
 
 ## Database boundary
