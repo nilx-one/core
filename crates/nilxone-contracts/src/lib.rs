@@ -154,5 +154,7 @@ pub use xping_engine::{
     xping_engine_view_wire,
 };
 
+pub mod walk_graph;
+
 mod special_seeds_terms;
 pub use special_seeds_terms::{SpecialSeedsOrder, special_seeds_term_months, special_sku_months};

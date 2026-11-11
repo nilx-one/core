@@ -56,7 +56,8 @@ Each step is its own pull request, merged before the next starts.
 3. A client library over a `Transport` trait. Web supplies `fetch`; the
    hand-written TypeScript client shrinks accordingly.
 4. The remaining routes, by area.
-5. Domain logic still written in TypeScript, one package at a time: route graph,
+5. Domain logic still written in TypeScript, one package at a time: route graph
+   (in Core: [walking graph](walk-graph.md)),
    geometry, narration templates and contracts, avatar appearance, state
    placement, identity registration.
 6. Policy numbers and decisions inside the server host, starting with spoken
