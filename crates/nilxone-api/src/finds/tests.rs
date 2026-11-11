@@ -227,7 +227,7 @@ fn a_sale_names_an_id_of_attestation_length() {
 
 #[test]
 fn seeds_are_canonical_decimal_strings() {
-    for ok in ["0", "7", "9999999999999999999"] {
+    for ok in ["0", "7", "9999999999999999999", "18446744073709551615"] {
         assert!(Seeds::try_from(ok.to_owned()).is_ok(), "{ok}");
     }
     for bad in [
@@ -239,14 +239,162 @@ fn seeds_are_canonical_decimal_strings() {
         "1.0",
         " 1",
         "1e3",
-        "10000000000000000000",
+        "18446744073709551616",
+        "99999999999999999999",
         "٣",
     ] {
         assert!(Seeds::try_from(bad.to_owned()).is_err(), "{bad}");
     }
+    // Every value the type can write, it can read back.
+    let largest = String::from(Seeds(u64::MAX));
+    assert_eq!(Seeds::try_from(largest), Ok(Seeds(u64::MAX)));
+}
+
+#[test]
+fn a_client_reads_attestation_answers() {
+    let attested = include_str!("../../fixtures/finds/attest_answer_attested.json");
     assert_eq!(
-        String::from(Seeds(18_446_744_073_709_551_615 / 2)),
-        "9223372036854775807"
+        read_attest_wire(true, attested),
+        r#"{"kind":"attested","outcome":"attested","attestation_id":"3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b","item_id":"seed_pouch","seeds_credited":"25"}"#
+    );
+    let again = read_attest(
+        true,
+        include_str!("../../fixtures/finds/attest_answer_already_yours.json"),
+    );
+    assert!(matches!(
+        again,
+        AttestReading::Attested {
+            outcome: AttestOutcome::AlreadyYours,
+            seeds_credited: Seeds(0),
+            ..
+        }
+    ));
+    assert_eq!(
+        read_attest_wire(
+            false,
+            include_str!("../../fixtures/finds/attest_error_taken.json")
+        ),
+        r#"{"kind":"refused","reason":"taken"}"#
+    );
+    for refusal in AttestRefusal::ALL {
+        let body = format!(r#"{{"error":{{"code":"{}"}}}}"#, refusal.code());
+        assert_eq!(
+            read_attest(false, &body),
+            AttestReading::Refused { reason: *refusal }
+        );
+    }
+    // A success whose body is malformed, and a failure with a code of another
+    // route or none, are both "try later", never a refusal or an attestation.
+    for body in [
+        include_str!("../../fixtures/finds/rejected/attest_answer_leading_zero.json"),
+        include_str!("../../fixtures/finds/rejected/attest_answer_bad_uuid.json"),
+        include_str!("../../fixtures/finds/sell_answer_sold.json"),
+        "",
+        "<html>",
+    ] {
+        assert_eq!(
+            read_attest(true, body),
+            AttestReading::Unavailable,
+            "{body}"
+        );
+    }
+    for body in [
+        r#"{"error":{"code":"rate_limited"}}"#,
+        r#"{"error":{"code":"used_up"}}"#,
+        r#"{"error":"taken"}"#,
+        "",
+        attested,
+    ] {
+        assert_eq!(
+            read_attest(false, body),
+            AttestReading::Unavailable,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn a_client_reads_sale_answers() {
+    assert_eq!(
+        read_sale_wire(
+            true,
+            include_str!("../../fixtures/finds/sell_answer_sold.json")
+        ),
+        r#"{"kind":"sold","outcome":"sold","seeds_credited":"40"}"#
+    );
+    assert_eq!(
+        read_sale(
+            true,
+            include_str!("../../fixtures/finds/sell_answer_already_sold.json")
+        ),
+        SaleReading::Sold {
+            outcome: SaleOutcome::AlreadySold,
+            seeds_credited: Seeds(40)
+        }
+    );
+    assert_eq!(
+        read_sale_wire(
+            false,
+            include_str!("../../fixtures/finds/sell_error_used_up.json")
+        ),
+        r#"{"kind":"refused","reason":"used_up"}"#
+    );
+    assert_eq!(
+        read_sale(
+            true,
+            include_str!("../../fixtures/finds/rejected/sell_answer_number_amount.json")
+        ),
+        SaleReading::Unavailable
+    );
+    assert_eq!(
+        read_sale(false, r#"{"error":{"code":"taken"}}"#),
+        SaleReading::Unavailable
+    );
+}
+
+#[test]
+fn a_client_reads_craft_answers() {
+    assert_eq!(
+        read_craft_wire(
+            true,
+            include_str!("../../fixtures/finds/craft_answer_started.json")
+        ),
+        r#"{"kind":"paid","outcome":"started","seeds_debited":"120"}"#
+    );
+    assert_eq!(
+        read_craft(
+            true,
+            include_str!("../../fixtures/finds/craft_answer_already_started.json")
+        ),
+        CraftReading::Paid {
+            outcome: CraftStart::AlreadyStarted,
+            seeds_debited: Seeds(120)
+        }
+    );
+    assert_eq!(
+        read_craft_wire(
+            false,
+            include_str!("../../fixtures/finds/craft_error_not_enough_seeds.json")
+        ),
+        r#"{"kind":"refused","reason":"not_enough_seeds"}"#
+    );
+    assert_eq!(
+        read_craft_wire(
+            false,
+            r#"{"error":{"code":"session_inactive","message":"x"}}"#
+        ),
+        r#"{"kind":"inactive"}"#
+    );
+    assert_eq!(
+        read_craft(
+            true,
+            include_str!("../../fixtures/finds/rejected/craft_answer_overflow.json")
+        ),
+        CraftReading::Unavailable
+    );
+    assert_eq!(
+        read_craft(false, r#"{"error":{"code":"rate_limited"}}"#),
+        CraftReading::Unavailable
     );
 }
 

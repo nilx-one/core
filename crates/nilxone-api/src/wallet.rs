@@ -31,7 +31,6 @@ pub enum WalletAuthority {
 
 /// The answer to `GET` [`SEEDS_PATH`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SeedsWallet {
     /// The balance now.
     pub balance: Seeds,
@@ -56,6 +55,40 @@ impl SeedsWallet {
     }
 }
 
+/// What a client makes of the answer to `GET` [`SEEDS_PATH`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WalletReading {
+    /// The service's balance.
+    Read {
+        /// The balance now.
+        balance: Seeds,
+    },
+    /// No balance to show: never fall back to a number held on the device.
+    Unavailable,
+}
+
+/// Reads the wallet answer: `ok` is whether the HTTP status was a success.
+#[must_use]
+pub fn read_seeds(ok: bool, body: &str) -> WalletReading {
+    if !ok {
+        return WalletReading::Unavailable;
+    }
+    serde_json::from_str::<SeedsWallet>(body).map_or(WalletReading::Unavailable, |wallet| {
+        WalletReading::Read {
+            balance: wallet.balance,
+        }
+    })
+}
+
+/// [`read_seeds`] as JSON, for a binding that passes strings:
+/// `{"kind":"read","balance":"10000"}` or `{"kind":"unavailable"}`.
+#[must_use]
+pub fn read_seeds_wire(ok: bool, body: &str) -> String {
+    serde_json::to_string(&read_seeds(ok, body))
+        .unwrap_or_else(|_| r#"{"kind":"unavailable"}"#.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -69,6 +102,43 @@ mod tests {
         assert_eq!(wallet, SeedsWallet::of(10_000));
         let expected: Value = serde_json::from_str(fixture).expect("json");
         assert_eq!(serde_json::to_value(&wallet).expect("serializes"), expected);
+    }
+
+    #[test]
+    fn a_client_reads_only_the_services_own_balance() {
+        let fixture = include_str!("../fixtures/wallet/seeds.json");
+        assert_eq!(
+            read_seeds(true, fixture),
+            WalletReading::Read {
+                balance: Seeds(10_000)
+            }
+        );
+        assert_eq!(
+            read_seeds_wire(true, fixture),
+            r#"{"kind":"read","balance":"10000"}"#
+        );
+        // A failed request is never read as a balance, whatever its body says.
+        assert_eq!(read_seeds(false, fixture), WalletReading::Unavailable);
+        for body in [
+            include_str!("../fixtures/wallet/rejected/seeds_client_authority.json"),
+            include_str!("../fixtures/wallet/rejected/seeds_other_denomination.json"),
+            include_str!("../fixtures/wallet/rejected/seeds_number_balance.json"),
+            "",
+            "not json",
+            "[]",
+        ] {
+            assert_eq!(
+                read_seeds_wire(true, body),
+                r#"{"kind":"unavailable"}"#,
+                "{body}"
+            );
+        }
+        // A field this contract does not know is ignored, not a failure.
+        let future = r#"{"balance":"7","denomination":"seeds","symbol":"x","authority":"identity","tier":2}"#;
+        assert_eq!(
+            read_seeds(true, future),
+            WalletReading::Read { balance: Seeds(7) }
+        );
     }
 
     #[test]

@@ -426,3 +426,52 @@ mod tests {
         );
     }
 }
+
+/// What a client makes of the answer to a find attestation: `ok` is whether
+/// the HTTP status was a success, `body` the response text. Answers JSON with
+/// `kind` `attested`, `refused` (with `reason`) or `unavailable`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn read_find_attestation(ok: bool, body: String) -> String {
+    nilxone_api::finds::read_attest_wire(ok, &body)
+}
+
+/// What a client makes of the answer to a sale: JSON with `kind` `sold`,
+/// `refused` (with `reason`) or `unavailable`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn read_find_sale(ok: bool, body: String) -> String {
+    nilxone_api::finds::read_sale_wire(ok, &body)
+}
+
+/// What a client makes of the answer to a paid craft: JSON with `kind`
+/// `paid`, `refused` (with `reason`), `inactive` or `unavailable`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn read_craft_payment(ok: bool, body: String) -> String {
+    nilxone_api::finds::read_craft_wire(ok, &body)
+}
+
+/// What a client makes of the seeds wallet answer: JSON with `kind` `read`
+/// (with `balance`) or `unavailable`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn read_seeds_wallet(ok: bool, body: String) -> String {
+    nilxone_api::wallet::read_seeds_wire(ok, &body)
+}
