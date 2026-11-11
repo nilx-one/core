@@ -60,10 +60,13 @@ host: begin() ──▶ person signs in on auth.aiaiaiai.org ──▶ host: com
 - `SignInClient::begin` returns the authorization URL and a
   `SignInTransaction` (`state`, `nonce`, PKCE verifier). The host keeps the
   transaction until the person returns and compares `state` itself.
-- `SignInClient::complete` exchanges the code at `/token` (client secret,
-  Basic, form-encoded), fetches the issuer's keys and verifies the
-  `id_token`. Redirects are never followed, so the secret only goes where the
-  host configured it.
+- `SignInClient::complete` exchanges the code at `/token`, fetches the issuer's
+  keys and verifies the `id_token`. A client built with `SignInClientConfig::new`
+  holds a secret and authenticates with it (Basic, form-encoded). One built with
+  `SignInClientConfig::public` holds none and names itself with `client_id` in
+  the form; it must be registered in AIS without a secret, and the code is
+  bound to it by the PKCE verifier and the exact redirect URI. Redirects are
+  never followed, so a secret only goes where the host configured it.
 - `verify_id_token` accepts **only EdDSA** (Ed25519). It refuses any other
   `alg` before it looks at a key. It then requires `iss`, `aud` (with `azp`
   when there are several audiences), `exp`, `iat`, the transaction's `nonce`,

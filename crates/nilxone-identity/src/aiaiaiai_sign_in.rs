@@ -67,12 +67,14 @@ pub struct SignInClientConfig {
     issuer: Url,
     backchannel: Url,
     client_id: String,
-    client_secret: String,
+    /// `None` for a public client, which holds no secret and proves its code
+    /// with the PKCE verifier alone.
+    client_secret: Option<String>,
     redirect_uri: Url,
 }
 
 impl SignInClientConfig {
-    /// `issuer` is the origin people see (`https://auth.aiaiaiai.org`) and the
+    /// A client that holds a secret AIS has the digest of. `issuer` is the origin people see (`https://auth.aiaiaiai.org`) and the
     /// `iss` every token must carry. `backchannel` is where this host reaches
     /// `/token` and the keys; it defaults to the issuer and may be a private
     /// address inside the deployment.
@@ -81,6 +83,38 @@ impl SignInClientConfig {
         backchannel: Option<&str>,
         client_id: &str,
         client_secret: &str,
+        redirect_uri: &str,
+    ) -> Result<Self, SignInConfigError> {
+        if client_secret.len() < MIN_CLIENT_SECRET_BYTES {
+            return Err(SignInConfigError::ClientSecret);
+        }
+        Self::build(
+            issuer,
+            backchannel,
+            client_id,
+            Some(client_secret),
+            redirect_uri,
+        )
+    }
+
+    /// A public client: no secret to generate, store or carry. The code is
+    /// bound to the client by its PKCE verifier, which never leaves the
+    /// host's own transaction cookie, and by the exact https redirect URI AIS
+    /// has registered. The client must be registered without a secret there.
+    pub fn public(
+        issuer: &str,
+        backchannel: Option<&str>,
+        client_id: &str,
+        redirect_uri: &str,
+    ) -> Result<Self, SignInConfigError> {
+        Self::build(issuer, backchannel, client_id, None, redirect_uri)
+    }
+
+    fn build(
+        issuer: &str,
+        backchannel: Option<&str>,
+        client_id: &str,
+        client_secret: Option<&str>,
         redirect_uri: &str,
     ) -> Result<Self, SignInConfigError> {
         let issuer = Url::parse(issuer).map_err(|_| SignInConfigError::Issuer)?;
@@ -116,9 +150,6 @@ impl SignInClientConfig {
         {
             return Err(SignInConfigError::ClientId);
         }
-        if client_secret.len() < MIN_CLIENT_SECRET_BYTES {
-            return Err(SignInConfigError::ClientSecret);
-        }
         let redirect_uri = Url::parse(redirect_uri).map_err(|_| SignInConfigError::RedirectUri)?;
         if redirect_uri.scheme() != "https" || redirect_uri.fragment().is_some() {
             return Err(SignInConfigError::RedirectUri);
@@ -127,7 +158,7 @@ impl SignInClientConfig {
             issuer,
             backchannel,
             client_id: client_id.to_owned(),
-            client_secret: client_secret.to_owned(),
+            client_secret: client_secret.map(str::to_owned),
             redirect_uri,
         })
     }
@@ -151,7 +182,10 @@ impl std::fmt::Debug for SignInClientConfig {
             .field("issuer", &self.issuer.as_str())
             .field("backchannel", &self.backchannel.as_str())
             .field("client_id", &self.client_id)
-            .field("client_secret", &"<redacted>")
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("redirect_uri", &self.redirect_uri.as_str())
             .finish()
     }
@@ -262,19 +296,25 @@ impl SignInClient {
             .backchannel
             .join("token")
             .map_err(|_| SignInError::Unavailable)?;
-        let response = self
-            .http
-            .post(token_url)
-            .basic_auth(
-                form_encode(&self.config.client_id),
-                Some(form_encode(&self.config.client_secret)),
-            )
-            .form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("redirect_uri", self.config.redirect_uri.as_str()),
-                ("code_verifier", transaction.code_verifier.as_str()),
-            ])
+        let mut form = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", self.config.redirect_uri.as_str()),
+            ("code_verifier", transaction.code_verifier.as_str()),
+        ];
+        let mut request = self.http.post(token_url);
+        match &self.config.client_secret {
+            Some(secret) => {
+                request = request.basic_auth(
+                    form_encode(&self.config.client_id),
+                    Some(form_encode(secret)),
+                );
+            }
+            // A public client names itself and sends no secret.
+            None => form.push(("client_id", self.config.client_id.as_str())),
+        }
+        let response = request
+            .form(&form)
             .send()
             .await
             .map_err(|_| SignInError::Unavailable)?;
@@ -981,6 +1021,109 @@ mod tests {
             "https://nilx.one/api/v1/auth/aiaiaiai/callback",
         )
         .unwrap()
+    }
+
+    const CALLBACK: &str = "https://nilx.one/api/v1/auth/aiaiaiai/callback";
+
+    #[test]
+    fn a_public_client_needs_no_secret_and_is_held_to_the_same_rest() {
+        let public = SignInClientConfig::public(ISSUER, None, "nilx-one", CALLBACK).unwrap();
+        assert!(format!("{public:?}").contains("client_secret: None"));
+        // The secret-free path loosens nothing else.
+        assert_eq!(
+            SignInClientConfig::public("http://auth.aiaiaiai.org", None, "nilx-one", CALLBACK)
+                .err(),
+            Some(SignInConfigError::Issuer)
+        );
+        assert_eq!(
+            SignInClientConfig::public(ISSUER, None, "Nilx One", CALLBACK).err(),
+            Some(SignInConfigError::ClientId)
+        );
+        assert_eq!(
+            SignInClientConfig::public(ISSUER, None, "nilx-one", "http://nilx.one/cb").err(),
+            Some(SignInConfigError::RedirectUri)
+        );
+        // A confidential client still cannot omit or shorten its secret.
+        assert_eq!(
+            SignInClientConfig::new(ISSUER, None, "nilx-one", "short", CALLBACK).err(),
+            Some(SignInConfigError::ClientSecret)
+        );
+    }
+
+    /// What the client sends to a local `/token`, which refuses it.
+    async fn token_request(make: impl FnOnce(&str) -> SignInClientConfig) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let backchannel = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut received = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                received.extend_from_slice(&chunk[..read]);
+                let text = String::from_utf8_lossy(&received);
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= length {
+                        break;
+                    }
+                }
+                if read == 0 {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .unwrap();
+            String::from_utf8_lossy(&received).into_owned()
+        });
+        let client = SignInClient::new(make(&backchannel));
+        let transaction = SignInTransaction {
+            state: "state".to_owned(),
+            nonce: "nonce".to_owned(),
+            code_verifier: "v".repeat(43),
+        };
+        let outcome = client
+            .complete("the-code", &transaction, 1_800_000_000)
+            .await;
+        assert_eq!(outcome, Err(SignInError::CodeRejected));
+        server.join().unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_token_request_names_a_public_client_and_never_sends_a_secret() {
+        let request = token_request(|backchannel| {
+            SignInClientConfig::public(ISSUER, Some(backchannel), "nilx-one", CALLBACK).unwrap()
+        })
+        .await
+        .to_ascii_lowercase();
+        assert!(request.starts_with("post /token "), "{request}");
+        assert!(!request.contains("authorization:"), "{request}");
+        assert!(request.contains("client_id=nilx-one"), "{request}");
+        assert!(request.contains("code_verifier=vvvv"), "{request}");
+        assert!(!request.contains("client_secret"), "{request}");
+
+        // A client that holds a secret still authenticates with Basic and
+        // does not repeat its id in the body.
+        let secret = "a-client-secret-of-thirty-two-bytes!";
+        let request = token_request(|backchannel| {
+            SignInClientConfig::new(ISSUER, Some(backchannel), "nilx-one", secret, CALLBACK)
+                .unwrap()
+        })
+        .await
+        .to_ascii_lowercase();
+        assert!(request.contains("authorization: basic "), "{request}");
+        assert!(!request.contains("client_id="), "{request}");
     }
 
     #[test]
