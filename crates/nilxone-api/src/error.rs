@@ -34,6 +34,8 @@ impl ErrorEnvelope {
     }
 }
 
+/// The request carried no signed-in session (HTTP 401).
+pub const PROVIDER_AUTHENTICATION_REQUIRED: &str = "provider_authentication_required";
 /// A mutating request carried no CSRF header (HTTP 403).
 pub const CSRF_PROTECTION_REQUIRED: &str = "csrf_protection_required";
 /// The client is signed in but not the active one (HTTP 403).

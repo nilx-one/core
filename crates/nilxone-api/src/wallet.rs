@@ -64,6 +64,10 @@ pub enum WalletReading {
         /// The balance now.
         balance: Seeds,
     },
+    /// Nobody is signed in: sign in to see a balance.
+    AuthenticationRequired,
+    /// This client is signed in but is not the active one.
+    Inactive,
     /// No balance to show: never fall back to a number held on the device.
     Unavailable,
 }
@@ -72,7 +76,15 @@ pub enum WalletReading {
 #[must_use]
 pub fn read_seeds(ok: bool, body: &str) -> WalletReading {
     if !ok {
-        return WalletReading::Unavailable;
+        // A failed read is never a balance, whatever its body says; only who
+        // may ask again is read from it.
+        return match crate::error::error_code(body).as_deref() {
+            Some(crate::error::PROVIDER_AUTHENTICATION_REQUIRED) => {
+                WalletReading::AuthenticationRequired
+            }
+            Some(crate::error::SESSION_INACTIVE) => WalletReading::Inactive,
+            _ => WalletReading::Unavailable,
+        };
     }
     serde_json::from_str::<SeedsWallet>(body).map_or(WalletReading::Unavailable, |wallet| {
         WalletReading::Read {
@@ -82,7 +94,8 @@ pub fn read_seeds(ok: bool, body: &str) -> WalletReading {
 }
 
 /// [`read_seeds`] as JSON, for a binding that passes strings:
-/// `{"kind":"read","balance":"10000"}` or `{"kind":"unavailable"}`.
+/// `{"kind":"read","balance":"10000"}`, `{"kind":"authentication_required"}`,
+/// `{"kind":"inactive"}` or `{"kind":"unavailable"}`.
 #[must_use]
 pub fn read_seeds_wire(ok: bool, body: &str) -> String {
     serde_json::to_string(&read_seeds(ok, body))
@@ -119,6 +132,31 @@ mod tests {
         );
         // A failed request is never read as a balance, whatever its body says.
         assert_eq!(read_seeds(false, fixture), WalletReading::Unavailable);
+        assert_eq!(
+            read_seeds_wire(
+                false,
+                r#"{"error":{"code":"provider_authentication_required","message":"x"}}"#
+            ),
+            r#"{"kind":"authentication_required"}"#
+        );
+        assert_eq!(
+            read_seeds_wire(
+                false,
+                r#"{"error":{"code":"session_inactive","message":"x"}}"#
+            ),
+            r#"{"kind":"inactive"}"#
+        );
+        for body in [
+            r#"{"error":{"code":"rate_limited"}}"#,
+            r#"{"error":{"code":"taken"}}"#,
+            "",
+        ] {
+            assert_eq!(
+                read_seeds(false, body),
+                WalletReading::Unavailable,
+                "{body}"
+            );
+        }
         for body in [
             include_str!("../fixtures/wallet/rejected/seeds_client_authority.json"),
             include_str!("../fixtures/wallet/rejected/seeds_other_denomination.json"),

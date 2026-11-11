@@ -116,6 +116,7 @@ assert.deepEqual(JSON.parse(core.read_find_sale(true, '{"outcome":"sold","seeds_
 assert.deepEqual(JSON.parse(core.read_craft_payment(false, '{"error":{"code":"session_inactive","message":"x"}}')), { kind: 'inactive' });
 assert.deepEqual(JSON.parse(core.read_seeds_wallet(true, '{"balance":"10000","denomination":"seeds","symbol":"s","authority":"identity"}')), { kind: 'read', balance: '10000' });
 assert.deepEqual(JSON.parse(core.read_seeds_wallet(true, '{"balance":"10000","denomination":"seeds","symbol":"s","authority":"client"}')), { kind: 'unavailable' });
+assert.deepEqual(JSON.parse(core.read_seeds_wallet(false, '{"error":{"code":"session_inactive","message":"x"}}')), { kind: 'inactive' });
 
 const engine = JSON.parse(core.xping_engine_command('', '{"op":"force","forced_ms":"15000"}', '1000'));
 assert.equal(engine.ok, true);
