@@ -717,10 +717,17 @@ pub fn route_on_graph(
             }
         }
 
-        for &index in &graph.adjacency[node] {
-            let edge = &graph.edges[index];
+        // A graph not built by `build_walk_graph` may be inconsistent: an
+        // index it does not hold leads nowhere, it never panics.
+        for edge in graph
+            .adjacency
+            .get(node)
+            .into_iter()
+            .flatten()
+            .filter_map(|&i| graph.edges.get(i))
+        {
             let next = if edge.a == node { edge.b } else { edge.a };
-            if done[next] || !enterable(next) {
+            if !enterable(next) || done[next] {
                 continue;
             }
             let next_cost = c + edge_cost(edge);
@@ -802,10 +809,17 @@ pub fn reach_from(
             continue;
         }
         done[node] = true;
-        for &index in &graph.adjacency[node] {
-            let edge = &graph.edges[index];
+        // A graph not built by `build_walk_graph` may be inconsistent: an
+        // index it does not hold leads nowhere, it never panics.
+        for edge in graph
+            .adjacency
+            .get(node)
+            .into_iter()
+            .flatten()
+            .filter_map(|&i| graph.edges.get(i))
+        {
             let next = if edge.a == node { edge.b } else { edge.a };
-            if done[next] || !enterable(next) {
+            if !enterable(next) || done[next] {
                 continue;
             }
             let next_cost = c + edge_cost(edge);
@@ -850,6 +864,39 @@ mod tests {
         assert_eq!(surface_of("major_road", Some("trunk")), None);
         assert_eq!(surface_of("highway", Some("footway")), None);
         assert_eq!(surface_of("rail", None), None);
+    }
+
+    #[test]
+    fn an_inconsistent_graph_routes_nowhere_instead_of_panicking() {
+        let edge = |a, b| WalkEdge {
+            a,
+            b,
+            length_m: 10.0,
+            surface: Surface::Footway,
+            bridge: false,
+        };
+        let graph = WalkGraph {
+            nodes: vec![[30.5, 50.4], [30.5001, 50.4]],
+            edges: vec![edge(0, 1), edge(1, 7)],
+            adjacency: vec![vec![0, 9], vec![0, 1]],
+        };
+        let at = |edge, t| GraphPosition {
+            edge,
+            t,
+            point: [30.5, 50.4],
+            distance_m: 0.0,
+        };
+        let _ = route_on_graph(&graph, &at(0, 0.2), &at(1, 0.5), None);
+        let _ = route_on_graph(&graph, &at(0, 0.2), &at(5, 0.5), None);
+        let reach = reach_from(&graph, &at(1, 0.5), f64::INFINITY, None);
+        assert_eq!(reach.cost.len(), 2);
+        let short = WalkGraph {
+            nodes: vec![[30.5, 50.4]],
+            edges: vec![edge(0, 1)],
+            adjacency: vec![],
+        };
+        let _ = route_on_graph(&short, &at(0, 0.0), &at(0, 1.0), None);
+        let _ = reach_from(&short, &at(0, 0.0), f64::INFINITY, None);
     }
 
     #[test]
