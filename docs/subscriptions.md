@@ -99,8 +99,28 @@ The identity authority must persist the clock transactionally, authenticate the
 owner, deduplicate payment/grant events, and supply its own trusted time. These
 pure methods do not provide persistence, payment fulfillment or permission to
 grant subscriptions. Do not expose `grant` as an unauthenticated client action.
-Early revocation/refund handling remains a separate authority decision; this
-policy specifies natural expiry, not refund conversion.
+This policy specifies natural expiry. Refunds follow the owner's decisions of
+2026-11-12, recorded in `hub.v1` (`aiaiaiai-org/prism-hub`
+`docs/hub-protocol.md`, "Refunds"):
+
+- **Before activation** (a paid item `paid`, `in_transit` or `stored`): a
+  refund revokes the item, and a seeds purchase returns its seeds to the
+  wallet, in one transaction keyed by the order id. No Special time was
+  granted, so the clock does not change.
+- **After activation, no refund.** The authority's own channels (seeds,
+  0xda-market) refuse it.
+- **An app store refund after activation**, which the store decides and the
+  authority cannot stop, **removes the status** that order gave and nothing
+  else: Special's remaining time becomes zero and the item is `revoked`.
+  Exclusive, and time from other orders, stay as they are; since Special
+  purchases never stack (`special_purchase_open`), the refunded order is
+  all the Special there is. There is no ban and no limit on buying again,
+  however often it happens. The status disappears at once: a fresh snapshot
+  without the entitlement replaces the old status, as with any revocation.
+
+Not built yet: `SubscriptionClock` has no operation that zeroes Special, and
+`paid_special_items` has no `revoked` state. Each comes in its own change, and
+neither may be exposed as a client action.
 
 Delivery remains staged: no production entitlement reader or payment fulfillment
 exists yet. An implementation of this resolver alone must not be reported as
