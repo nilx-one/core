@@ -154,6 +154,21 @@ assert.deepEqual(JSON.parse(core.read_seeds_wallet(true, '{"balance":"10000","de
 assert.deepEqual(JSON.parse(core.read_seeds_wallet(true, '{"balance":"10000","denomination":"seeds","symbol":"s","authority":"client"}')), { kind: 'unavailable' });
 assert.deepEqual(JSON.parse(core.read_seeds_wallet(false, '{"error":{"code":"session_inactive","message":"x"}}')), { kind: 'inactive' });
 
+const activationSyncing = '{"state":"activation_syncing","active":false,"may_act":false,"client_label":"Mac · Safari","active_client_label":"iPhone · Telegram","request":{"id":"0123456789abcdef0123456789abcdef","role":"requester","status":"syncing","from_label":"iPhone · Telegram","to_label":"Mac · Safari","created_at":1800000000,"deadline":1800000700,"progress":{"steps":[{"step":"confirm","state":"done"},{"step":"sync","state":"current"},{"step":"switch","state":"waiting"}],"percent":78,"total_bytes":1048576,"uploaded_bytes":1048576,"delivered_bytes":614400}}}';
+const activation = JSON.parse(core.read_activation_state(true, activationSyncing));
+assert.equal(activation.kind, 'state');
+assert.equal(activation.state, 'activation_syncing');
+assert.equal(activation.may_act, false);
+assert.equal(activation.request.progress.percent, 78);
+assert.deepEqual(activation.request.progress.steps.map((row) => `${row.step}:${row.state}`), ['confirm:done', 'sync:current', 'switch:waiting']);
+assert.deepEqual(JSON.parse(core.read_activation_state(true, activationSyncing.replace('"percent":78', '"percent":100'))), { kind: 'unavailable' });
+assert.deepEqual(JSON.parse(core.read_activation_state(false, '{"error":{"code":"sync_incomplete","message":"x"}}')), { kind: 'refused', reason: 'sync_incomplete' });
+assert.deepEqual(JSON.parse(core.read_activation_state(false, activationSyncing)), { kind: 'unavailable' });
+assert.deepEqual(JSON.parse(core.activation_sync_part('600000', '262144')), { kind: 'part', offset: 262144, end: 524288, last: false });
+assert.deepEqual(JSON.parse(core.activation_sync_part('600000', '600000')), { kind: 'none' });
+assert.equal(core.activation_sync_digest(new Uint8Array([0x61, 0x62, 0x63])), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+assert.equal(core.activation_sync_digest(new Uint8Array(0)), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+
 const engine = JSON.parse(core.xping_engine_command('', '{"op":"force","forced_ms":"15000"}', '1000'));
 assert.equal(engine.ok, true);
 assert.equal(engine.view.energy_permille, 500);

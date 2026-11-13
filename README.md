@@ -91,7 +91,10 @@ callback cannot authorize a shared grant.
 The [AIS/public-information boundary](docs/ais-public-info.md) adds a separate
 0x1 product store keyed by the verified pairwise subject of the `nilx-one`
 OIDC client. AIS owns the shared identity; Core owns its 0x1 public projection.
-This service is not activated by existing hosts yet.
+This service is not activated by existing hosts yet. Its product sessions are
+active or inactive, one active client per Bond; how a signed-in inactive client
+becomes the active one, with the active client's agreement and a completed
+sync, is [client activation](docs/client-activation.md).
 
 Core is the engine and the API for every interface: the rules, the wire
 contract and the host ports live here, and Web, iOS and a command-line client

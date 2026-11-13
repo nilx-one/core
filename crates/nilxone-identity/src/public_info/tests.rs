@@ -34,6 +34,28 @@ async fn repository() -> PublicInfoRepository {
         .unwrap()
 }
 
+/// The owner as its active client sees it: signed in, with the first session
+/// of the profile opened and restored. Only this may write.
+async fn active_owner(
+    repository: &PublicInfoRepository,
+    sign_in: &VerifiedSignIn,
+) -> AuthenticatedProfile {
+    let owner = repository.attach(sign_in).await.unwrap();
+    let token_hash = format!("{:x<64}", sign_in.subject);
+    assert!(
+        repository
+            .open_session(&owner, &token_hash, "", None, NOW, NOW + 3_600)
+            .await
+            .unwrap(),
+        "the first session of a profile is its active client"
+    );
+    repository
+        .restore_session(&token_hash, NOW)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
 fn flow(backchannel: Option<&str>, client: &str) -> SignInFlow {
     let client = SignInClient::new(
         SignInClientConfig::new(
@@ -56,10 +78,7 @@ fn flow(backchannel: Option<&str>, client: &str) -> SignInFlow {
 #[tokio::test]
 async fn separate_database_and_subject_attachment_preserve_experience_across_rename() {
     let repository = repository().await;
-    let first = repository
-        .attach(&identity("subject-1", Some("0x0sky"), NOW))
-        .await
-        .unwrap();
+    let first = active_owner(&repository, &identity("subject-1", Some("0x0sky"), NOW)).await;
     let published = repository
         .publish_experience_carry(&first, 120, 45)
         .await
@@ -87,16 +106,21 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
             .fetch_all(&repository.pool)
             .await
             .unwrap();
-    assert_eq!(tables, ["public_profiles", "product_sessions"]);
+    assert_eq!(
+        tables,
+        [
+            "public_profiles",
+            "product_sessions",
+            "product_activation_requests",
+            "product_activation_sync"
+        ]
+    );
 }
 
 #[tokio::test]
 async fn matching_public_name_never_acquires_another_profile_or_its_data() {
     let repository = repository().await;
-    let owner = repository
-        .attach(&identity("subject-1", Some("0x0sky"), NOW))
-        .await
-        .unwrap();
+    let owner = active_owner(&repository, &identity("subject-1", Some("0x0sky"), NOW)).await;
     repository
         .publish_experience_carry(&owner, 120, 45)
         .await
@@ -117,10 +141,11 @@ async fn matching_public_name_never_acquires_another_profile_or_its_data() {
 #[tokio::test]
 async fn public_projection_excludes_authentication_material_and_carries_are_idempotent() {
     let repository = repository().await;
-    let owner = repository
-        .attach(&identity("private-pairwise-subject", Some("0x0sky"), NOW))
-        .await
-        .unwrap();
+    let owner = active_owner(
+        &repository,
+        &identity("private-pairwise-subject", Some("0x0sky"), NOW),
+    )
+    .await;
     let first = repository
         .publish_experience_carry(&owner, 120, 45)
         .await
@@ -184,8 +209,8 @@ async fn profile_survives_reopening_and_concurrent_first_sign_ins() {
     let second = PublicInfoRepository::connect(&url).await.unwrap();
     let sign_in = identity("same-subject", Some("0x0sky"), NOW);
     let (a, b) = tokio::join!(first.attach(&sign_in), second.attach(&sign_in));
-    let a = a.unwrap();
-    assert_eq!(a.profile, b.unwrap().profile);
+    assert_eq!(a.unwrap().profile, b.unwrap().profile);
+    let a = active_owner(&first, &sign_in).await;
     first.publish_experience_carry(&a, 120, 45).await.unwrap();
     first.pool.close().await;
     second.pool.close().await;
@@ -229,10 +254,7 @@ async fn file_store_allows_writes_while_another_pool_holds_a_read_snapshot() {
     }
     drop(first);
     drop(second);
-    let owner = reader
-        .attach(&identity("subject", Some("0x0sky"), NOW))
-        .await
-        .unwrap();
+    let owner = active_owner(&reader, &identity("subject", Some("0x0sky"), NOW)).await;
     let mut snapshot = reader.pool.begin().await.unwrap();
     let before: i64 =
         sqlx::query_scalar("SELECT bond_xp FROM public_profiles WHERE profile_id = ?")
@@ -270,10 +292,7 @@ async fn file_store_allows_writes_while_another_pool_holds_a_read_snapshot() {
 #[tokio::test]
 async fn malformed_display_claim_on_a_known_subject_leaves_the_entire_row_unchanged() {
     let repository = repository().await;
-    let owner = repository
-        .attach(&identity("subject", Some("0x0sky"), NOW))
-        .await
-        .unwrap();
+    let owner = active_owner(&repository, &identity("subject", Some("0x0sky"), NOW)).await;
     let published = repository
         .publish_experience_carry(&owner, 120, 45)
         .await
@@ -487,7 +506,7 @@ async fn a_session_restores_its_owner_until_it_expires_or_is_closed() {
         .await
         .unwrap();
     repository
-        .open_session(&owner, TOKEN_HASH, NOW, NOW + 60)
+        .open_session(&owner, TOKEN_HASH, "", None, NOW, NOW + 60)
         .await
         .unwrap();
 
@@ -525,8 +544,8 @@ async fn a_session_restores_its_owner_until_it_expires_or_is_closed() {
             .is_none(),
         "expired exactly at expires_at"
     );
-    repository.close_session(TOKEN_HASH).await.unwrap();
-    repository.close_session(TOKEN_HASH).await.unwrap();
+    repository.close_session(TOKEN_HASH, NOW + 1).await.unwrap();
+    repository.close_session(TOKEN_HASH, NOW + 1).await.unwrap();
     assert!(
         repository
             .restore_session(TOKEN_HASH, NOW + 1)
@@ -550,16 +569,18 @@ async fn a_session_is_refused_or_dies_when_its_binding_does_not_hold() {
 
     // No lifetime, and no second session under one token digest.
     assert!(matches!(
-        repository.open_session(&owner, TOKEN_HASH, NOW, NOW).await,
+        repository
+            .open_session(&owner, TOKEN_HASH, "", None, NOW, NOW)
+            .await,
         Err(PublicInfoError::InvalidSession)
     ));
     repository
-        .open_session(&owner, TOKEN_HASH, NOW, NOW + 60)
+        .open_session(&owner, TOKEN_HASH, "", None, NOW, NOW + 60)
         .await
         .unwrap();
     assert!(matches!(
         repository
-            .open_session(&other, TOKEN_HASH, NOW, NOW + 60)
+            .open_session(&other, TOKEN_HASH, "", None, NOW, NOW + 60)
             .await,
         Err(PublicInfoError::InvalidSession)
     ));
@@ -588,7 +609,7 @@ async fn a_session_is_refused_or_dies_when_its_binding_does_not_hold() {
 
     // A deleted profile takes its sessions with it and cannot open new ones.
     repository
-        .open_session(&other, OTHER_HASH, NOW, NOW + 60)
+        .open_session(&other, OTHER_HASH, "", None, NOW, NOW + 60)
         .await
         .unwrap();
     sqlx::query("DELETE FROM public_profiles WHERE subject = 'subject-2'")
@@ -604,7 +625,7 @@ async fn a_session_is_refused_or_dies_when_its_binding_does_not_hold() {
     );
     assert!(matches!(
         repository
-            .open_session(&other, OTHER_HASH, NOW, NOW + 60)
+            .open_session(&other, OTHER_HASH, "", None, NOW, NOW + 60)
             .await,
         Err(PublicInfoError::ProfileGone)
     ));
@@ -622,16 +643,16 @@ async fn opening_a_session_drops_the_owners_expired_ones_only() {
         .await
         .unwrap();
     repository
-        .open_session(&owner, TOKEN_HASH, NOW, NOW + 10)
+        .open_session(&owner, TOKEN_HASH, "", None, NOW, NOW + 10)
         .await
         .unwrap();
     repository
-        .open_session(&other, OTHER_HASH, NOW, NOW + 10)
+        .open_session(&other, OTHER_HASH, "", None, NOW, NOW + 10)
         .await
         .unwrap();
     let third = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     repository
-        .open_session(&owner, third, NOW + 20, NOW + 80)
+        .open_session(&owner, third, "", None, NOW + 20, NOW + 80)
         .await
         .unwrap();
     let left: Vec<String> =

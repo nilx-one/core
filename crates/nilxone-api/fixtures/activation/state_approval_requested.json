@@ -1,0 +1,36 @@
+{
+  "state": "approval_requested",
+  "active": true,
+  "may_act": true,
+  "client_label": "iPhone · Telegram",
+  "active_client_label": null,
+  "request": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "role": "approver",
+    "status": "pending",
+    "from_label": "iPhone · Telegram",
+    "to_label": "Mac · Safari",
+    "created_at": 1800000000,
+    "deadline": 1800000120,
+    "progress": {
+      "steps": [
+        {
+          "step": "confirm",
+          "state": "current"
+        },
+        {
+          "step": "sync",
+          "state": "waiting"
+        },
+        {
+          "step": "switch",
+          "state": "waiting"
+        }
+      ],
+      "percent": 0,
+      "total_bytes": null,
+      "uploaded_bytes": 0,
+      "delivered_bytes": 0
+    }
+  }
+}

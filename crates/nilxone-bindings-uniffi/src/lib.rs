@@ -428,6 +428,28 @@ mod tests {
             "invalid_owner"
         );
     }
+
+    #[test]
+    fn uniffi_surface_exposes_client_activation() {
+        let syncing =
+            include_str!("../../nilxone-api/fixtures/activation/state_activation_syncing.json");
+        assert_eq!(
+            super::read_activation_state(true, syncing.to_owned()),
+            nilxone_api::activation::read_activation_wire(true, syncing)
+        );
+        assert_eq!(
+            super::read_activation_state(false, syncing.to_owned()),
+            r#"{"kind":"unavailable"}"#
+        );
+        assert_eq!(
+            super::activation_sync_part("600000".to_owned(), "524288".to_owned()),
+            r#"{"end":600000,"kind":"part","last":true,"offset":524288}"#
+        );
+        assert_eq!(
+            super::activation_sync_digest(b"abc".to_vec()),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }
 
 /// What a client makes of the answer to a find attestation: `ok` is whether
@@ -477,4 +499,43 @@ pub fn read_craft_payment(ok: bool, body: String) -> String {
 )]
 pub fn read_seeds_wallet(ok: bool, body: String) -> String {
     nilxone_api::wallet::read_seeds_wire(ok, &body)
+}
+
+/// What a client makes of the answer to a client activation route: JSON with
+/// `kind` `state` (the state, steps and percentage to show), `refused` (with
+/// `reason`), `authentication_required` or `unavailable`. See
+/// `docs/client-activation.md`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn read_activation_state(ok: bool, body: String) -> String {
+    nilxone_api::activation::read_activation_wire(ok, &body)
+}
+
+/// The part of a handoff's data that starts at `offset`, both as decimal
+/// strings: JSON with `kind` `part` (with `offset`, `end` and `last`) or
+/// `none`.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI string inputs are owned"
+)]
+pub fn activation_sync_part(total_bytes: String, offset: String) -> String {
+    nilxone_api::activation::sync_part_wire(&total_bytes, &offset)
+}
+
+/// The digest the asking client sends to complete a handoff: SHA-256 of all
+/// the bytes it fetched, in lowercase hex.
+#[must_use]
+#[uniffi::export]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI byte inputs are owned"
+)]
+pub fn activation_sync_digest(data: Vec<u8>) -> String {
+    nilxone_api::activation::sync_digest(&data)
 }

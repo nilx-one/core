@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS public_profiles (
     last_auth_time INTEGER NOT NULL CHECK (last_auth_time >= 0),
     bond_xp INTEGER NOT NULL DEFAULT 0 CHECK (bond_xp BETWEEN 0 AND 1000000000),
     avaia_xp INTEGER NOT NULL DEFAULT 0 CHECK (avaia_xp BETWEEN 0 AND 1000000000),
+    -- Counts every change of the active client (docs/client-activation.md).
+    session_epoch INTEGER NOT NULL DEFAULT 0 CHECK (session_epoch >= 0),
     PRIMARY KEY (issuer, subject)
 ) STRICT;
 
@@ -18,7 +20,9 @@ CREATE TABLE IF NOT EXISTS public_profiles (
 -- host keeps the cookie and stores only a digest of its token here. A session
 -- names the exact (issuer, subject, profile_id) it was opened for, so a
 -- restore re-proves that binding in SQL instead of trusting anything the
--- browser sent, and a deleted profile takes its sessions with it.
+-- browser sent, and a deleted profile takes its sessions with it. A session
+-- is active or inactive and nothing else; `client_label` names its device
+-- and host to the owner's other clients.
 CREATE TABLE IF NOT EXISTS product_sessions (
     token_hash TEXT PRIMARY KEY NOT NULL COLLATE BINARY CHECK (length(token_hash) BETWEEN 32 AND 128),
     issuer TEXT NOT NULL COLLATE BINARY,
@@ -26,6 +30,8 @@ CREATE TABLE IF NOT EXISTS product_sessions (
     profile_id TEXT NOT NULL COLLATE BINARY,
     created_at INTEGER NOT NULL CHECK (created_at >= 0),
     expires_at INTEGER NOT NULL CHECK (expires_at > created_at),
+    active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+    client_label TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (issuer, subject) REFERENCES public_profiles (issuer, subject) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX IF NOT EXISTS product_sessions_by_owner ON product_sessions (issuer, subject);

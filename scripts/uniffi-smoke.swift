@@ -28,5 +28,11 @@ struct NilxoneCoreBindingSmoke {
             applyBusinessPointCommand(state: "", command: "{\"op\":\"withdraw\"}", nowS: "1")
                 == "{\"error\":\"invalid\",\"ok\":false}"
         )
+        precondition(readActivationState(ok: false, body: "") == "{\"kind\":\"unavailable\"}")
+        precondition(activationSyncPart(totalBytes: "0", offset: "1") == "{\"kind\":\"none\"}")
+        precondition(
+            activationSyncDigest(data: Data("abc".utf8))
+                == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        )
     }
 }

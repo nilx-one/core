@@ -1,0 +1,36 @@
+{
+  "state": "handoff_syncing",
+  "active": true,
+  "may_act": false,
+  "client_label": "iPhone · Telegram",
+  "active_client_label": null,
+  "request": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "role": "approver",
+    "status": "syncing",
+    "from_label": "iPhone · Telegram",
+    "to_label": "Mac · Safari",
+    "created_at": 1800000000,
+    "deadline": 1800000700,
+    "progress": {
+      "steps": [
+        {
+          "step": "confirm",
+          "state": "done"
+        },
+        {
+          "step": "sync",
+          "state": "done"
+        },
+        {
+          "step": "switch",
+          "state": "current"
+        }
+      ],
+      "percent": 99,
+      "total_bytes": 1048576,
+      "uploaded_bytes": 1048576,
+      "delivered_bytes": 1048576
+    }
+  }
+}

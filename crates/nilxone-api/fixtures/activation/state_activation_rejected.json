@@ -1,0 +1,15 @@
+{
+  "state": "activation_rejected",
+  "active": false,
+  "may_act": false,
+  "client_label": "Mac · Safari",
+  "active_client_label": "iPhone · Telegram",
+  "request": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "role": "requester",
+    "status": "declined",
+    "from_label": "iPhone · Telegram",
+    "to_label": "Mac · Safari",
+    "created_at": 1800000000
+  }
+}
