@@ -17,8 +17,9 @@
 //! refused. Answers are read tolerantly: a client ignores a field it does not
 //! know, so the service can add one without breaking it.
 //!
-//! Only the routes of the purchase path so far: [`finds`], [`wallet`] and
-//! [`market`]. See `docs/core-api-boundary.md` for the order of the rest.
+//! The routes of the purchase path ([`finds`], [`wallet`], [`market`]) and of
+//! moving the active client ([`activation`]) so far. See
+//! `docs/core-api-boundary.md` for the order of the rest.
 
 macro_rules! refusals {
     ($(#[$meta:meta])* $name:ident { $($variant:ident => ($code:literal, $status:literal)),+ $(,)? }) => {
@@ -57,6 +58,7 @@ macro_rules! refusals {
     };
 }
 
+pub mod activation;
 pub mod error;
 pub mod finds;
 pub mod market;

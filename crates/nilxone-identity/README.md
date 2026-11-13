@@ -43,8 +43,10 @@ The new [`public_info` service](../../docs/ais-public-info.md) is a separate
 product-side store attached to verified AIS `(issuer, sub)` for client
 `nilx-one`. Its Core flow creates a product profile without a second native
 identity or a first-sight address link. It opens its own product database only
-when explicitly composed by a host; no current host activates it yet. This
-is the 2026-11-06 direction for the 0x1 service, superseding the earlier
+when explicitly composed by a host; no current host activates it yet. Its
+product sessions are active or inactive, one active per Bond, and an inactive
+one becomes active only through [client activation](../../docs/client-activation.md).
+This is the 2026-11-06 direction for the 0x1 service, superseding the earlier
 proposal for a new game repository under `aiaiaiai-org`.
 
 The existing consuming process continues to open the same `DATABASE_URL` and owns the

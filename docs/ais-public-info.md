@@ -62,6 +62,14 @@ cannot be opened twice, and deleting a profile deletes its sessions. Opening
 a session drops that owner's expired rows. The restored profile carries the
 current display name and experience, not a snapshot from sign-in.
 
+A session is active or inactive, and a Bond has at most one active session.
+`open_session` takes the client's label and the session the same browser is
+replacing, and answers whether the new session is the active client: it is
+only when the Bond has no live active session. An inactive session restores
+and reads, and `publish_experience_carry` refuses it with `SessionInactive`.
+How an inactive session becomes the active one is
+[client activation](client-activation.md).
+
 The local `profile_id` is a randomly allocated, stable public product id.
 It is neither AIS's private identifier nor an authentication credential.
 Display-name changes do not alter it or the experience attached to it. The
@@ -149,6 +157,7 @@ Storage tests cover persistence, concurrent first entry, rename stability,
 stale callbacks, conflicting public names, issuer separation, carry retries,
 publication caps, missing profiles, the public allowlist, and product sessions
 (expiry, sign-out, a refused duplicate token, a mismatched binding, and a
-deleted profile). A local substitute
+deleted profile). Client activation has its own tests, listed in
+[its contract](client-activation.md). A local substitute
 issuer exercises HTTP token exchange, JWKS, signature/audience verification
 and profile creation through the real Core flow. It is not a live AIS E2E run.

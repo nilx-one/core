@@ -519,6 +519,33 @@ mod tests {
             "invalid_owner"
         );
     }
+
+    #[test]
+    fn wasm_surface_exposes_client_activation() {
+        let syncing =
+            include_str!("../../nilxone-api/fixtures/activation/state_activation_syncing.json");
+        assert_eq!(
+            super::read_activation_state(true, syncing),
+            nilxone_api::activation::read_activation_wire(true, syncing)
+        );
+        assert!(super::read_activation_state(true, syncing).contains(r#""percent":78"#));
+        assert_eq!(
+            super::read_activation_state(false, syncing),
+            r#"{"kind":"unavailable"}"#
+        );
+        assert_eq!(
+            super::activation_sync_part("600000", "524288"),
+            r#"{"end":600000,"kind":"part","last":true,"offset":524288}"#
+        );
+        assert_eq!(
+            super::activation_sync_part("600000", "01"),
+            r#"{"kind":"none"}"#
+        );
+        assert_eq!(
+            super::activation_sync_digest(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }
 
 /// What a client makes of the answer to a find attestation
@@ -560,4 +587,34 @@ pub fn read_craft_payment(ok: bool, body: &str) -> String {
 #[wasm_bindgen]
 pub fn read_seeds_wallet(ok: bool, body: &str) -> String {
     nilxone_api::wallet::read_seeds_wire(ok, body)
+}
+
+/// What a client makes of the answer to a client activation route
+/// (`/api/v1/session/activation…`, `docs/client-activation.md`):
+/// `{"kind":"state","state":…,"may_act":…,"request":…}` with the handoff's
+/// steps and percentage, `{"kind":"refused","reason":…}`,
+/// `{"kind":"authentication_required"}` or `{"kind":"unavailable"}`. A client
+/// draws the state and never works out a step, a percentage or a switch.
+#[must_use]
+#[wasm_bindgen]
+pub fn read_activation_state(ok: bool, body: &str) -> String {
+    nilxone_api::activation::read_activation_wire(ok, body)
+}
+
+/// The part of a handoff's data that starts at `offset`, both as decimal
+/// strings: `{"kind":"part","offset":0,"end":262144,"last":false}` or
+/// `{"kind":"none"}`. The active client uploads these parts in order and the
+/// asking client fetches them in order.
+#[must_use]
+#[wasm_bindgen]
+pub fn activation_sync_part(total_bytes: &str, offset: &str) -> String {
+    nilxone_api::activation::sync_part_wire(total_bytes, offset)
+}
+
+/// The digest the asking client sends to complete a handoff: SHA-256 of all
+/// the bytes it fetched, in lowercase hex.
+#[must_use]
+#[wasm_bindgen]
+pub fn activation_sync_digest(data: &[u8]) -> String {
+    nilxone_api::activation::sync_digest(data)
 }

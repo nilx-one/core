@@ -1,0 +1,35 @@
+{
+  "state": "authenticated_active",
+  "active": true,
+  "may_act": true,
+  "client_label": "Mac · Safari",
+  "active_client_label": null,
+  "request": {
+    "id": "0123456789abcdef0123456789abcdef",
+    "role": "requester",
+    "status": "completed",
+    "from_label": "iPhone · Telegram",
+    "to_label": "Mac · Safari",
+    "created_at": 1800000000,
+    "progress": {
+      "steps": [
+        {
+          "step": "confirm",
+          "state": "done"
+        },
+        {
+          "step": "sync",
+          "state": "done"
+        },
+        {
+          "step": "switch",
+          "state": "done"
+        }
+      ],
+      "percent": 100,
+      "total_bytes": 1048576,
+      "uploaded_bytes": 1048576,
+      "delivered_bytes": 1048576
+    }
+  }
+}
