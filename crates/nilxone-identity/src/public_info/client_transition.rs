@@ -150,13 +150,11 @@ impl ClientTransitionRepository {
         }
         // Remove all active/inactive predecessor sessions, because the old
         // OIDC client may still have access to the same profile until rollout.
-        sqlx::query(
-            "DELETE FROM product_activation_requests WHERE issuer = ? AND subject = ?",
-        )
-        .bind(&verified.issuer)
-        .bind(proof.predecessor_subject())
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("DELETE FROM product_activation_requests WHERE issuer = ? AND subject = ?")
+            .bind(&verified.issuer)
+            .bind(proof.predecessor_subject())
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM product_sessions WHERE issuer = ? AND subject = ?")
             .bind(&verified.issuer)
             .bind(proof.predecessor_subject())
@@ -267,7 +265,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_proof_retains_profile_xp_and_restarts_product_session_without_duplicate_writer() {
+    async fn exact_proof_retains_profile_xp_and_restarts_product_session_without_duplicate_writer()
+    {
         let (client, product) = store().await;
         let old = subject(1);
         let next = subject(2);
@@ -281,18 +280,42 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let xp = product.publish_experience_carry(&active, 120, 45).await.unwrap();
-        let found = client.bind_verified(&proof(&old, &next, NOW), NOW).await.unwrap();
-        assert!(found.newly_linked);
-        assert_eq!(found.owner.public_profile().profile_id, owner.profile.profile_id);
-        assert_eq!(found.owner.public_profile().experience, xp.experience);
-        assert!(product.restore_session(&"a".repeat(64), NOW).await.unwrap().is_none());
-        assert_eq!(product.read_public(&xp.profile_id).await.unwrap(), Some(xp.clone()));
-        assert!(product
-            .open_session(&found.owner, &"b".repeat(64), "", None, NOW, NOW + 3600)
+        let xp = product
+            .publish_experience_carry(&active, 120, 45)
             .await
-            .unwrap());
-        let resumed = product.restore_session(&"b".repeat(64), NOW).await.unwrap().unwrap();
+            .unwrap();
+        let found = client
+            .bind_verified(&proof(&old, &next, NOW), NOW)
+            .await
+            .unwrap();
+        assert!(found.newly_linked);
+        assert_eq!(
+            found.owner.public_profile().profile_id,
+            owner.profile.profile_id
+        );
+        assert_eq!(found.owner.public_profile().experience, xp.experience);
+        assert!(
+            product
+                .restore_session(&"a".repeat(64), NOW)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            product.read_public(&xp.profile_id).await.unwrap(),
+            Some(xp.clone())
+        );
+        assert!(
+            product
+                .open_session(&found.owner, &"b".repeat(64), "", None, NOW, NOW + 3600)
+                .await
+                .unwrap()
+        );
+        let resumed = product
+            .restore_session(&"b".repeat(64), NOW)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(resumed.public_profile(), &xp);
         assert_eq!(
             product
@@ -301,11 +324,26 @@ mod tests {
                 .unwrap(),
             xp
         );
-        let repeated = client.bind_verified(&proof(&old, &next, NOW), NOW).await.unwrap();
+        let repeated = client
+            .bind_verified(&proof(&old, &next, NOW), NOW)
+            .await
+            .unwrap();
         assert!(!repeated.newly_linked);
-        assert!(product.restore_session(&"b".repeat(64), NOW).await.unwrap().is_some());
+        assert!(
+            product
+                .restore_session(&"b".repeat(64), NOW)
+                .await
+                .unwrap()
+                .is_some()
+        );
         product.close_session(&"b".repeat(64), NOW).await.unwrap();
-        assert!(product.restore_session(&"b".repeat(64), NOW).await.unwrap().is_none());
+        assert!(
+            product
+                .restore_session(&"b".repeat(64), NOW)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -314,11 +352,19 @@ mod tests {
         let old = subject(1);
         let next = subject(2);
         let absent = client.bind_verified(&proof(&old, &next, NOW), NOW).await;
-        assert!(matches!(absent, Err(ClientTransitionError::MissingPredecessor)));
-        let owner = legacy_owner(&product, &old).await;
-        client.bind_verified(&proof(&old, &next, NOW), NOW).await.unwrap();
         assert!(matches!(
-            client.bind_verified(&proof(&old, &subject(3), NOW), NOW).await,
+            absent,
+            Err(ClientTransitionError::MissingPredecessor)
+        ));
+        let owner = legacy_owner(&product, &old).await;
+        client
+            .bind_verified(&proof(&old, &next, NOW), NOW)
+            .await
+            .unwrap();
+        assert!(matches!(
+            client
+                .bind_verified(&proof(&old, &subject(3), NOW), NOW)
+                .await,
             Err(ClientTransitionError::SubjectConflict)
         ));
         let alien = subject(4);
@@ -328,7 +374,10 @@ mod tests {
             Err(ClientTransitionError::SubjectConflict)
         ));
         assert_eq!(
-            product.read_public(&owner.profile.profile_id).await.unwrap(),
+            product
+                .read_public(&owner.profile.profile_id)
+                .await
+                .unwrap(),
             Some(owner.profile.clone())
         );
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM product_client_subject_links")
@@ -345,7 +394,9 @@ mod tests {
         let next = subject(2);
         let owner = legacy_owner(&product, &old).await;
         assert!(matches!(
-            client.bind_verified(&proof(&old, &next, NOW), NOW + 601).await,
+            client
+                .bind_verified(&proof(&old, &next, NOW), NOW + 601)
+                .await,
             Err(ClientTransitionError::StaleProof)
         ));
         let other = legacy_owner(&product, &next).await;
@@ -355,7 +406,10 @@ mod tests {
         ));
         assert_ne!(owner.profile.profile_id, other.profile.profile_id);
         assert_eq!(
-            product.read_public(&owner.profile.profile_id).await.unwrap(),
+            product
+                .read_public(&owner.profile.profile_id)
+                .await
+                .unwrap(),
             Some(owner.profile)
         );
     }
@@ -369,10 +423,18 @@ mod tests {
             .open_session(&owner, &"a".repeat(64), "", None, NOW, NOW + 3600)
             .await
             .unwrap();
-        let active = product.restore_session(&"a".repeat(64), NOW).await.unwrap().unwrap();
+        let active = product
+            .restore_session(&"a".repeat(64), NOW)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            product.publish_experience_carry(&active, 1, 2).await.unwrap()
-                .experience.bond_xp,
+            product
+                .publish_experience_carry(&active, 1, 2)
+                .await
+                .unwrap()
+                .experience
+                .bond_xp,
             1
         );
         assert!(matches!(

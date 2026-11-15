@@ -574,7 +574,9 @@ pub fn verify_client_transition_token(
         .ok_or(SignInError::InvalidToken("continuity"))?;
     let pairwise = |value: &str| {
         value.len() == 43
-            && URL_SAFE_NO_PAD.decode(value).is_ok_and(|bytes| bytes.len() == 32)
+            && URL_SAFE_NO_PAD
+                .decode(value)
+                .is_ok_and(|bytes| bytes.len() == 32)
     };
     if continuity.from_client_id != "nilx-one"
         || !pairwise(&continuity.sub)
@@ -1020,9 +1022,18 @@ mod tests {
         );
         for (key, value) in [
             ("subject_continuity", serde_json::Value::Null),
-            ("subject_continuity", json!({"from_client_id":"prism", "sub":previous})),
-            ("subject_continuity", json!({"from_client_id":"nilx-one", "sub":current})),
-            ("subject_continuity", json!({"from_client_id":"nilx-one", "sub":"bad"})),
+            (
+                "subject_continuity",
+                json!({"from_client_id":"prism", "sub":previous}),
+            ),
+            (
+                "subject_continuity",
+                json!({"from_client_id":"nilx-one", "sub":current}),
+            ),
+            (
+                "subject_continuity",
+                json!({"from_client_id":"nilx-one", "sub":"bad"}),
+            ),
         ] {
             let mut invalid = payload.clone();
             invalid[key] = value;
