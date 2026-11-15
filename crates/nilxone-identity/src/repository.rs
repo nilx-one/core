@@ -1194,7 +1194,29 @@ impl IdentityRepository {
         credential_authenticated: bool,
         supersede_token_hash: Option<&[u8]>,
     ) -> Result<bool, RepositoryError> {
-        let mut transaction = self.pool.begin().await?;
+        // Serialise this check with the migration commit's BEGIN IMMEDIATE:
+        // otherwise a native credential login could recreate an active legacy
+        // writer after the Bond was atomically attached to an AIS profile.
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let migration_store_present: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+             WHERE type = 'table' AND name = 'legacy_bond_bindings')",
+        )
+        .fetch_one(&mut *transaction)
+        .await?;
+        if migration_store_present {
+            let already_migrated: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM legacy_bond_keys k \
+                 JOIN legacy_bond_bindings b ON b.bond_id = k.bond_id \
+                 WHERE k.legacy_pub_dress = ?)",
+            )
+            .bind(pub_dress)
+            .fetch_one(&mut *transaction)
+            .await?;
+            if already_migrated {
+                return Err(RepositoryError::LegacyBondMigrated);
+            }
+        }
         if let Some(supersede) = supersede_token_hash.filter(|hash| *hash != token_hash) {
             sqlx::query(
                 "UPDATE native_sessions SET revoked_at = ? \
@@ -2201,6 +2223,8 @@ pub enum RegistrationOutcome {
 pub enum RepositoryError {
     #[error("identity storage failed: {0}")]
     Storage(#[from] sqlx::Error),
+    #[error("this legacy Bond is already attached to AIS; native sessions cannot be minted")]
+    LegacyBondMigrated,
     #[error("stored human pub_dress is invalid")]
     CorruptHumanPubDress,
     #[error("stored public-label suffix is invalid for this pub_dress")]
@@ -3436,5 +3460,117 @@ mod partner_subject_boundary_tests {
         let result = repository.market_pairwise_subject(owner.as_str(), &digester).await.unwrap();
         assert_eq!(result, digester.digest("market-pairwise-subject-v1", &encoded));
         assert_ne!(result, raw);
+    }
+}
+
+
+#[cfg(test)]
+mod legacy_ais_native_session_guard_tests {
+    use super::*;
+    use crate::public_info::{LegacyBondMigrationRepository, PublicInfoRepository};
+
+    #[tokio::test]
+    async fn committed_binding_prevents_native_relogin_without_touching_old_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("guard.sqlite");
+        let url = format!("sqlite://{}", path.display());
+        let legacy = IdentityRepository::connect(&url).await.unwrap();
+        let product = PublicInfoRepository::connect(&url).await.unwrap();
+        let _migration = LegacyBondMigrationRepository::prepare(product).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO identities (pub_dress, identity_kind) VALUES ('0x1guard', 'human')",
+        )
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+        assert!(
+            legacy
+                .create_native_session(
+                    &[1; 32],
+                    "0x1guard",
+                    100,
+                    800,
+                    "iPhone · Safari",
+                    true,
+                    None,
+                )
+                .await
+                .unwrap()
+        );
+        sqlx::query(
+            "INSERT INTO public_profiles (issuer, subject, last_auth_time) \
+             VALUES ('https://auth.aiaiaiai.org', 'ais-guard', 100)",
+        )
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1guard')",
+        )
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO legacy_bond_bindings (bond_id, profile_id, linked_at) \
+             SELECT k.bond_id, p.profile_id, 110 \
+             FROM legacy_bond_keys k CROSS JOIN public_profiles p \
+             WHERE k.legacy_pub_dress = '0x1guard' AND p.subject = 'ais-guard'",
+        )
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+        let rejected = legacy
+            .create_native_session(
+                &[2; 32],
+                "0x1guard",
+                120,
+                900,
+                "iPhone · Safari",
+                true,
+                Some(&[1; 32]),
+            )
+            .await;
+        assert!(matches!(rejected, Err(RepositoryError::LegacyBondMigrated)));
+        // The failed attempt cannot revoke the presented session or install
+        // another writer; the migration committer handles old-session closure.
+        let previous_revoked: Option<i64> =
+            sqlx::query_scalar("SELECT revoked_at FROM native_sessions WHERE token_hash = ?")
+                .bind(&[1_u8; 32][..])
+                .fetch_one(&legacy.pool)
+                .await
+                .unwrap();
+        assert_eq!(previous_revoked, None);
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM native_sessions WHERE pub_dress = '0x1guard'",
+        )
+        .fetch_one(&legacy.pool)
+        .await
+        .unwrap();
+        assert_eq!(total, 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_login_without_migration_schema_stays_compatible() {
+        let legacy = IdentityRepository::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO identities (pub_dress, identity_kind) VALUES ('0x1normal', 'human')",
+        )
+        .execute(&legacy.pool)
+        .await
+        .unwrap();
+        let active = legacy
+            .create_native_session(
+                &[3; 32],
+                "0x1normal",
+                100,
+                800,
+                "iPhone · Safari",
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(active);
     }
 }
