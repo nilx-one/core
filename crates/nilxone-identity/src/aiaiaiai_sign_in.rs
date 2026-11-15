@@ -632,8 +632,11 @@ fn signing_key(keys: &JsonWebKeySet, kid: Option<&str>) -> Result<VerifyingKey, 
 /// The cookie that carries a sign-in between leaving for the issuer and
 /// coming back. `__Host-` pins it to this origin, path `/`, Secure.
 pub const TRANSACTION_COOKIE: &str = "__Host-0x1_aiaiaiai";
+/// Migration login uses a different browser transaction than normal product sign-in.
+pub const MIGRATION_TRANSACTION_COOKIE: &str = "__Host-0x1_aiaiaiai_migration";
 const TRANSACTION_TTL_SECONDS: u64 = 15 * 60;
 const TRANSACTION_DOMAIN: &str = "aiaiaiai-sign-in-transaction";
+const MIGRATION_TRANSACTION_DOMAIN: &str = "aiaiaiai-legacy-bond-migration-transaction";
 const MAX_RETURN_PATH_BYTES: usize = 512;
 
 #[derive(Deserialize, Serialize)]
@@ -732,17 +735,63 @@ pub struct VerifiedFinished {
 /// 0x1's sign-in through aiaiaiai Identity, end to end. The host passes the
 /// request's query and `Cookie` header in, and applies the redirect and the
 /// `Set-Cookie` values it gets back. It decides nothing itself.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignInFlowPurpose {
+    Product,
+    LegacyMigration,
+}
+
 #[derive(Clone, Debug)]
 pub struct SignInFlow {
     client: SignInClient,
     signer: crate::SecretDigester,
+    purpose: SignInFlowPurpose,
 }
 
 impl SignInFlow {
     /// `signer` keys the transaction cookie; the host's native authentication
     /// secret, under this module's own domain.
     pub fn new(client: SignInClient, signer: crate::SecretDigester) -> Self {
-        Self { client, signer }
+        Self {
+            client,
+            signer,
+            purpose: SignInFlowPurpose::Product,
+        }
+    }
+
+    /// Separate the opt-in legacy Bond migration from ordinary product sign-in.
+    /// Only the legacy nilx-one OIDC audience may prove pre-migration ownership.
+    /// This scope uses its own cookie name AND MAC domain, so neither flow can
+    /// accept the other's browser transaction even under the same host key.
+    pub fn legacy_migration(
+        client: SignInClient,
+        signer: crate::SecretDigester,
+    ) -> Option<Self> {
+        (client.config().client_id() == "nilx-one").then_some(Self {
+            client,
+            signer,
+            purpose: SignInFlowPurpose::LegacyMigration,
+        })
+    }
+
+    /// A migration proof must not use a regular product sign-in transaction.
+    #[must_use]
+    pub const fn is_legacy_migration(&self) -> bool {
+        matches!(self.purpose, SignInFlowPurpose::LegacyMigration)
+    }
+
+    const fn transaction_cookie(&self) -> &'static str {
+        match self.purpose {
+            SignInFlowPurpose::Product => TRANSACTION_COOKIE,
+            SignInFlowPurpose::LegacyMigration => MIGRATION_TRANSACTION_COOKIE,
+        }
+    }
+
+    const fn transaction_domain(&self) -> &'static str {
+        match self.purpose {
+            SignInFlowPurpose::Product => TRANSACTION_DOMAIN,
+            SignInFlowPurpose::LegacyMigration => MIGRATION_TRANSACTION_DOMAIN,
+        }
     }
 
     pub fn issuer(&self) -> &str {
@@ -763,10 +812,11 @@ impl SignInFlow {
             expires_at: now.saturating_add(TRANSACTION_TTL_SECONDS),
         };
         let value = self.seal(&stored).ok_or(SignInError::EntropyUnavailable)?;
+        let cookie_name = self.transaction_cookie();
         Ok(Started {
             location,
             set_cookie: format!(
-                "{TRANSACTION_COOKIE}={value}; Path=/; Max-Age={TRANSACTION_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax"
+                "{cookie_name}={value}; Path=/; Max-Age={TRANSACTION_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax"
             ),
         })
     }
@@ -817,7 +867,8 @@ impl SignInFlow {
                 .verify_callback_inner(cookie_header, callback, now)
                 .await,
             clear_cookie: format!(
-                "{TRANSACTION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"
+                "{}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
+                self.transaction_cookie()
             ),
         }
     }
@@ -829,7 +880,7 @@ impl SignInFlow {
         now: u64,
     ) -> Result<VerifiedCallback, SignInFailure> {
         let raw = cookie_header
-            .and_then(|header| cookie_value(header, TRANSACTION_COOKIE))
+            .and_then(|header| cookie_value(header, self.transaction_cookie()))
             .ok_or(SignInFailure::Expired)?;
         let stored = self.open(raw).ok_or(SignInFailure::Invalid)?;
         if stored.expires_at <= now {
@@ -863,7 +914,7 @@ impl SignInFlow {
 
     fn seal(&self, stored: &StoredTransaction) -> Option<String> {
         let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(stored).ok()?);
-        let mac = self.signer.digest(TRANSACTION_DOMAIN, &encoded);
+        let mac = self.signer.digest(self.transaction_domain(), &encoded);
         Some(format!("v1.{encoded}.{}", URL_SAFE_NO_PAD.encode(mac)))
     }
 
@@ -875,7 +926,7 @@ impl SignInFlow {
             return None;
         };
         let supplied = URL_SAFE_NO_PAD.decode(mac).ok()?;
-        let expected = self.signer.digest(TRANSACTION_DOMAIN, encoded);
+        let expected = self.signer.digest(self.transaction_domain(), encoded);
         if !bool::from(supplied.ct_eq(&expected)) {
             return None;
         }
@@ -1417,6 +1468,77 @@ mod tests {
         }
         assert!(!started.set_cookie.contains("Domain="));
         assert_eq!(started.location.path(), "/authorize");
+    }
+
+    #[tokio::test]
+    async fn legacy_migration_transactions_are_separate_from_product_sign_in() {
+        let normal = flow();
+        let digester = crate::NativeAuthConfig::new([1; 32], [2; 32])
+            .unwrap()
+            .secret_digester();
+        let migration =
+            SignInFlow::legacy_migration(SignInClient::new(config()), digester.clone())
+                .expect("the registered legacy OIDC client is accepted");
+        assert!(migration.is_legacy_migration());
+        assert!(!normal.is_legacy_migration());
+        let product_started = normal.start(Some("/map"), NOW).unwrap();
+        let migration_started = migration
+            .start(Some("/api/v1/auth/aiaiaiai/migrate/confirm/example"), NOW)
+            .unwrap();
+        assert!(cookie_of(&product_started).starts_with("__Host-0x1_aiaiaiai=v1."));
+        assert!(cookie_of(&migration_started)
+            .starts_with("__Host-0x1_aiaiaiai_migration=v1."));
+        for started in [&product_started, &migration_started] {
+            assert!(started.set_cookie.contains("Secure; HttpOnly; SameSite=Lax"));
+            assert!(!started.set_cookie.contains("Domain="));
+        }
+        let product_cookie = cookie_of(&product_started);
+        let migration_cookie = cookie_of(&migration_started);
+        assert_eq!(
+            migration
+                .verify_callback(Some(&product_cookie), Callback::default(), NOW)
+                .await
+                .outcome
+                .err(),
+            Some(SignInFailure::Expired)
+        );
+        assert_eq!(
+            normal
+                .verify_callback(Some(&migration_cookie), Callback::default(), NOW)
+                .await
+                .outcome
+                .err(),
+            Some(SignInFailure::Expired)
+        );
+        // Renaming a signed cookie cannot bypass the MAC purpose separation.
+        let renamed = migration_cookie.replacen(
+            MIGRATION_TRANSACTION_COOKIE,
+            TRANSACTION_COOKIE,
+            1,
+        );
+        assert_eq!(
+            normal
+                .verify_callback(Some(&renamed), Callback::default(), NOW)
+                .await
+                .outcome
+                .err(),
+            Some(SignInFailure::Invalid)
+        );
+        assert!(migration
+            .verify_callback(Some(&migration_cookie), Callback::default(), NOW)
+            .await
+            .clear_cookie
+            .starts_with("__Host-0x1_aiaiaiai_migration=;"));
+        let foreign = SignInClientConfig::public(
+            ISSUER,
+            None,
+            "prism",
+            "https://nilx.one/api/v1/auth/aiaiaiai/callback",
+        )
+        .unwrap();
+        assert!(
+            SignInFlow::legacy_migration(SignInClient::new(foreign), digester).is_none()
+        );
     }
 
     #[tokio::test]
