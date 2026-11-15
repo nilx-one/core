@@ -18,3 +18,29 @@ CREATE TABLE IF NOT EXISTS product_client_subject_links (
     FOREIGN KEY (profile_id)
         REFERENCES public_profiles (profile_id) ON DELETE CASCADE
 ) STRICT;
+
+-- Fail closed if either old or new client tries the ordinary first-sign-in
+-- upsert after the signed continuity has been claimed. Otherwise a later
+-- callback could silently fork a new product profile or reopen a legacy
+-- writer despite the transactional session invalidation.
+CREATE TRIGGER IF NOT EXISTS product_subject_link_no_re_registration
+BEFORE INSERT ON public_profiles
+WHEN EXISTS (
+    SELECT 1 FROM product_client_subject_links
+    WHERE issuer = NEW.issuer
+      AND (predecessor_subject = NEW.subject OR successor_subject = NEW.subject)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'product client subject already transitioned');
+END;
+
+CREATE TRIGGER IF NOT EXISTS product_subject_link_no_subject_move
+BEFORE UPDATE OF issuer, subject ON public_profiles
+WHEN EXISTS (
+    SELECT 1 FROM product_client_subject_links
+    WHERE issuer = NEW.issuer
+      AND (predecessor_subject = NEW.subject OR successor_subject = NEW.subject)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'product client subject already transitioned');
+END;

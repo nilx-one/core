@@ -324,6 +324,20 @@ mod tests {
                 .unwrap(),
             xp
         );
+        // The old/new sign-in handlers must not be allowed to upsert a
+        // second profile after the continuity link exists. A host must use
+        // the verified successor path for every subsequent login.
+        for pairwise in [&old, &next] {
+            let ordinary = product
+                .attach(&VerifiedSignIn {
+                    issuer: ISSUER.to_owned(),
+                    subject: pairwise.to_owned(),
+                    pub_dress: Some("0x0sky".to_owned()),
+                    auth_time: NOW + 1,
+                })
+                .await;
+            assert!(matches!(ordinary, Err(PublicInfoError::Storage(_))));
+        }
         let repeated = client
             .bind_verified(&proof(&old, &next, NOW), NOW)
             .await
