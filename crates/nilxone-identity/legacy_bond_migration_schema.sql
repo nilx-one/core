@@ -34,24 +34,36 @@ CREATE TABLE IF NOT EXISTS legacy_bond_migration_intents (
     started_at INTEGER NOT NULL CHECK (started_at >= 0),
     expires_at INTEGER NOT NULL CHECK (expires_at > started_at),
     status TEXT NOT NULL DEFAULT 'pending_ais'
-        CHECK (status IN ('pending_ais', 'verified', 'committed',
+        CHECK (status IN ('pending_ais', 'confirmed', 'committed',
                           'cancelled', 'expired', 'conflict', 'rejected')),
     verified_issuer TEXT COLLATE BINARY,
     verified_subject TEXT COLLATE BINARY,
     verified_auth_time INTEGER,
     profile_id TEXT COLLATE BINARY,
+    -- Confirmation is an explicit owner action, not an AIS callback side effect.
+    confirmed_at INTEGER CHECK (confirmed_at IS NULL OR confirmed_at >= started_at),
     completed_at INTEGER,
     CHECK ((verified_issuer IS NULL AND verified_subject IS NULL
             AND verified_auth_time IS NULL)
         OR (verified_issuer IS NOT NULL AND verified_subject IS NOT NULL
             AND verified_auth_time IS NOT NULL)),
+    CHECK (status NOT IN ('confirmed', 'committed')
+        OR (confirmed_at IS NOT NULL AND verified_issuer IS NOT NULL
+            AND profile_id IS NOT NULL)),
+    CHECK (confirmed_at IS NULL OR confirmed_at < expires_at),
     CHECK (completed_at IS NULL OR completed_at >= started_at)
 ) STRICT;
 
+-- A terminal outcome is immutable to the migration service. At final commit,
+-- recheck expires_at, the original legacy-session digest, fresh credential
+-- authentication and revocation in a single BEGIN IMMEDIATE transaction.
+-- The issuer/client and pairwise subject must match the verified OIDC callback.
+-- No expired status can be treated as proof, even before the expiry sweep.
+--
 -- No two live migrations may race using the same native proof.
 CREATE UNIQUE INDEX IF NOT EXISTS legacy_migration_one_pending_per_session
     ON legacy_bond_migration_intents (legacy_session_hash)
-    WHERE status IN ('pending_ais', 'verified');
+    WHERE status IN ('pending_ais', 'confirmed');
 
 -- Independent of identity deletion: keep only pseudonymous, non-credential
 -- evidence of a terminal outcome. This is not a BondChain interaction.

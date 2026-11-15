@@ -78,18 +78,39 @@ impl LegacyBondMigrationRepository {
         Ok(Self { repository })
     }
 
+    /// Mark expired intents terminal in a separately committed transaction.
+    /// A later failed start must not roll this transition back or leave an
+    /// expired row occupying the unique pending-session slot. This is only
+    /// housekeeping: commit must independently check expires_at, not just
+    /// the status field, before any Bond attachment.
+    async fn expire_intents(&self, now: i64) -> Result<(), LegacyMigrationError> {
+        let mut transaction = self.repository.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query(
+            "UPDATE legacy_bond_migration_intents SET status = 'expired' \
+             WHERE status IN ('pending_ais', 'confirmed') AND expires_at <= ?",
+        )
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// No public name, AIS subject, or browser-selected Bond identifier is
     /// accepted. Both opaque digests must be derived server-side. The native
     /// proof is read inside the same BEGIN IMMEDIATE transaction as the
-    /// pending intent, so expiry, logout, activation or a competing start
-    /// cannot slip between the check and insert.
+    /// pending intent, so logout, activation or a competing start cannot
+    /// slip between the check and insert.
     pub async fn begin(
         &self,
         legacy_session_hash: &[u8],
         transaction_hash: &[u8],
         now: u64,
     ) -> Result<LegacyMigrationStarted, LegacyMigrationError> {
-        if legacy_session_hash.len() != 32 || transaction_hash.len() != 32 {
+        if legacy_session_hash.len() != 32 {
+            return Err(LegacyMigrationError::InvalidLegacyProof);
+        }
+        if transaction_hash.len() != 32 {
             return Err(LegacyMigrationError::InvalidTransaction);
         }
         let now_i64 = i64::try_from(now).map_err(|_| LegacyMigrationError::InvalidTransaction)?;
@@ -101,15 +122,9 @@ impl LegacyBondMigrationRepository {
         let earliest = i64::try_from(now.saturating_sub(600))
             .map_err(|_| LegacyMigrationError::InvalidTransaction)?;
 
+        // An invalid/revoked proof must not roll back independent expiry.
+        self.expire_intents(now_i64).await?;
         let mut tx = self.repository.pool.begin_with("BEGIN IMMEDIATE").await?;
-        sqlx::query(
-            "UPDATE legacy_bond_migration_intents SET status = 'expired' \
-             WHERE status IN ('pending_ais', 'verified') AND expires_at <= ?",
-        )
-        .bind(now_i64)
-        .execute(&mut *tx)
-        .await?;
-
         let proof = sqlx::query(
             "SELECT s.pub_dress FROM native_sessions s \
              JOIN identities i ON i.pub_dress = s.pub_dress \
@@ -296,6 +311,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_revoked_active_proof_and_avaia_owner_impersonation() {
+        let (store, _directory) = store().await;
+        human_session(
+            &store,
+            "revoked",
+            &[21; 32],
+            NOW as i64 - 1,
+            NOW as i64 + 100,
+            true,
+            true,
+        )
+        .await;
+        // Revocation does not clear the active flag in the legacy schema.
+        sqlx::query(
+            "UPDATE native_sessions SET revoked_at = ? WHERE token_hash = ?",
+        )
+        .bind(NOW as i64 - 1)
+        .bind(&[21; 32][..])
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
+        let remains_active: i64 = sqlx::query_scalar(
+            "SELECT active FROM native_sessions WHERE token_hash = ?",
+        )
+        .bind(&[21; 32][..])
+        .fetch_one(&store.repository.pool)
+        .await
+        .unwrap();
+        assert_eq!(remains_active, 1);
+        assert!(matches!(
+            store.begin(&[21; 32], &[22; 32], NOW).await,
+            Err(LegacyMigrationError::InvalidLegacyProof)
+        ));
+
+        human_session(
+            &store,
+            "avaia",
+            &[23; 32],
+            NOW as i64 - 1,
+            NOW as i64 + 100,
+            true,
+            true,
+        )
+        .await;
+        sqlx::query(
+            "UPDATE identities SET identity_kind = 'avaia' WHERE pub_dress = '0x1avaia'",
+        )
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
+        assert!(matches!(
+            store.begin(&[23; 32], &[24; 32], NOW).await,
+            Err(LegacyMigrationError::InvalidLegacyProof)
+        ));
+        assert!(matches!(
+            store.begin(&[1; 31], &[25; 32], NOW).await,
+            Err(LegacyMigrationError::InvalidLegacyProof)
+        ));
+        assert!(matches!(
+            store.begin(&[23; 32], &[1; 31], NOW).await,
+            Err(LegacyMigrationError::InvalidTransaction)
+        ));
+        let intents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_migration_intents")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(intents, 0);
+    }
+
+    #[tokio::test]
     async fn pending_hash_expires_without_binding_or_credential_side_effects() {
         let (store, _directory) = store().await;
         human_session(
@@ -321,9 +406,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            status, "pending_ais",
-            "a failed start rolls back expiration too"
+            status, "expired",
+            "the expired intent remains terminal even when fresh proof fails"
         );
+        let bindings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(bindings, 0, "expiry must never attach or move a Bond");
         let revoked: Option<i64> =
             sqlx::query_scalar("SELECT revoked_at FROM native_sessions WHERE token_hash = ?")
                 .bind(&[31; 32][..])
