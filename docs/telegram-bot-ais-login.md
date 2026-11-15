@@ -30,7 +30,7 @@ The host generates unique state, nonce, PKCE S256 verifier/challenge, an exact r
 
 The host (not the bot) exchanges the authorization code and verifies issuer, EdDSA signature, expected 0x1 audience, nonce, expiry and signed successor subject continuity. It attaches an existing Bond only through Core's authorized mapping, never through public address, username or chat ID. The initiating Telegram sender must explicitly confirm an account-link or account-switch attempt, particularly where the browser authenticated as a different identity. Authorization code, id_token, cookie and product-session bearer values never appear in Telegram messages.
 
-Single Active Client remains enforced. A linked provider does not silently activate Telegram or permit game writes. Treating bot and Mini App as one logical product client requires a separate normative change and complete parity checks. E2E cases must cover expiry, replay, wrong sender, wrong browser account, callback tampering, revocation, conflict, restoration, sign-out and handoff.
+Single Active Client remains enforced. A linked provider does not silently activate Telegram or permit game writes. The Telegram text client is a separate Core-controlled product client from the Web Mini App, with its **own** product session. Switching between these clients requires the canonical confirmed handoff; no implicit sharing, cookie reuse, or activated session inference is permitted. E2E cases must cover expiry, replay, wrong sender, wrong browser account, callback tampering, revocation, conflict, restoration, sign-out and handoff.
 
 ## Dependencies
 
