@@ -22,7 +22,9 @@ mod activation;
 mod legacy_migration;
 
 pub use activation::ActivationError;
-pub use legacy_migration::{LegacyBondMigrationRepository, LegacyMigrationError, LegacyMigrationStarted};
+pub use legacy_migration::{
+    LegacyBondMigrationRepository, LegacyMigrationError, LegacyMigrationStarted,
+};
 
 const MAX_CARRY_XP: u64 = 1_000_000_000;
 

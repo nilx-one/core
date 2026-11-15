@@ -172,12 +172,16 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000;
 
-    async fn store() -> LegacyBondMigrationRepository {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let url = format!("sqlite://{}", file.path().display());
+    async fn store() -> (LegacyBondMigrationRepository, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("migration.sqlite");
+        let url = format!("sqlite://{}", database.display());
         let _legacy = IdentityRepository::connect(&url).await.unwrap();
         let product = PublicInfoRepository::connect(&url).await.unwrap();
-        LegacyBondMigrationRepository::prepare(product).await.unwrap()
+        (
+            LegacyBondMigrationRepository::prepare(product).await.unwrap(),
+            directory,
+        )
     }
 
     async fn human_session(
@@ -231,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn starts_only_with_fresh_password_authenticated_active_native_proof() {
-        let store = store().await;
+        let (store, _directory) = store().await;
         human_session(
             &store,
             "valid",
@@ -260,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_provider_inactive_stale_future_and_expired_sessions() {
-        let store = store().await;
+        let (store, _directory) = store().await;
         for (n, active, credential, created, expires) in [
             (1_u8, true, false, NOW as i64 - 10, NOW as i64 + 100),
             (2, false, true, NOW as i64 - 10, NOW as i64 + 100),
@@ -268,7 +272,16 @@ mod tests {
             (4, true, true, NOW as i64 + 1, NOW as i64 + 100),
             (5, true, true, NOW as i64 - 10, NOW as i64),
         ] {
-            human_session(&store, &format!("reject{n}"), &[n; 32], created, expires, active, credential).await;
+            human_session(
+                &store,
+                &format!("reject{n}"),
+                &[n; 32],
+                created,
+                expires,
+                active,
+                credential,
+            )
+            .await;
             assert!(matches!(
                 store.begin(&[n; 32], &[n + 10; 32], NOW).await,
                 Err(LegacyMigrationError::InvalidLegacyProof)
@@ -284,15 +297,22 @@ mod tests {
 
     #[tokio::test]
     async fn pending_hash_expires_without_binding_or_credential_side_effects() {
-        let store = store().await;
+        let (store, _directory) = store().await;
         human_session(
-            &store, "expiry", &[31; 32],
-            NOW as i64 - 10, NOW as i64 + 3_000, true, true,
-        ).await;
+            &store,
+            "expiry",
+            &[31; 32],
+            NOW as i64 - 10,
+            NOW as i64 + 3_000,
+            true,
+            true,
+        )
+        .await;
         store.begin(&[31; 32], &[32; 32], NOW).await.unwrap();
-        store.begin(&[31; 32], &[33; 32], NOW + 601)
-            .await
-            .unwrap_err(); // Native proof is now older than ten minutes.
+        assert!(matches!(
+            store.begin(&[31; 32], &[33; 32], NOW + 601).await,
+            Err(LegacyMigrationError::InvalidLegacyProof)
+        )); // Native proof is now older than ten minutes.
         let status: String = sqlx::query_scalar(
             "SELECT status FROM legacy_bond_migration_intents WHERE transaction_hash = ?",
         )
@@ -313,11 +333,17 @@ mod tests {
 
     #[tokio::test]
     async fn one_to_one_constraints_and_rename_cascade_do_not_move_legacy_state() {
-        let store = store().await;
+        let (store, _directory) = store().await;
         human_session(
-            &store, "binding", &[41; 32], NOW as i64 - 1,
-            NOW as i64 + 100, true, true,
-        ).await;
+            &store,
+            "binding",
+            &[41; 32],
+            NOW as i64 - 1,
+            NOW as i64 + 100,
+            true,
+            true,
+        )
+        .await;
         sqlx::query(
             "INSERT INTO public_profiles (issuer, subject, pub_dress, last_auth_time) \
              VALUES ('https://auth.aiaiaiai.org', 'pairwise-one', '0x1binding', ?)",
@@ -357,6 +383,40 @@ mod tests {
             store.begin(&[41; 32], &[42; 32], NOW).await,
             Err(LegacyMigrationError::AlreadyBound)
         ));
+        human_session(
+            &store,
+            "other",
+            &[43; 32],
+            NOW as i64 - 1,
+            NOW as i64 + 100,
+            true,
+            true,
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1other')",
+        )
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
+        let other_bond_id: String = sqlx::query_scalar(
+            "SELECT bond_id FROM legacy_bond_keys WHERE legacy_pub_dress = '0x1other'",
+        )
+        .fetch_one(&store.repository.pool)
+        .await
+        .unwrap();
+        assert!(
+            sqlx::query(
+                "INSERT INTO legacy_bond_bindings (bond_id, profile_id, linked_at) VALUES (?, ?, ?)",
+            )
+            .bind(&other_bond_id)
+            .bind(&profile_id)
+            .bind(NOW as i64)
+            .execute(&store.repository.pool)
+            .await
+            .is_err(),
+            "a second Bond must never acquire the same AIS profile",
+        );
         sqlx::query(
             "UPDATE identities SET pub_dress = '0x1renamed' WHERE pub_dress = '0x1binding'",
         )
