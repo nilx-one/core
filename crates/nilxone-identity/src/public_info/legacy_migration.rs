@@ -12,6 +12,9 @@
 
 use sqlx::Row;
 
+mod commit;
+pub use commit::LegacyMigrationAttached;
+
 use super::PublicInfoRepository;
 
 /// A migration start is not an ownership transfer or an authorized Bond.
@@ -32,6 +35,14 @@ pub enum LegacyMigrationError {
     AlreadyBound,
     #[error("a migration with this credential session or handle is already pending")]
     AlreadyPending,
+    #[error("the AIS migration intent has not been explicitly confirmed")]
+    NotConfirmed,
+    #[error("the confirmed migration has expired or has an invalid confirmation time")]
+    ExpiredConfirmation,
+    #[error("the issuer or age of the verified AIS evidence is invalid")]
+    InvalidAisProof,
+    #[error("this verified AIS subject already has a product profile")]
+    IdentityConflict,
     #[error("legacy Bond migration storage is unavailable")]
     Storage(#[from] sqlx::Error),
 }

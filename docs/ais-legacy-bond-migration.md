@@ -138,6 +138,22 @@ Use database uniqueness constraints for both identity and legacy-Bond bindings, 
 
 Keep a minimal audit event with transaction ID, stable Bond ID, pseudonymous AIS binding reference, outcome and timestamp; never log raw ID tokens, credentials, PKCE verifier or session tokens. Rate-limit proof attempts and migration starts.
 
+### Atomic commit stage (disabled until verified host callback)
+
+Core now provides an opt-in commit_confirmed repository operation for an already
+verified, explicitly confirmed legacy-Bond migration intent. It checks the
+fresh native session and previously stored AIS evidence again inside one
+BEGIN IMMEDIATE transaction; allocates a new profile without copying a public
+address, attaches the stable Bond key, revokes legacy sessions and pending
+activation requests, consumes the intent, and writes a pseudonymous audit.
+Existing AIS profiles are conflicts, never automatically merged or overwritten.
+
+The migration is NOT enabled: the host must still supply a migration-specific
+OIDC callback for the registered legacy nilx-one client, bind both proofs to
+the server-issued transaction, require CSRF-protected explicit confirmation,
+and restore new AIS-backed game sessions through the durable binding. No
+production data migration, client-id cutover or deploy is authorized.
+
 ## Recovery and game-session authorization
 
 The successful transaction invalidates pre-existing product sessions for the
