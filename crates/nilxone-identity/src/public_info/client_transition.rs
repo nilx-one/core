@@ -431,8 +431,7 @@ mod tests {
     #[tokio::test]
     async fn old_bond_avaia_seeds_subscription_and_binding_survive_successor_login() {
         use crate::{
-            AvaiaPubDress, PubDress,
-            public_info::LegacyBondMigrationRepository,
+            AvaiaPubDress, PubDress, public_info::LegacyBondMigrationRepository,
             repository::IdentityRepository,
         };
 
