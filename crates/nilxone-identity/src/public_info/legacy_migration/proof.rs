@@ -10,7 +10,7 @@
 use sqlx::Row as _;
 
 use super::{LegacyBondMigrationRepository, LegacyMigrationError};
-use crate::aiaiaiai_sign_in::{Callback, SignInFlow, safe_return_path};
+use crate::aiaiaiai_sign_in::{Callback, SignInFlow};
 
 const CLIENT: &str = "nilx-one";
 const ISSUER: &str = "https://auth.aiaiaiai.org";
@@ -25,6 +25,22 @@ pub struct LegacyMigrationProofRecorded {
 }
 
 impl LegacyBondMigrationRepository {
+    /// Exact same-origin OIDC return path for this transaction digest.
+    /// This correlator is never a session token or sufficient proof.
+    /// The host must still require the original authenticated native session.
+    pub fn migration_return_path(
+        transaction_hash: &[u8],
+    ) -> Result<String, LegacyMigrationError> {
+        if transaction_hash.len() != 32 {
+            return Err(LegacyMigrationError::InvalidTransaction);
+        }
+        let hex = transaction_hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(format!("{MIGRATION_RETURN_PREFIX}{hex}"))
+    }
+
     /// Verify a genuine OIDC callback through the legacy-client SignInFlow
     /// before storing its pairwise identity. The flow must use a separately
     /// scoped migration transaction signer in the host composition root.
@@ -37,19 +53,13 @@ impl LegacyBondMigrationRepository {
         flow: &SignInFlow,
         cookie_header: Option<&str>,
         callback: Callback<'_>,
-        expected_return_path: &str,
         (legacy_session_hash, transaction_hash): (&[u8], &[u8]),
         now: u64,
     ) -> Result<LegacyMigrationProofRecorded, LegacyMigrationError> {
-        if flow.client_id() != CLIENT
-            || legacy_session_hash.len() != 32
-            || transaction_hash.len() != 32
-            || !expected_return_path.starts_with(MIGRATION_RETURN_PREFIX)
-            || expected_return_path == MIGRATION_RETURN_PREFIX
-            || safe_return_path(Some(expected_return_path)) != expected_return_path
-        {
+        if flow.client_id() != CLIENT || legacy_session_hash.len() != 32 {
             return Err(LegacyMigrationError::InvalidTransaction);
         }
+        let expected_return_path = Self::migration_return_path(transaction_hash)?;
         let verified = flow.verify_callback(cookie_header, callback, now).await;
         let callback = verified
             .outcome
@@ -246,6 +256,23 @@ mod tests {
             .begin(&[session; 32], &[intent; 32], NOW)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn callback_path_is_deterministic_and_bound_to_exact_transaction_digest() {
+        let first = LegacyBondMigrationRepository::migration_return_path(&[1_u8; 32])
+            .unwrap();
+        let other = LegacyBondMigrationRepository::migration_return_path(&[2_u8; 32])
+            .unwrap();
+        assert_eq!(
+            first,
+            format!("{MIGRATION_RETURN_PREFIX}{}", "01".repeat(32))
+        );
+        assert_ne!(first, other);
+        assert!(matches!(
+            LegacyBondMigrationRepository::migration_return_path(&[1_u8; 31]),
+            Err(LegacyMigrationError::InvalidTransaction)
+        ));
     }
 
     #[tokio::test]
