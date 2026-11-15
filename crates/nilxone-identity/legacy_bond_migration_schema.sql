@@ -47,9 +47,11 @@ CREATE TABLE IF NOT EXISTS legacy_bond_migration_intents (
             AND verified_auth_time IS NULL)
         OR (verified_issuer IS NOT NULL AND verified_subject IS NOT NULL
             AND verified_auth_time IS NOT NULL)),
+    -- Confirmation precedes allocation of a missing product profile. A
+    -- profile_id is mandatory only after the atomic commit has succeeded.
     CHECK (status NOT IN ('confirmed', 'committed')
-        OR (confirmed_at IS NOT NULL AND verified_issuer IS NOT NULL
-            AND profile_id IS NOT NULL)),
+        OR (confirmed_at IS NOT NULL AND verified_issuer IS NOT NULL)),
+    CHECK (status <> 'committed' OR profile_id IS NOT NULL),
     CHECK (confirmed_at IS NULL OR confirmed_at < expires_at),
     CHECK (completed_at IS NULL OR completed_at >= started_at)
 ) STRICT;

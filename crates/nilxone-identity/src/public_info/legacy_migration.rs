@@ -376,6 +376,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn confirmed_intent_requires_verified_identity_but_does_not_allocate_profile() {
+        let (store, _directory) = store().await;
+        human_session(
+            &store,
+            "confirmation",
+            &[51; 32],
+            NOW as i64 - 1,
+            NOW as i64 + 100,
+            true,
+            true,
+        )
+        .await;
+        store.begin(&[51; 32], &[52; 32], NOW).await.unwrap();
+        assert!(
+            sqlx::query(
+                "UPDATE legacy_bond_migration_intents \
+                 SET status = 'confirmed' WHERE transaction_hash = ?",
+            )
+            .bind(&[52; 32][..])
+            .execute(&store.repository.pool)
+            .await
+            .is_err(),
+            "confirmation cannot be represented without verified AIS proof",
+        );
+        sqlx::query(
+            "UPDATE legacy_bond_migration_intents \
+             SET verified_issuer = ?, verified_subject = ?, verified_auth_time = ?, \
+                 confirmed_at = ?, status = 'confirmed' WHERE transaction_hash = ?",
+        )
+        .bind("https://auth.aiaiaiai.org")
+        .bind("pairwise-subject")
+        .bind(NOW as i64)
+        .bind(NOW as i64 + 1)
+        .bind(&[52; 32][..])
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
+        let profiles: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM public_profiles")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(profiles, 0, "confirmation is not a profile allocation");
+        assert!(
+            sqlx::query(
+                "UPDATE legacy_bond_migration_intents \
+                 SET status = 'committed' WHERE transaction_hash = ?",
+            )
+            .bind(&[52; 32][..])
+            .execute(&store.repository.pool)
+            .await
+            .is_err(),
+            "a committed intent requires an actual profile",
+        );
+        let bindings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(bindings, 0, "no synthetic Bond attachment on confirmation");
+    }
+
+    #[tokio::test]
     async fn pending_hash_expires_without_binding_or_credential_side_effects() {
         let (store, _directory) = store().await;
         human_session(
