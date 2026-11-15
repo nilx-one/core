@@ -430,14 +430,18 @@ mod tests {
 
     #[tokio::test]
     async fn old_bond_avaia_seeds_subscription_and_binding_survive_successor_login() {
-        use crate::{public_info::LegacyBondMigrationRepository, repository::IdentityRepository};
+        use crate::{
+            AvaiaPubDress, PubDress,
+            public_info::LegacyBondMigrationRepository,
+            repository::IdentityRepository,
+        };
 
         let directory = tempfile::tempdir().unwrap();
         let database_url = format!(
             "sqlite://{}",
             directory.path().join("product-and-legacy.sqlite").display()
         );
-        let _legacy = IdentityRepository::connect(&database_url).await.unwrap();
+        let legacy = IdentityRepository::connect(&database_url).await.unwrap();
         let product = PublicInfoRepository::connect(&database_url).await.unwrap();
         let _migration = LegacyBondMigrationRepository::prepare(product.clone())
             .await
@@ -450,34 +454,15 @@ mod tests {
             .execute(&product.pool)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO identities (pub_dress, identity_kind, owner_pub_dress) \
-             VALUES ('0x0skai', 'avaia', '0x0sky')",
-        )
-        .execute(&product.pool)
-        .await
-        .unwrap();
-        // Use the actual persisted identity as the FK target. Legacy
-        // migrations can rewrite an Avaia's displayed address independently
-        // of the owning Bond, so never assume a literal Avaia address.
-        let avaia_pub_dress: String = sqlx::query_scalar(
-            "SELECT pub_dress FROM identities WHERE owner_pub_dress = '0x0sky' \
-             AND identity_kind = 'avaia'",
-        )
-        .fetch_one(&product.pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO avaia_configuration \
-             (avaia_pub_dress, owner_pub_dress, configuration_state) \
-             SELECT pub_dress, owner_pub_dress, 'configured' FROM identities \
-             WHERE pub_dress = ? AND owner_pub_dress = '0x0sky' \
-             ON CONFLICT(avaia_pub_dress) DO UPDATE SET configuration_state = 'configured'",
-        )
-        .bind(&avaia_pub_dress)
-        .execute(&product.pool)
-        .await
-        .unwrap();
+        // IdentityRepository owns Avaia creation. Direct INSERT is blocked
+        // by the lifecycle guard, even when SQL reports no error.
+        let owner: PubDress = "0x0sky".parse().unwrap();
+        let intended: AvaiaPubDress = "x0skai".parse().unwrap();
+        legacy
+            .configure_owned_avaia(&owner, &intended, NOW)
+            .await
+            .expect("explicit owner-controlled Avaia configuration");
+        let avaia_pub_dress = intended.as_str().to_owned();
         sqlx::query("INSERT INTO bond_seeds (owner_pub_dress, balance) VALUES ('0x0sky', 1337)")
             .execute(&product.pool)
             .await
