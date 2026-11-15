@@ -324,21 +324,18 @@ mod tests {
         )
         .await;
         // Revocation does not clear the active flag in the legacy schema.
-        sqlx::query(
-            "UPDATE native_sessions SET revoked_at = ? WHERE token_hash = ?",
-        )
-        .bind(NOW as i64 - 1)
-        .bind(&[21; 32][..])
-        .execute(&store.repository.pool)
-        .await
-        .unwrap();
-        let remains_active: i64 = sqlx::query_scalar(
-            "SELECT active FROM native_sessions WHERE token_hash = ?",
-        )
-        .bind(&[21; 32][..])
-        .fetch_one(&store.repository.pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE native_sessions SET revoked_at = ? WHERE token_hash = ?")
+            .bind(NOW as i64 - 1)
+            .bind(&[21; 32][..])
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
+        let remains_active: i64 =
+            sqlx::query_scalar("SELECT active FROM native_sessions WHERE token_hash = ?")
+                .bind(&[21; 32][..])
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
         assert_eq!(remains_active, 1);
         assert!(matches!(
             store.begin(&[21; 32], &[22; 32], NOW).await,
@@ -355,12 +352,10 @@ mod tests {
             true,
         )
         .await;
-        sqlx::query(
-            "UPDATE identities SET identity_kind = 'avaia' WHERE pub_dress = '0x1avaia'",
-        )
-        .execute(&store.repository.pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE identities SET identity_kind = 'avaia' WHERE pub_dress = '0x1avaia'")
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         assert!(matches!(
             store.begin(&[23; 32], &[24; 32], NOW).await,
             Err(LegacyMigrationError::InvalidLegacyProof)
