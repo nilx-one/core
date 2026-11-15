@@ -13,7 +13,9 @@
 use sqlx::Row;
 
 mod commit;
+mod proof;
 pub use commit::LegacyMigrationAttached;
+pub use proof::LegacyMigrationProofRecorded;
 
 use super::PublicInfoRepository;
 

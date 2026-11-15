@@ -28,6 +28,7 @@ pub use client_transition::{
 };
 pub use legacy_migration::{
     LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
+    LegacyMigrationProofRecorded,
     LegacyMigrationStarted,
 };
 

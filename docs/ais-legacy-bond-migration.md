@@ -154,6 +154,21 @@ the server-issued transaction, require CSRF-protected explicit confirmation,
 and restore new AIS-backed game sessions through the durable binding. No
 production data migration, client-id cutover or deploy is authorized.
 
+### Staged verified callback and explicit confirmation (Core #115)
+
+The migration repository now has a dormant record_ais_callback operation. It
+calls a dedicated migration SignInFlow for the registered legacy nilx-one
+OIDC client; that flow verifies state, nonce, PKCE, issuer, signature, audience
+and auth_time before Core records the resulting pairwise subject. The host
+must bind a server-issued transaction to its expected signed return path.
+Ordinary product sign-in and successor 0x1 client tokens are not migration
+proof. A separate confirm_verified operation rechecks the native session,
+pending AIS proof and hard expiry, and requires a CSRF-protected explicit
+owner action in the host. Only then is commit_confirmed eligible to attach.
+
+No HTTP endpoints, host transaction cookies, product-session mapping or Web
+migration UX are enabled by this library implementation. These remain
+separate reviewed changes before any production migration or user access.
 ## Recovery and game-session authorization
 
 The successful transaction invalidates pre-existing product sessions for the
