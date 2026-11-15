@@ -38,8 +38,7 @@ impl LegacyBondMigrationRepository {
         cookie_header: Option<&str>,
         callback: Callback<'_>,
         expected_return_path: &str,
-        legacy_session_hash: &[u8],
-        transaction_hash: &[u8],
+        (legacy_session_hash, transaction_hash): (&[u8], &[u8]),
         now: u64,
     ) -> Result<LegacyMigrationProofRecorded, LegacyMigrationError> {
         if flow.client_id() != CLIENT
