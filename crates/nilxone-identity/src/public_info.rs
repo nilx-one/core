@@ -19,9 +19,13 @@ use crate::{
 };
 
 mod activation;
+mod client_transition;
 mod legacy_migration;
 
 pub use activation::ActivationError;
+pub use client_transition::{
+    ClientTransitionBinding, ClientTransitionError, ClientTransitionRepository,
+};
 pub use legacy_migration::{
     LegacyBondMigrationRepository, LegacyMigrationError, LegacyMigrationStarted,
 };
