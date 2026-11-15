@@ -121,7 +121,10 @@ mod tests {
             provider: "discord".into(),
             ..request
         };
-        assert_eq!(wrong.validate(), Err(LoginStartRefusal::UnsupportedProvider));
+        assert_eq!(
+            wrong.validate(),
+            Err(LoginStartRefusal::UnsupportedProvider)
+        );
     }
 
     #[test]
@@ -132,10 +135,8 @@ mod tests {
         };
         assert!(response.has_valid_ttl());
         assert_eq!(
-            serde_json::from_str::<LoginStartResponse>(
-                &serde_json::to_string(&response).unwrap()
-            )
-            .unwrap(),
+            serde_json::from_str::<LoginStartResponse>(&serde_json::to_string(&response).unwrap())
+                .unwrap(),
             response
         );
         let expired = LoginStartResponse {
