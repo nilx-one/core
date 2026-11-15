@@ -28,9 +28,7 @@ impl LegacyBondMigrationRepository {
     /// Exact same-origin OIDC return path for this transaction digest.
     /// This correlator is never a session token or sufficient proof.
     /// The host must still require the original authenticated native session.
-    pub fn migration_return_path(
-        transaction_hash: &[u8],
-    ) -> Result<String, LegacyMigrationError> {
+    pub fn migration_return_path(transaction_hash: &[u8]) -> Result<String, LegacyMigrationError> {
         if transaction_hash.len() != 32 {
             return Err(LegacyMigrationError::InvalidTransaction);
         }
@@ -260,10 +258,8 @@ mod tests {
 
     #[test]
     fn callback_path_is_deterministic_and_bound_to_exact_transaction_digest() {
-        let first = LegacyBondMigrationRepository::migration_return_path(&[1_u8; 32])
-            .unwrap();
-        let other = LegacyBondMigrationRepository::migration_return_path(&[2_u8; 32])
-            .unwrap();
+        let first = LegacyBondMigrationRepository::migration_return_path(&[1_u8; 32]).unwrap();
+        let other = LegacyBondMigrationRepository::migration_return_path(&[2_u8; 32]).unwrap();
         assert_eq!(
             first,
             format!("{MIGRATION_RETURN_PREFIX}{}", "01".repeat(32))
