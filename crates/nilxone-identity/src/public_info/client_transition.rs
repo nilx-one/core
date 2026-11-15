@@ -457,9 +457,14 @@ mod tests {
         .execute(&product.pool)
         .await
         .unwrap();
+        // Seed the persisted *existing* configuration explicitly: the
+        // identity schema can contain old Avaia without this trigger having
+        // been installed at its original creation time.
         sqlx::query(
-            "UPDATE avaia_configuration SET configuration_state = 'configured' \
-             WHERE owner_pub_dress = '0x0sky'",
+            "INSERT INTO avaia_configuration \
+             (avaia_pub_dress, owner_pub_dress, configuration_state) \
+             VALUES ('0x0skai', '0x0sky', 'configured') \
+             ON CONFLICT(avaia_pub_dress) DO UPDATE SET configuration_state = 'configured'",
         )
         .execute(&product.pool)
         .await
