@@ -46,9 +46,7 @@ pub struct LegacyBondMigrationRepository {
 }
 
 impl LegacyBondMigrationRepository {
-    pub async fn prepare(
-        repository: PublicInfoRepository,
-    ) -> Result<Self, LegacyMigrationError> {
+    pub async fn prepare(repository: PublicInfoRepository) -> Result<Self, LegacyMigrationError> {
         let required: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
              AND name IN ('identities', 'native_sessions', 'native_credentials', \
@@ -179,7 +177,9 @@ mod tests {
         let _legacy = IdentityRepository::connect(&url).await.unwrap();
         let product = PublicInfoRepository::connect(&url).await.unwrap();
         (
-            LegacyBondMigrationRepository::prepare(product).await.unwrap(),
+            LegacyBondMigrationRepository::prepare(product)
+                .await
+                .unwrap(),
             directory,
         )
     }
@@ -194,13 +194,11 @@ mod tests {
         credential_authenticated: bool,
     ) {
         let address = format!("0x1{suffix}");
-        sqlx::query(
-            "INSERT INTO identities (pub_dress, identity_kind) VALUES (?, 'human')",
-        )
-        .bind(&address)
-        .execute(&store.repository.pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO identities (pub_dress, identity_kind) VALUES (?, 'human')")
+            .bind(&address)
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO native_sessions \
              (token_hash, pub_dress, created_at, expires_at, active, credential_authenticated) \
@@ -219,7 +217,9 @@ mod tests {
 
     #[tokio::test]
     async fn refuses_a_product_only_database_without_creating_migration_tables() {
-        let product = PublicInfoRepository::connect("sqlite::memory:").await.unwrap();
+        let product = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
         assert!(matches!(
             LegacyBondMigrationRepository::prepare(product.clone()).await,
             Err(LegacyMigrationError::UnsupportedTopology)
@@ -248,17 +248,18 @@ mod tests {
         .await;
         assert_eq!(
             store.begin(&[1; 32], &[2; 32], NOW).await.unwrap(),
-            LegacyMigrationStarted { expires_at: NOW + 600 }
+            LegacyMigrationStarted {
+                expires_at: NOW + 600
+            }
         );
         assert!(matches!(
             store.begin(&[1; 32], &[3; 32], NOW).await,
             Err(LegacyMigrationError::AlreadyPending)
         ));
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
-                .fetch_one(&store.repository.pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "begin is not a binding or consent");
     }
 
@@ -287,11 +288,10 @@ mod tests {
                 Err(LegacyMigrationError::InvalidLegacyProof)
             ));
         }
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_migration_intents")
-                .fetch_one(&store.repository.pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_migration_intents")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -320,14 +320,16 @@ mod tests {
         .fetch_one(&store.repository.pool)
         .await
         .unwrap();
-        assert_eq!(status, "pending_ais", "a failed start rolls back expiration too");
-        let revoked: Option<i64> = sqlx::query_scalar(
-            "SELECT revoked_at FROM native_sessions WHERE token_hash = ?",
-        )
-        .bind(&[31; 32][..])
-        .fetch_one(&store.repository.pool)
-        .await
-        .unwrap();
+        assert_eq!(
+            status, "pending_ais",
+            "a failed start rolls back expiration too"
+        );
+        let revoked: Option<i64> =
+            sqlx::query_scalar("SELECT revoked_at FROM native_sessions WHERE token_hash = ?")
+                .bind(&[31; 32][..])
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
         assert_eq!(revoked, None);
     }
 
@@ -352,12 +354,10 @@ mod tests {
         .execute(&store.repository.pool)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1binding')",
-        )
-        .execute(&store.repository.pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1binding')")
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         let bond_id: String = sqlx::query_scalar(
             "SELECT bond_id FROM legacy_bond_keys WHERE legacy_pub_dress = '0x1binding'",
         )
@@ -393,12 +393,10 @@ mod tests {
             true,
         )
         .await;
-        sqlx::query(
-            "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1other')",
-        )
-        .execute(&store.repository.pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1other')")
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         let other_bond_id: String = sqlx::query_scalar(
             "SELECT bond_id FROM legacy_bond_keys WHERE legacy_pub_dress = '0x1other'",
         )
@@ -423,23 +421,21 @@ mod tests {
         .execute(&store.repository.pool)
         .await
         .unwrap();
-        let stored: String = sqlx::query_scalar(
-            "SELECT legacy_pub_dress FROM legacy_bond_keys WHERE bond_id = ?",
-        )
-        .bind(&bond_id)
-        .fetch_one(&store.repository.pool)
-        .await
-        .unwrap();
+        let stored: String =
+            sqlx::query_scalar("SELECT legacy_pub_dress FROM legacy_bond_keys WHERE bond_id = ?")
+                .bind(&bond_id)
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
         assert_eq!(stored, "0x1renamed");
         sqlx::query("DELETE FROM identities WHERE pub_dress = '0x1renamed'")
             .execute(&store.repository.pool)
             .await
             .unwrap();
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
-                .fetch_one(&store.repository.pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
         assert_eq!(count, 0);
     }
 }
