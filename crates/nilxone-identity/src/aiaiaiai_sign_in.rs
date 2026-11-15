@@ -763,10 +763,7 @@ impl SignInFlow {
     /// Only the legacy nilx-one OIDC audience may prove pre-migration ownership.
     /// This scope uses its own cookie name AND MAC domain, so neither flow can
     /// accept the other's browser transaction even under the same host key.
-    pub fn legacy_migration(
-        client: SignInClient,
-        signer: crate::SecretDigester,
-    ) -> Option<Self> {
+    pub fn legacy_migration(client: SignInClient, signer: crate::SecretDigester) -> Option<Self> {
         (client.config().client_id() == "nilx-one").then_some(Self {
             client,
             signer,
@@ -1476,9 +1473,8 @@ mod tests {
         let digester = crate::NativeAuthConfig::new([1; 32], [2; 32])
             .unwrap()
             .secret_digester();
-        let migration =
-            SignInFlow::legacy_migration(SignInClient::new(config()), digester.clone())
-                .expect("the registered legacy OIDC client is accepted");
+        let migration = SignInFlow::legacy_migration(SignInClient::new(config()), digester.clone())
+            .expect("the registered legacy OIDC client is accepted");
         assert!(migration.is_legacy_migration());
         assert!(!normal.is_legacy_migration());
         let product_started = normal.start(Some("/map"), NOW).unwrap();
@@ -1486,10 +1482,13 @@ mod tests {
             .start(Some("/api/v1/auth/aiaiaiai/migrate/confirm/example"), NOW)
             .unwrap();
         assert!(cookie_of(&product_started).starts_with("__Host-0x1_aiaiaiai=v1."));
-        assert!(cookie_of(&migration_started)
-            .starts_with("__Host-0x1_aiaiaiai_migration=v1."));
+        assert!(cookie_of(&migration_started).starts_with("__Host-0x1_aiaiaiai_migration=v1."));
         for started in [&product_started, &migration_started] {
-            assert!(started.set_cookie.contains("Secure; HttpOnly; SameSite=Lax"));
+            assert!(
+                started
+                    .set_cookie
+                    .contains("Secure; HttpOnly; SameSite=Lax")
+            );
             assert!(!started.set_cookie.contains("Domain="));
         }
         let product_cookie = cookie_of(&product_started);
@@ -1511,11 +1510,8 @@ mod tests {
             Some(SignInFailure::Expired)
         );
         // Renaming a signed cookie cannot bypass the MAC purpose separation.
-        let renamed = migration_cookie.replacen(
-            MIGRATION_TRANSACTION_COOKIE,
-            TRANSACTION_COOKIE,
-            1,
-        );
+        let renamed =
+            migration_cookie.replacen(MIGRATION_TRANSACTION_COOKIE, TRANSACTION_COOKIE, 1);
         assert_eq!(
             normal
                 .verify_callback(Some(&renamed), Callback::default(), NOW)
@@ -1524,11 +1520,13 @@ mod tests {
                 .err(),
             Some(SignInFailure::Invalid)
         );
-        assert!(migration
-            .verify_callback(Some(&migration_cookie), Callback::default(), NOW)
-            .await
-            .clear_cookie
-            .starts_with("__Host-0x1_aiaiaiai_migration=;"));
+        assert!(
+            migration
+                .verify_callback(Some(&migration_cookie), Callback::default(), NOW)
+                .await
+                .clear_cookie
+                .starts_with("__Host-0x1_aiaiaiai_migration=;")
+        );
         let foreign = SignInClientConfig::public(
             ISSUER,
             None,
@@ -1536,9 +1534,7 @@ mod tests {
             "https://nilx.one/api/v1/auth/aiaiaiai/callback",
         )
         .unwrap();
-        assert!(
-            SignInFlow::legacy_migration(SignInClient::new(foreign), digester).is_none()
-        );
+        assert!(SignInFlow::legacy_migration(SignInClient::new(foreign), digester).is_none());
     }
 
     #[tokio::test]
