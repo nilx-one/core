@@ -524,12 +524,11 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(avaia, ("0x0skai".to_owned(), "configured".to_owned()));
-        let balance: i64 = sqlx::query_scalar(
-            "SELECT balance FROM bond_seeds WHERE owner_pub_dress = '0x0sky'",
-        )
-        .fetch_one(&product.pool)
-        .await
-        .unwrap();
+        let balance: i64 =
+            sqlx::query_scalar("SELECT balance FROM bond_seeds WHERE owner_pub_dress = '0x0sky'")
+                .fetch_one(&product.pool)
+                .await
+                .unwrap();
         assert_eq!(balance, 1337);
         let clock: String = sqlx::query_scalar(
             "SELECT clock_json FROM bond_subscription_clocks WHERE owner_pub_dress = '0x0sky'",
