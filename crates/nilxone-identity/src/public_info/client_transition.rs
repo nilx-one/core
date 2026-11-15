@@ -429,6 +429,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn old_bond_avaia_seeds_subscription_and_binding_survive_successor_login() {
+        use crate::{public_info::LegacyBondMigrationRepository, repository::IdentityRepository};
+
+        let directory = tempfile::tempdir().unwrap();
+        let database_url = format!(
+            "sqlite://{}",
+            directory.path().join("product-and-legacy.sqlite").display()
+        );
+        let _legacy = IdentityRepository::connect(&database_url).await.unwrap();
+        let product = PublicInfoRepository::connect(&database_url).await.unwrap();
+        let _migration = LegacyBondMigrationRepository::prepare(product.clone())
+            .await
+            .unwrap();
+        let transition = ClientTransitionRepository::prepare(product.clone())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO identities (pub_dress, identity_kind) VALUES (?, 'human')")
+            .bind("0x0sky")
+            .execute(&product.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO identities (pub_dress, identity_kind, owner_pub_dress) \
+             VALUES ('0x0skai', 'avaia', '0x0sky')",
+        )
+        .execute(&product.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE avaia_configuration SET configuration_state = 'configured' \
+             WHERE owner_pub_dress = '0x0sky'",
+        )
+        .execute(&product.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO bond_seeds (owner_pub_dress, balance) VALUES ('0x0sky', 1337)")
+            .execute(&product.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO bond_subscription_clocks (owner_pub_dress, clock_json) \
+             VALUES ('0x0sky', '{}')",
+        )
+        .execute(&product.pool)
+        .await
+        .unwrap();
+
+        let old = subject(1);
+        let next = subject(2);
+        let owner = legacy_owner(&product, &old).await;
+        sqlx::query("INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x0sky')")
+            .execute(&product.pool)
+            .await
+            .unwrap();
+        let bond_id: String = sqlx::query_scalar(
+            "SELECT bond_id FROM legacy_bond_keys WHERE legacy_pub_dress = '0x0sky'",
+        )
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO legacy_bond_bindings (bond_id, profile_id, linked_at) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(&bond_id)
+        .bind(&owner.profile.profile_id)
+        .bind(NOW as i64)
+        .execute(&product.pool)
+        .await
+        .unwrap();
+        let linked = transition
+            .bind_verified(&proof(&old, &next, NOW), NOW)
+            .await
+            .unwrap();
+        assert!(linked.newly_linked);
+        assert_eq!(linked.owner.profile.profile_id, owner.profile.profile_id);
+
+        let saved_bond_id: String = sqlx::query_scalar(
+            "SELECT k.bond_id FROM legacy_bond_keys k \
+             JOIN legacy_bond_bindings b ON b.bond_id = k.bond_id \
+             WHERE b.profile_id = ?",
+        )
+        .bind(&owner.profile.profile_id)
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
+        assert_eq!(saved_bond_id, bond_id);
+        let avaia: (String, String) = sqlx::query_as(
+            "SELECT avaia_pub_dress, configuration_state FROM avaia_configuration \
+             WHERE owner_pub_dress = '0x0sky'",
+        )
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
+        assert_eq!(avaia, ("0x0skai".to_owned(), "configured".to_owned()));
+        let balance: i64 = sqlx::query_scalar(
+            "SELECT balance FROM bond_seeds WHERE owner_pub_dress = '0x0sky'",
+        )
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
+        assert_eq!(balance, 1337);
+        let clock: String = sqlx::query_scalar(
+            "SELECT clock_json FROM bond_subscription_clocks WHERE owner_pub_dress = '0x0sky'",
+        )
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
+        assert_eq!(clock, "{}");
+        let existing_humans: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM identities WHERE pub_dress = '0x0sky' AND identity_kind = 'human'",
+        )
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
+        assert_eq!(existing_humans, 1);
+        // Browser/device .bnd inventory is outside this database. Its exact
+        // before/after bytes require the separate Web/Telegram/Discord E2E.
+    }
+
+    #[tokio::test]
     async fn migration_does_not_break_existing_client_write_when_not_explicitly_invoked() {
         let (_client, product) = store().await;
         let old = subject(1);
