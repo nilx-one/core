@@ -123,12 +123,11 @@ impl LegacyBondMigrationRepository {
             .bind(&address)
             .execute(&mut *tx)
             .await?;
-        let bond_id: String = sqlx::query_scalar(
-            "SELECT bond_id FROM legacy_bond_keys WHERE legacy_pub_dress = ?",
-        )
-        .bind(&address)
-        .fetch_one(&mut *tx)
-        .await?;
+        let bond_id: String =
+            sqlx::query_scalar("SELECT bond_id FROM legacy_bond_keys WHERE legacy_pub_dress = ?")
+                .bind(&address)
+                .fetch_one(&mut *tx)
+                .await?;
         let profile = sqlx::query(
             "INSERT INTO public_profiles (issuer, subject, pub_dress, last_auth_time) \
              VALUES (?, ?, NULL, ?) RETURNING profile_id",
@@ -196,7 +195,10 @@ impl LegacyBondMigrationRepository {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(LegacyMigrationAttached { bond_id, profile_id })
+        Ok(LegacyMigrationAttached {
+            bond_id,
+            profile_id,
+        })
     }
 }
 
@@ -212,7 +214,12 @@ mod tests {
         let url = format!("sqlite://{}", dir.path().join("legacy.sqlite").display());
         let _legacy = IdentityRepository::connect(&url).await.unwrap();
         let product = PublicInfoRepository::connect(&url).await.unwrap();
-        (LegacyBondMigrationRepository::prepare(product).await.unwrap(), dir)
+        (
+            LegacyBondMigrationRepository::prepare(product)
+                .await
+                .unwrap(),
+            dir,
+        )
     }
 
     async fn confirmed(
@@ -223,7 +230,10 @@ mod tests {
         subject: &str,
     ) {
         sqlx::query("INSERT INTO identities (pub_dress, identity_kind) VALUES (?, 'human')")
-            .bind(address).execute(&store.repository.pool).await.unwrap();
+            .bind(address)
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO native_sessions \
              (token_hash, pub_dress, created_at, expires_at, active, credential_authenticated) \
@@ -233,46 +243,69 @@ mod tests {
         .bind(address)
         .bind(NOW as i64 - 30)
         .bind(NOW as i64 + 900)
-        .execute(&store.repository.pool).await.unwrap();
-        store.begin(&[session; 32], &[intent; 32], NOW).await.unwrap();
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
+        store
+            .begin(&[session; 32], &[intent; 32], NOW)
+            .await
+            .unwrap();
         sqlx::query(
             "UPDATE legacy_bond_migration_intents \
              SET status = 'confirmed', verified_issuer = ?, verified_subject = ?, \
                  verified_auth_time = ?, confirmed_at = ? WHERE transaction_hash = ?",
         )
-        .bind(AIS_ISSUER).bind(subject).bind(NOW as i64)
-        .bind(NOW as i64 + 1).bind(vec![intent; 32])
-        .execute(&store.repository.pool).await.unwrap();
+        .bind(AIS_ISSUER)
+        .bind(subject)
+        .bind(NOW as i64)
+        .bind(NOW as i64 + 1)
+        .bind(vec![intent; 32])
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn confirmed_attachment_is_single_transaction_and_revokes_old_session() {
         let (store, _dir) = fixture().await;
         confirmed(&store, "0x1oldbond", 1, 2, "ais-sub-one").await;
-        let result = store.commit_confirmed(&[1; 32], &[2; 32], NOW + 2).await.unwrap();
+        let result = store
+            .commit_confirmed(&[1; 32], &[2; 32], NOW + 2)
+            .await
+            .unwrap();
         let legacy: String = sqlx::query_scalar(
             "SELECT k.legacy_pub_dress FROM legacy_bond_keys k \
              JOIN legacy_bond_bindings b ON b.bond_id = k.bond_id \
              WHERE b.profile_id = ?",
         )
-        .bind(&result.profile_id).fetch_one(&store.repository.pool).await.unwrap();
+        .bind(&result.profile_id)
+        .fetch_one(&store.repository.pool)
+        .await
+        .unwrap();
         assert_eq!(legacy, "0x1oldbond");
-        let active: i64 = sqlx::query_scalar(
-            "SELECT active FROM native_sessions WHERE token_hash = ?",
-        )
-        .bind(vec![1_u8; 32]).fetch_one(&store.repository.pool).await.unwrap();
+        let active: i64 =
+            sqlx::query_scalar("SELECT active FROM native_sessions WHERE token_hash = ?")
+                .bind(vec![1_u8; 32])
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
         assert_eq!(active, 0);
         let status: String = sqlx::query_scalar(
             "SELECT status FROM legacy_bond_migration_intents WHERE transaction_hash = ?",
         )
-        .bind(vec![2_u8; 32]).fetch_one(&store.repository.pool).await.unwrap();
+        .bind(vec![2_u8; 32])
+        .fetch_one(&store.repository.pool)
+        .await
+        .unwrap();
         assert_eq!(status, "committed");
         assert!(matches!(
             store.commit_confirmed(&[1; 32], &[2; 32], NOW + 3).await,
             Err(LegacyMigrationError::AlreadyBound)
         ));
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
-            .fetch_one(&store.repository.pool).await.unwrap();
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -284,8 +317,12 @@ mod tests {
             "INSERT INTO public_profiles (issuer, subject, bond_xp, last_auth_time) \
              VALUES (?, ?, 55, ?)",
         )
-        .bind(AIS_ISSUER).bind("ais-existing").bind(NOW as i64)
-        .execute(&store.repository.pool).await.unwrap();
+        .bind(AIS_ISSUER)
+        .bind("ais-existing")
+        .bind(NOW as i64)
+        .execute(&store.repository.pool)
+        .await
+        .unwrap();
         assert!(matches!(
             store.commit_confirmed(&[3; 32], &[4; 32], NOW + 2).await,
             Err(LegacyMigrationError::IdentityConflict)
@@ -293,13 +330,18 @@ mod tests {
         let xp: i64 = sqlx::query_scalar(
             "SELECT bond_xp FROM public_profiles WHERE issuer = ? AND subject = ?",
         )
-        .bind(AIS_ISSUER).bind("ais-existing")
-        .fetch_one(&store.repository.pool).await.unwrap();
+        .bind(AIS_ISSUER)
+        .bind("ais-existing")
+        .fetch_one(&store.repository.pool)
+        .await
+        .unwrap();
         assert_eq!(xp, 55);
-        let still_active: i64 = sqlx::query_scalar(
-            "SELECT active FROM native_sessions WHERE token_hash = ?",
-        )
-        .bind(vec![3_u8; 32]).fetch_one(&store.repository.pool).await.unwrap();
+        let still_active: i64 =
+            sqlx::query_scalar("SELECT active FROM native_sessions WHERE token_hash = ?")
+                .bind(vec![3_u8; 32])
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
         assert_eq!(still_active, 1);
     }
 
@@ -308,8 +350,11 @@ mod tests {
         let (store, _dir) = fixture().await;
         confirmed(&store, "0x1revoked", 5, 6, "ais-revoked").await;
         sqlx::query("UPDATE native_sessions SET revoked_at = ? WHERE token_hash = ?")
-            .bind(NOW as i64).bind(vec![5_u8; 32])
-            .execute(&store.repository.pool).await.unwrap();
+            .bind(NOW as i64)
+            .bind(vec![5_u8; 32])
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         assert!(matches!(
             store.commit_confirmed(&[5; 32], &[6; 32], NOW + 2).await,
             Err(LegacyMigrationError::InvalidLegacyProof)
@@ -320,7 +365,9 @@ mod tests {
             Err(LegacyMigrationError::ExpiredConfirmation)
         ));
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM legacy_bond_bindings")
-            .fetch_one(&store.repository.pool).await.unwrap();
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
         assert_eq!(count, 0);
     }
 }
