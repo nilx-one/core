@@ -54,7 +54,10 @@ impl LegacyBondMigrationRepository {
         (legacy_session_hash, transaction_hash): (&[u8], &[u8]),
         now: u64,
     ) -> Result<LegacyMigrationProofRecorded, LegacyMigrationError> {
-        if flow.client_id() != CLIENT || legacy_session_hash.len() != 32 {
+        if flow.client_id() != CLIENT
+            || !flow.is_legacy_migration()
+            || legacy_session_hash.len() != 32
+        {
             return Err(LegacyMigrationError::InvalidTransaction);
         }
         let expected_return_path = Self::migration_return_path(transaction_hash)?;
