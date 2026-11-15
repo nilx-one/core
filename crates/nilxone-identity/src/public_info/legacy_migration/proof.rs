@@ -9,8 +9,8 @@
 
 use sqlx::Row as _;
 
-use crate::aiaiaiai_sign_in::{Callback, SignInFlow, safe_return_path};
 use super::{LegacyBondMigrationRepository, LegacyMigrationError};
+use crate::aiaiaiai_sign_in::{Callback, SignInFlow, safe_return_path};
 
 const CLIENT: &str = "nilx-one";
 const ISSUER: &str = "https://auth.aiaiaiai.org";
@@ -70,8 +70,8 @@ impl LegacyBondMigrationRepository {
         let now_i64 = i64::try_from(now).map_err(|_| LegacyMigrationError::InvalidTransaction)?;
         let earliest = i64::try_from(now.saturating_sub(MAX_FRESH_SECONDS))
             .map_err(|_| LegacyMigrationError::InvalidTransaction)?;
-        let auth_time = i64::try_from(proof.auth_time)
-            .map_err(|_| LegacyMigrationError::InvalidAisProof)?;
+        let auth_time =
+            i64::try_from(proof.auth_time).map_err(|_| LegacyMigrationError::InvalidAisProof)?;
         let mut tx = self.repository.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
             "SELECT i.status, i.started_at, i.expires_at, \
@@ -211,7 +211,10 @@ mod tests {
 
     async fn fixture() -> (LegacyBondMigrationRepository, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
-        let url = format!("sqlite://{}", directory.path().join("proof.sqlite").display());
+        let url = format!(
+            "sqlite://{}",
+            directory.path().join("proof.sqlite").display()
+        );
         let _identity = IdentityRepository::connect(&url).await.unwrap();
         let product = PublicInfoRepository::connect(&url).await.unwrap();
         (
@@ -240,7 +243,10 @@ mod tests {
         .execute(&store.repository.pool)
         .await
         .unwrap();
-        store.begin(&[session; 32], &[intent; 32], NOW).await.unwrap();
+        store
+            .begin(&[session; 32], &[intent; 32], NOW)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -274,7 +280,10 @@ mod tests {
         .execute(&store.repository.pool)
         .await
         .unwrap();
-        store.confirm_verified(&[3; 32], &[4; 32], NOW + 2).await.unwrap();
+        store
+            .confirm_verified(&[3; 32], &[4; 32], NOW + 2)
+            .await
+            .unwrap();
         let status: String = sqlx::query_scalar(
             "SELECT status FROM legacy_bond_migration_intents WHERE transaction_hash = ?",
         )
@@ -298,14 +307,12 @@ mod tests {
     async fn revoked_legacy_proof_cannot_confirm() {
         let (store, _directory) = fixture().await;
         begin(&store, 5, 6).await;
-        sqlx::query(
-            "UPDATE native_sessions SET revoked_at = ? WHERE token_hash = ?",
-        )
-        .bind(NOW as i64)
-        .bind(vec![5_u8; 32])
-        .execute(&store.repository.pool)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE native_sessions SET revoked_at = ? WHERE token_hash = ?")
+            .bind(NOW as i64)
+            .bind(vec![5_u8; 32])
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
         assert!(matches!(
             store.confirm_verified(&[5; 32], &[6; 32], NOW + 2).await,
             Err(LegacyMigrationError::InvalidLegacyProof)
