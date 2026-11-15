@@ -457,15 +457,24 @@ mod tests {
         .execute(&product.pool)
         .await
         .unwrap();
-        // Seed the persisted *existing* configuration explicitly: the
-        // identity schema can contain old Avaia without this trigger having
-        // been installed at its original creation time.
+        // Use the actual persisted identity as the FK target. Legacy
+        // migrations can rewrite an Avaia's displayed address independently
+        // of the owning Bond, so never assume a literal Avaia address.
+        let avaia_pub_dress: String = sqlx::query_scalar(
+            "SELECT pub_dress FROM identities WHERE owner_pub_dress = '0x0sky' \
+             AND identity_kind = 'avaia'",
+        )
+        .fetch_one(&product.pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO avaia_configuration \
              (avaia_pub_dress, owner_pub_dress, configuration_state) \
-             VALUES ('0x0skai', '0x0sky', 'configured') \
+             SELECT pub_dress, owner_pub_dress, 'configured' FROM identities \
+             WHERE pub_dress = ? AND owner_pub_dress = '0x0sky' \
              ON CONFLICT(avaia_pub_dress) DO UPDATE SET configuration_state = 'configured'",
         )
+        .bind(&avaia_pub_dress)
         .execute(&product.pool)
         .await
         .unwrap();
@@ -528,7 +537,7 @@ mod tests {
         .fetch_one(&product.pool)
         .await
         .unwrap();
-        assert_eq!(avaia, ("0x0skai".to_owned(), "configured".to_owned()));
+        assert_eq!(avaia, (avaia_pub_dress, "configured".to_owned()));
         let balance: i64 =
             sqlx::query_scalar("SELECT balance FROM bond_seeds WHERE owner_pub_dress = '0x0sky'")
                 .fetch_one(&product.pool)
