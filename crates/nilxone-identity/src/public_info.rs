@@ -28,7 +28,7 @@ pub use client_transition::{
 };
 pub use legacy_migration::{
     LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
-    LegacyMigrationStarted,
+    LegacyMigrationProofRecorded, LegacyMigrationStarted,
 };
 
 const MAX_CARRY_XP: u64 = 1_000_000_000;
