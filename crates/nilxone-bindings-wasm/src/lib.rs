@@ -220,6 +220,13 @@ pub fn courier_destination(request: &str) -> String {
     nilxone_contracts::courier_destination_wire(request)
 }
 
+/// Which explicit paid Special pickup methods to offer in the world.
+#[must_use]
+#[wasm_bindgen]
+pub fn special_pickup_choices(request: &str) -> String {
+    nilxone_contracts::special_pickup_choices_wire(request)
+}
+
 /// Whether a kept xPing route may be flown home after a Market visit.
 /// `trip` is the kept `CourierPlan` as JSON. Answers `{"ok":true}` or
 /// `{"ok":false,"error":"invalid"|"not_market_station"}`; see

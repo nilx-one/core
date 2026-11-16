@@ -35,6 +35,7 @@ mod pub_dress;
 mod pub_dress_label;
 mod rarity_v3;
 mod scalar;
+mod special_pickup;
 mod spoken_line;
 mod subscription;
 mod subscription_clock;
@@ -129,6 +130,10 @@ pub use pub_dress_label::{
 };
 pub use rarity_v3::{RARITY_V3_VERSION, RarityV3};
 pub use scalar::{DecimalU64, DecimalU64Error};
+pub use special_pickup::{
+    AVAIA_SPECIAL_PICKUP_WALK_RADIUS_METERS, SpecialPickupChoices, SpecialPickupRequest,
+    special_pickup_choices, special_pickup_choices_wire,
+};
 pub use spoken_line::{
     EARSHOT_MAX_METERS, EarshotRadius, EarshotRadiusError, SPOKEN_TEXT_MAX_SCALARS, SpokenLine,
     SpokenText, SpokenTextError, distance_meters, within_earshot,
