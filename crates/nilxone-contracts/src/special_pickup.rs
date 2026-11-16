@@ -3,8 +3,8 @@
 
 //! Presentation-only pickup choices for an Identity-attested paid Special item.
 //! The authority must supply `paid`; this projection is never proof of payment,
-//! arrival, consent, a Market visit, a BondChain or subscription activation.
-//! The host supplies the in-world Avaia and existing BusinessPoint coordinates
+//! arrival, consent, a Market visit, a `BondChain` or subscription activation.
+//! The host supplies the in-world Avaia and existing `BusinessPoint` coordinates
 //! and a successfully planned pedestrian route. No GPS-derived physical visit.
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,7 @@ pub const AVAIA_SPECIAL_PICKUP_WALK_RADIUS_METERS: u32 = 300;
 pub struct SpecialPickupRequest {
     /// Must originate in an authenticated Identity paid-item projection.
     pub paid: bool,
-    /// The same BusinessPoint as Market's visit destination.
+    /// The same `BusinessPoint` as Market's visit destination.
     pub point: GeoCoordinate,
     /// The Avaia's current in-world position, not device geolocation.
     pub avaia: Option<GeoCoordinate>,
