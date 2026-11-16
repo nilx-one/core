@@ -94,7 +94,7 @@ mod tests {
         assert!(near.offer_xping);
         assert!(near.suggest_avaia_walk);
         assert!(near.avaia_distance_m.unwrap() < 300);
-        let boundary = special_pickup_choices(&request(Some(50.451595), true, true));
+        let boundary = special_pickup_choices(&request(Some(50.451_595), true, true));
         assert_eq!(boundary.avaia_distance_m, Some(300));
         assert!(!boundary.suggest_avaia_walk);
         let far = special_pickup_choices(&request(Some(50.45161), true, true));
