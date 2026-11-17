@@ -481,14 +481,16 @@ impl IdentityRepository {
         Ok(changed == 1)
     }
 
-    /// Activate in flight or from inventory, confirming any Special still
-    /// running. The paid order supplies the term. Retrying a successful
-    /// activation never adds the same term again.
+    /// Activate in flight or from inventory without silently confirming
+    /// an extension of an existing Special. The legacy boolean API reports
+    /// false when explicit confirmation is required; the confirmation-aware
+    /// method returns the remaining duration. The paid order supplies the term.
+    /// Retrying a successful activation never adds the same term again.
     pub async fn activate_special_item(
         &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
     ) -> Result<bool, RepositoryError> {
         Ok(self
-            .activate_special_item_with(owner, order_id, session_hash, now_ms, true)
+            .activate_special_item_with(owner, order_id, session_hash, now_ms, false)
             .await?
             == SpecialActivation::Activated)
     }
@@ -511,12 +513,14 @@ impl IdentityRepository {
 
     /// Resolve arrival against Avaia's ordinary items and the paid items already
     /// occupying her grid. The host supplies the current normal-inventory view.
+    /// If no slot exists, never silently extend active Special; an explicit
+    /// confirmation via the confirmation-aware method is still required.
     pub async fn deliver_special_item(
         &self, owner: &PubDress, order_id: &str, session_hash: &[u8], now_ms: u64,
         avaia: &nilxone_contracts::Backpack,
     ) -> Result<bool, RepositoryError> {
         Ok(matches!(
-            self.resolve_special_item(owner, order_id, session_hash, now_ms, Some(avaia), true)
+            self.resolve_special_item(owner, order_id, session_hash, now_ms, Some(avaia), false)
                 .await?,
             SpecialActivation::Activated | SpecialActivation::Stored
         ))
@@ -1049,6 +1053,73 @@ mod special_seeds_tests {
         assert_eq!(
             repository.activate_special_item_with(&owner, "order-item1", &[9; 32], hour_left + 1, false).await.unwrap(),
             SpecialActivation::Activated
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_activation_never_implicitly_confirms_an_extension() {
+        let (repository, owner) = running_special_and_a_collected_item().await;
+        let now = JANUARY_MS + 100 - 2 * HOUR_MS;
+
+        // Existing HTTP adapters only know the boolean API. They must not
+        // turn a click into implicit consent to extend active Special.
+        assert!(!repository.activate_special_item(&owner, "order-item1", &[9; 32], now).await.unwrap());
+        assert_eq!(special_left(&repository, &owner, now).await, 2 * HOUR_MS);
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM paid_special_items WHERE order_id = 'order-item1'",
+        ).fetch_one(&repository.pool).await.unwrap();
+        assert_eq!(state, "in_transit");
+
+        // The caller may confirm only through the explicit confirmation-aware
+        // method; a legacy replay after success cannot extend the term again.
+        assert_eq!(
+            repository.activate_special_item_with(&owner, "order-item1", &[9; 32], now, true).await.unwrap(),
+            SpecialActivation::Activated
+        );
+        assert!(repository.activate_special_item(&owner, "order-item1", &[9; 32], now + 1).await.unwrap());
+        assert_eq!(special_left(&repository, &owner, now).await, 28 * DAY_MS + 2 * HOUR_MS);
+    }
+
+    #[tokio::test]
+    async fn full_backpack_arrival_never_implicitly_confirms_an_extension() {
+        use nilxone_contracts::{Backpack, Carry};
+
+        let (repository, owner) = running_special_and_a_collected_item().await;
+        let now = JANUARY_MS + 100 - 2 * HOUR_MS;
+        // A 1x3 pocket has no 2x2 paid subscription slot.
+        let pocket = Backpack::new(Carry::Pocket);
+        assert!(!repository.deliver_special_item(&owner, "order-item1", &[9; 32], now, &pocket).await.unwrap());
+        assert_eq!(special_left(&repository, &owner, now).await, 2 * HOUR_MS);
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM paid_special_items WHERE order_id = 'order-item1'",
+        ).fetch_one(&repository.pool).await.unwrap();
+        assert_eq!(state, "in_transit");
+
+        // Even after a failed arrival the user can explicitly confirm the
+        // extension; the issuer receipt was not lost or consumed.
+        assert_eq!(
+            repository.activate_special_item_with(&owner, "order-item1", &[9; 32], now, true).await.unwrap(),
+            SpecialActivation::Activated
+        );
+        assert_eq!(special_left(&repository, &owner, now).await, 28 * DAY_MS + 2 * HOUR_MS);
+    }
+
+    #[tokio::test]
+    async fn available_backpack_slot_stores_paid_item_without_touching_active_special() {
+        use nilxone_contracts::{Backpack, Carry};
+
+        let (repository, owner) = running_special_and_a_collected_item().await;
+        let now = JANUARY_MS + 100 - 2 * HOUR_MS;
+        let backpack = Backpack::new(Carry::Backpack);
+        assert!(repository.deliver_special_item(&owner, "order-item1", &[9; 32], now, &backpack).await.unwrap());
+        assert_eq!(special_left(&repository, &owner, now).await, 2 * HOUR_MS);
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM paid_special_items WHERE order_id = 'order-item1'",
+        ).fetch_one(&repository.pool).await.unwrap();
+        assert_eq!(state, "stored");
+        assert_eq!(
+            repository.activate_special_item_with(&owner, "order-item1", &[9; 32], now, false).await.unwrap(),
+            SpecialActivation::NeedsConfirmation { special_remaining_ms: 2 * HOUR_MS }
         );
     }
 

@@ -70,10 +70,11 @@ impl SubscriptionClock {
         current.grant(SubscriptionTier::Special, end - anchor, now_ms)
     }
 
-    /// Whether a new Special purchase may be opened now: only while the Bond
-    /// holds no Special time at all, running or paused behind Exclusive. A
-    /// Bond that has Special cannot buy it again until it ends; purchases
-    /// never stack on an existing Special.
+    /// Whether a *direct time-granting* Special purchase may be opened now:
+    /// only while the Bond holds no Special time at all, running or paused
+    /// behind Exclusive. A purchase issuing an unactivated paid inventory item
+    /// is allowed independently; it starts no time and is governed by separate
+    /// explicit activation/extension rules.
     ///
     /// # Errors
     /// Rejects invalid state and clock rollback.
