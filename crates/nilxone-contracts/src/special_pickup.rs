@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{GeoCoordinate, distance_meters};
 
-/// Strictly *less* than 300 in-world metres is eligible to suggest Avaia.
+/// Strictly *less* than 300 straight-line in-world metres is eligible to
+/// suggest Avaia only after the host also finds a pedestrian route.
+/// This radius is *not* the route length; an obstacle can make it longer.
 pub const AVAIA_SPECIAL_PICKUP_WALK_RADIUS_METERS: u32 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -33,7 +35,7 @@ pub struct SpecialPickupChoices {
     pub offer_xping: bool,
     /// An optional, user-confirmed walking suggestion.
     pub suggest_avaia_walk: bool,
-    /// Whole in-world metres, or none if Avaia's position is unknown.
+    /// Whole metres, or none when unpaid or Avaia's location is unknown.
     pub avaia_distance_m: Option<u32>,
 }
 
@@ -49,7 +51,7 @@ pub fn special_pickup_choices(request: &SpecialPickupRequest) -> SpecialPickupCh
         suggest_avaia_walk: request.paid
             && request.walk_route_available
             && distance.is_some_and(|d| d < AVAIA_SPECIAL_PICKUP_WALK_RADIUS_METERS),
-        avaia_distance_m: distance,
+        avaia_distance_m: distance.filter(|_| request.paid),
     }
 }
 
@@ -127,6 +129,20 @@ mod tests {
             ),
             r#"{"ok":false,"error":"invalid"}"#
         );
+        let unpaid = special_pickup_choices(&request(Some(50.44891), false, true));
+        assert_eq!(unpaid.avaia_distance_m, None);
+
+        for invalid in [
+            r#"{"paid":"true","point":{"longitude_e7":"305131000","latitude_e7":"504489000"},"avaia":null,"walk_route_available":true}"#,
+            r#"{"paid":true,"paid_override":true,"point":{"longitude_e7":"305131000","latitude_e7":"504489000"},"avaia":null,"walk_route_available":true}"#,
+            r#"{"paid":true,"point":{"longitude_e7":"305131000","latitude_e7":"900000001"},"avaia":null,"walk_route_available":true}"#,
+        ] {
+            assert_eq!(
+                special_pickup_choices_wire(invalid),
+                r#"{"ok":false,"error":"invalid"}"#
+            );
+        }
+
         let valid = serde_json::to_string(&request(Some(50.45158), true, true)).unwrap();
         let result: serde_json::Value =
             serde_json::from_str(&special_pickup_choices_wire(&valid)).unwrap();
