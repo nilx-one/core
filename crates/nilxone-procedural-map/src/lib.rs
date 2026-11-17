@@ -4,6 +4,7 @@
 //! Deterministic decorative placement on the world's H3 grid.
 
 pub mod simulation;
+pub mod sync;
 
 use h3o::{CellIndex, LatLng, Resolution};
 use serde::{Deserialize, Serialize};
