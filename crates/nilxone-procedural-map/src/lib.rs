@@ -3,6 +3,8 @@
 
 //! Deterministic decorative placement on the world's H3 grid.
 
+pub mod simulation;
+
 use h3o::{CellIndex, LatLng, Resolution};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
