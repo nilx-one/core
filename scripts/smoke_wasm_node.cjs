@@ -91,6 +91,24 @@ const destination = JSON.parse(core.courier_destination(JSON.stringify({
 assert.deepEqual(destination, { ok: true, point_id: 'near' });
 assert.deepEqual(JSON.parse(core.courier_destination('{}')), { error: 'invalid', ok: false });
 
+// Paid pickup projection is shared across Rust, Wasm and UniFFI.
+const pickupChoices = JSON.parse(core.special_pickup_choices(JSON.stringify({
+  paid: true,
+  point: { longitude_e7: '305131000', latitude_e7: '504489000' },
+  avaia: { longitude_e7: '305131000', latitude_e7: '504489000' },
+  walk_route_available: true,
+})));
+assert.deepEqual(pickupChoices, {
+  ok: true,
+  offer_xping: true,
+  suggest_avaia_walk: true,
+  avaia_distance_m: '0',
+});
+assert.deepEqual(
+  JSON.parse(core.special_pickup_choices('{}')),
+  { error: 'invalid', ok: false },
+);
+
 const kept = {
   origin: { longitude_e7: '305000000', latitude_e7: '504000000' },
   destination: {
