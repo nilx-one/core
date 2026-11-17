@@ -12,8 +12,10 @@
 //!
 //! An order is authorized either by the browser visit that placed it (its 0x1
 //! session must still be active) or by the Telegram account that placed it
-//! (it must still be bound to the recipient Bond). A Bond that already holds
-//! Special is refused with `special_active` before anything is debited.
+//! (it must still be bound to the recipient Bond). A purchase that grants time
+//! at once is refused with `special_active` while the Bond holds Special; a
+//! paid item is not, because it starts no time and activation decides what
+//! happens to the time left.
 //!
 //! It is off unless `MARKET_ISSUER_WORKER=1`, and it has no HTTP route: no
 //! browser or user can reach the debit.
@@ -56,7 +58,8 @@ pub mod rejection {
     pub const SESSION_CHANGED: &str = "session_changed";
     /// The ordering channel account is not (or no longer) bound to the Bond.
     pub const ACCOUNT_UNLINKED: &str = "account_unlinked";
-    /// The Bond already holds Special; a second purchase never stacks.
+    /// The Bond already holds Special and the order would grant time at once;
+    /// such a purchase never stacks. A paid item is exempt.
     pub const SPECIAL_ACTIVE: &str = "special_active";
 }
 
