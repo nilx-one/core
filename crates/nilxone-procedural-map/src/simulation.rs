@@ -101,17 +101,15 @@ pub fn plan_simulation(
         active_radius_mm,
         switch_margin_mm,
     );
-    let eligible_standby = candidates
-        .iter()
-        .filter(|tracked| {
-            let runtime = tracked.runtime;
-            runtime.active
-                && runtime.has_capacity
-                && Some(runtime.runtime_id) != simulator
-                && runtime.distance_mm > active_radius_mm
-                && runtime.distance_mm < standby_radius_mm
-                && tracked.approach != Approach::Passing
-        });
+    let eligible_standby = candidates.iter().filter(|tracked| {
+        let runtime = tracked.runtime;
+        runtime.active
+            && runtime.has_capacity
+            && Some(runtime.runtime_id) != simulator
+            && runtime.distance_mm > active_radius_mm
+            && runtime.distance_mm < standby_radius_mm
+            && tracked.approach != Approach::Passing
+    });
     let rank = |approach| match approach {
         Approach::Toward => 0,
         Approach::Stationary => 1,
@@ -275,7 +273,10 @@ impl<T> EntityState<T> {
             {
                 return AssignmentOutcome::InvalidFinalSnapshot;
             }
-            if self.sequence.is_none_or(|sequence| final_snapshot.sequence > sequence) {
+            if self
+                .sequence
+                .is_none_or(|sequence| final_snapshot.sequence > sequence)
+            {
                 self.snapshot = final_snapshot.snapshot;
             }
         }
@@ -316,11 +317,26 @@ mod tests {
     #[test]
     fn trajectory_handles_exact_boundaries_and_stationary_predictions() {
         assert_eq!(classify_approach([10, 0], None, 3), Approach::Passing);
-        assert_eq!(classify_approach([10, 0], Some([10, 0]), 3), Approach::Stationary);
-        assert_eq!(classify_approach([10, 0], Some([10, 1]), 3), Approach::Passing);
-        assert_eq!(classify_approach([10, 0], Some([3, 0]), 3), Approach::Toward);
-        assert_eq!(classify_approach([10, 3], Some([-10, 3]), 3), Approach::Toward);
-        assert_eq!(classify_approach([10, 3], Some([-10, 3]), 2), Approach::Passing);
+        assert_eq!(
+            classify_approach([10, 0], Some([10, 0]), 3),
+            Approach::Stationary
+        );
+        assert_eq!(
+            classify_approach([10, 0], Some([10, 1]), 3),
+            Approach::Passing
+        );
+        assert_eq!(
+            classify_approach([10, 0], Some([3, 0]), 3),
+            Approach::Toward
+        );
+        assert_eq!(
+            classify_approach([10, 3], Some([-10, 3]), 3),
+            Approach::Toward
+        );
+        assert_eq!(
+            classify_approach([10, 3], Some([-10, 3]), 2),
+            Approach::Passing
+        );
         assert_eq!(
             classify_approach([i32::MIN; 2], Some([i32::MAX; 2]), u64::MAX),
             Approach::Toward
@@ -352,7 +368,10 @@ mod tests {
             },
         ];
         assert_eq!(plan_simulation(&candidates, current, 100, 200, 10), current);
-        assert_eq!(select_simulator(&[candidate(1, 111)], Some(1), 100, 10), None);
+        assert_eq!(
+            select_simulator(&[candidate(1, 111)], Some(1), 100, 10),
+            None
+        );
     }
 
     #[test]
@@ -473,18 +492,30 @@ mod handoff_tests {
             snapshot: "running",
         };
         assert_eq!(
-            entity.assign(awake, Some(FinalSnapshot { sender: 99, ..final_snapshot })),
+            entity.assign(
+                awake,
+                Some(FinalSnapshot {
+                    sender: 99,
+                    ..final_snapshot
+                })
+            ),
             AssignmentOutcome::InvalidFinalSnapshot
         );
         assert_eq!(entity.assignment(), initial);
         assert_eq!(entity.sequence(), Some(4));
         let sleep = assignment(2, None);
-        assert_eq!(entity.assign(sleep, Some(final_snapshot)), AssignmentOutcome::Applied);
+        assert_eq!(
+            entity.assign(sleep, Some(final_snapshot)),
+            AssignmentOutcome::Applied
+        );
         assert_eq!(entity.snapshot(), &"running");
         assert!(!entity.update(10, 2, 0, "sleep update"));
         assert_eq!(entity.assign(awake, None), AssignmentOutcome::Applied);
         assert_eq!(entity.assign(awake, None), AssignmentOutcome::Replay);
-        assert_eq!(entity.assign(assignment(3, Some(10)), None), AssignmentOutcome::Conflict);
+        assert_eq!(
+            entity.assign(assignment(3, Some(10)), None),
+            AssignmentOutcome::Conflict
+        );
         assert_eq!(entity.assign(sleep, None), AssignmentOutcome::Stale);
         assert!(!entity.update(10, 1, 6, "old owner"));
         assert_eq!(entity.snapshot(), &"running");
