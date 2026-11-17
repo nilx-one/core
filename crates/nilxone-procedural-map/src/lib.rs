@@ -134,7 +134,10 @@ mod tests {
             Err(PlacementError::InvalidRules)
         );
         for invalid in ["8928308280FFFFF", "8828308281fffff"] {
-            assert_eq!(generate("world", invalid, 7, &[rule], 1), Err(PlacementError::InvalidCell));
+            assert_eq!(
+                generate("world", invalid, 7, &[rule], 1),
+                Err(PlacementError::InvalidCell)
+            );
         }
         assert_eq!(
             generate("world", cell, 7, &[rule], 1).unwrap()[0].id,
