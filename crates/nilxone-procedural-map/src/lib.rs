@@ -127,7 +127,7 @@ mod tests {
         let other = PlacementRule {
             kind: 2,
             weight_bps: 1,
-            ..rule,
+            ..rule
         };
         assert_eq!(
             generate("world", cell, 7, &[rule, other], 1),
