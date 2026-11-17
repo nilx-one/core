@@ -63,9 +63,8 @@ impl SubscriptionClock {
             .and_then(|end| end.checked_add(current.special_remaining_ms.get()))
             .ok_or(SubscriptionClockError::Overflow)?;
         let timestamp = i64::try_from(anchor).map_err(|_| SubscriptionClockError::Overflow)?;
-        let end = chrono::DateTime::from_timestamp_millis(timestamp)
-            .and_then(|date| date.checked_add_months(chrono::Months::new(months)))
-            .and_then(|date| u64::try_from(date.timestamp_millis()).ok())
+        let end = add_calendar_months(timestamp, months)
+            .and_then(|millis| u64::try_from(millis).ok())
             .ok_or(SubscriptionClockError::Overflow)?;
         current.grant(SubscriptionTier::Special, end - anchor, now_ms)
     }
@@ -211,19 +210,56 @@ impl SubscriptionClock {
     }
 }
 
+/// Adds calendar months to a UTC instant in milliseconds, keeping the time of
+/// day and clamping the day to the end of a shorter month (31 January plus one
+/// month is the last day of February). `None` when the result is not
+/// representable.
+fn add_calendar_months(timestamp_ms: i64, months: u32) -> Option<i64> {
+    let instant = time::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(timestamp_ms).checked_mul(1_000_000)?,
+    )
+    .ok()?;
+    let index = i64::from(instant.year()) * 12 + i64::from(u8::from(instant.month())) - 1
+        + i64::from(months);
+    let year = i32::try_from(index.div_euclid(12)).ok()?;
+    let month = time::Month::try_from(u8::try_from(index.rem_euclid(12) + 1).ok()?).ok()?;
+    let day = instant.day().min(month.length(year));
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    let moved = instant.replace_date(date);
+    i64::try_from(moved.unix_timestamp_nanos().div_euclid(1_000_000)).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{SubscriptionStatus, subscription_status};
 
     fn utc(value: &str) -> u64 {
-        u64::try_from(
-            value
-                .parse::<chrono::DateTime<chrono::Utc>>()
-                .unwrap()
-                .timestamp_millis(),
-        )
-        .unwrap()
+        let parsed =
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .unwrap();
+        u64::try_from(parsed.unix_timestamp_nanos() / 1_000_000).unwrap()
+    }
+
+    #[test]
+    fn calendar_months_keep_the_time_of_day_and_clamp_short_months() {
+        let at = |text: &str| i64::try_from(utc(text)).unwrap();
+        assert_eq!(
+            add_calendar_months(at("2026-01-31T23:30:00Z"), 1),
+            Some(at("2026-02-28T23:30:00Z"))
+        );
+        assert_eq!(
+            add_calendar_months(at("2026-11-17T12:00:00.123Z"), 3),
+            Some(at("2027-02-17T12:00:00.123Z"))
+        );
+        assert_eq!(
+            add_calendar_months(at("2027-12-31T00:00:00Z"), 12),
+            Some(at("2028-12-31T00:00:00Z"))
+        );
+        assert_eq!(
+            add_calendar_months(at("2027-08-31T00:00:00Z"), 6),
+            Some(at("2028-02-29T00:00:00Z"))
+        );
     }
 
     #[test]
