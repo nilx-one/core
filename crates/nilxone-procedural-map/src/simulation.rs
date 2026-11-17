@@ -101,17 +101,15 @@ pub fn plan_simulation(
         active_radius_mm,
         switch_margin_mm,
     );
-    let eligible_standby = candidates
-        .iter()
-        .filter(|tracked| {
-            let runtime = tracked.runtime;
-            runtime.active
-                && runtime.has_capacity
-                && Some(runtime.runtime_id) != simulator
-                && runtime.distance_mm > active_radius_mm
-                && runtime.distance_mm < standby_radius_mm
-                && tracked.approach != Approach::Passing
-        });
+    let eligible_standby = candidates.iter().filter(|tracked| {
+        let runtime = tracked.runtime;
+        runtime.active
+            && runtime.has_capacity
+            && Some(runtime.runtime_id) != simulator
+            && runtime.distance_mm > active_radius_mm
+            && runtime.distance_mm < standby_radius_mm
+            && tracked.approach != Approach::Passing
+    });
     let rank = |approach| match approach {
         Approach::Toward => 0,
         Approach::Stationary => 1,
@@ -200,6 +198,7 @@ pub struct Assignment {
 }
 
 /// A final snapshot from the authenticated outgoing simulator.
+#[derive(Clone, Debug)]
 pub struct FinalSnapshot<T> {
     pub sender: u64,
     pub epoch: u64,
@@ -214,7 +213,7 @@ pub enum AssignmentOutcome {
     Replay,
     Stale,
     Conflict,
-    InvalidFinalSnapshot,
+    AppliedWithoutSnapshot,
 }
 
 /// Holds the latest accepted state of one procedural entity across handoffs.
@@ -256,6 +255,7 @@ impl<T> EntityState<T> {
     /// Applies a committed assignment and optionally the outgoing simulator's
     /// final snapshot atomically. If the outgoing simulator was lost, callers
     /// can omit the final snapshot and resume from the latest known state.
+    /// A snapshot from the wrong sender or epoch cannot veto the assignment.
     pub fn assign(
         &mut self,
         assignment: Assignment,
@@ -269,19 +269,22 @@ impl<T> EntityState<T> {
             core::cmp::Ordering::Equal => return AssignmentOutcome::Conflict,
             core::cmp::Ordering::Greater => {}
         }
+        let mut outcome = AssignmentOutcome::Applied;
         if let Some(final_snapshot) = final_snapshot {
             if self.assignment.simulator != Some(final_snapshot.sender)
                 || self.assignment.epoch != final_snapshot.epoch
             {
-                return AssignmentOutcome::InvalidFinalSnapshot;
-            }
-            if self.sequence.is_none_or(|sequence| final_snapshot.sequence > sequence) {
+                outcome = AssignmentOutcome::AppliedWithoutSnapshot;
+            } else if self
+                .sequence
+                .is_none_or(|sequence| final_snapshot.sequence > sequence)
+            {
                 self.snapshot = final_snapshot.snapshot;
             }
         }
         self.assignment = assignment;
         self.sequence = None;
-        AssignmentOutcome::Applied
+        outcome
     }
 
     /// Accepts a complete snapshot only from the authenticated simulator and
@@ -316,11 +319,26 @@ mod tests {
     #[test]
     fn trajectory_handles_exact_boundaries_and_stationary_predictions() {
         assert_eq!(classify_approach([10, 0], None, 3), Approach::Passing);
-        assert_eq!(classify_approach([10, 0], Some([10, 0]), 3), Approach::Stationary);
-        assert_eq!(classify_approach([10, 0], Some([10, 1]), 3), Approach::Passing);
-        assert_eq!(classify_approach([10, 0], Some([3, 0]), 3), Approach::Toward);
-        assert_eq!(classify_approach([10, 3], Some([-10, 3]), 3), Approach::Toward);
-        assert_eq!(classify_approach([10, 3], Some([-10, 3]), 2), Approach::Passing);
+        assert_eq!(
+            classify_approach([10, 0], Some([10, 0]), 3),
+            Approach::Stationary
+        );
+        assert_eq!(
+            classify_approach([10, 0], Some([10, 1]), 3),
+            Approach::Passing
+        );
+        assert_eq!(
+            classify_approach([10, 0], Some([3, 0]), 3),
+            Approach::Toward
+        );
+        assert_eq!(
+            classify_approach([10, 3], Some([-10, 3]), 3),
+            Approach::Toward
+        );
+        assert_eq!(
+            classify_approach([10, 3], Some([-10, 3]), 2),
+            Approach::Passing
+        );
         assert_eq!(
             classify_approach([i32::MIN; 2], Some([i32::MAX; 2]), u64::MAX),
             Approach::Toward
@@ -352,7 +370,17 @@ mod tests {
             },
         ];
         assert_eq!(plan_simulation(&candidates, current, 100, 200, 10), current);
-        assert_eq!(select_simulator(&[candidate(1, 111)], Some(1), 100, 10), None);
+        let mut candidates = candidates;
+        candidates[1].runtime.distance_mm = 110;
+        candidates[1].approach = Approach::Away;
+        assert_eq!(
+            plan_simulation(&candidates, current, 100, 200, 10).standby,
+            Some(3)
+        );
+        assert_eq!(
+            select_simulator(&[candidate(1, 111)], Some(1), 100, 10),
+            None
+        );
     }
 
     #[test]
@@ -460,6 +488,34 @@ mod handoff_tests {
     use super::{Assignment, AssignmentOutcome, EntityState, FinalSnapshot};
 
     #[test]
+    fn bad_final_snapshot_cannot_veto_assignment() {
+        let initial = Assignment {
+            epoch: 1,
+            simulator: Some(10),
+        };
+        let next = Assignment {
+            epoch: 2,
+            simulator: Some(20),
+        };
+        let mut entity = EntityState::new(initial, "idle");
+        assert!(entity.update(10, 1, 3, "walking"));
+        let bad = FinalSnapshot {
+            sender: 99,
+            epoch: 1,
+            sequence: 4,
+            snapshot: "ignored",
+        };
+        assert_eq!(
+            entity.assign(next, Some(bad)),
+            AssignmentOutcome::AppliedWithoutSnapshot
+        );
+        assert_eq!(entity.assignment(), next);
+        assert_eq!(entity.sequence(), None);
+        assert_eq!(entity.snapshot(), &"walking");
+        assert!(!entity.update(10, 1, 5, "old owner"));
+    }
+
+    #[test]
     fn preserves_final_state_and_fences_old_updates() {
         let assignment = |epoch, simulator| Assignment { epoch, simulator };
         let initial = assignment(1, Some(10));
@@ -472,19 +528,19 @@ mod handoff_tests {
             sequence: 5,
             snapshot: "running",
         };
-        assert_eq!(
-            entity.assign(awake, Some(FinalSnapshot { sender: 99, ..final_snapshot })),
-            AssignmentOutcome::InvalidFinalSnapshot
-        );
-        assert_eq!(entity.assignment(), initial);
-        assert_eq!(entity.sequence(), Some(4));
         let sleep = assignment(2, None);
-        assert_eq!(entity.assign(sleep, Some(final_snapshot)), AssignmentOutcome::Applied);
+        assert_eq!(
+            entity.assign(sleep, Some(final_snapshot)),
+            AssignmentOutcome::Applied
+        );
         assert_eq!(entity.snapshot(), &"running");
         assert!(!entity.update(10, 2, 0, "sleep update"));
         assert_eq!(entity.assign(awake, None), AssignmentOutcome::Applied);
         assert_eq!(entity.assign(awake, None), AssignmentOutcome::Replay);
-        assert_eq!(entity.assign(assignment(3, Some(10)), None), AssignmentOutcome::Conflict);
+        assert_eq!(
+            entity.assign(assignment(3, Some(10)), None),
+            AssignmentOutcome::Conflict
+        );
         assert_eq!(entity.assign(sleep, None), AssignmentOutcome::Stale);
         assert!(!entity.update(10, 1, 6, "old owner"));
         assert_eq!(entity.snapshot(), &"running");
