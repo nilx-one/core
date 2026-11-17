@@ -249,3 +249,101 @@ mod tests {
         );
     }
 }
+
+/// A committed assignment. Epochs are scoped to a single entity and allocated
+/// by the coordination layer, which must agree on assignments before applying them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Assignment {
+    pub epoch: u64,
+    pub simulator: Option<u64>,
+}
+
+/// Holds the latest accepted state of one procedural entity across handoffs.
+/// The payload can represent animal behaviour or any other simulated state.
+#[derive(Debug)]
+pub struct EntityState<T> {
+    assignment: Assignment,
+    sequence: Option<u64>,
+    snapshot: T,
+}
+
+impl<T> EntityState<T> {
+    /// Creates state from the initial committed assignment and snapshot.
+    #[must_use]
+    pub const fn new(assignment: Assignment, snapshot: T) -> Self {
+        Self {
+            assignment,
+            sequence: None,
+            snapshot,
+        }
+    }
+
+    /// Returns the snapshot a newly assigned simulator should resume from.
+    #[must_use]
+    pub const fn snapshot(&self) -> &T {
+        &self.snapshot
+    }
+
+    /// Applies an already committed reassignment or sleep transition.
+    /// Returns whether it advanced the epoch. The snapshot survives the transition.
+    pub fn assign(&mut self, assignment: Assignment) -> bool {
+        if assignment.epoch <= self.assignment.epoch {
+            return false;
+        }
+        self.assignment = assignment;
+        self.sequence = None;
+        true
+    }
+
+    /// Accepts a complete snapshot only from the authenticated simulator and
+    /// only when its epoch and sequence match the current assignment's stream.
+    /// Callers must route snapshots by entity ID before applying them.
+    pub fn update(&mut self, sender: u64, epoch: u64, sequence: u64, snapshot: T) -> bool {
+        if self.assignment.simulator != Some(sender)
+            || self.assignment.epoch != epoch
+            || self.sequence.is_some_and(|previous| sequence <= previous)
+        {
+            return false;
+        }
+        self.sequence = Some(sequence);
+        self.snapshot = snapshot;
+        true
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::{Assignment, EntityState};
+
+    #[test]
+    fn preserves_state_across_sleep_and_rejects_delayed_updates_after_handoff() {
+        let mut entity = EntityState::new(
+            Assignment {
+                epoch: 1,
+                simulator: Some(10),
+            },
+            "idle",
+        );
+        assert!(entity.update(10, 1, 4, "walking"));
+        assert!(!entity.update(10, 1, 3, "idle"));
+        assert!(entity.assign(Assignment {
+            epoch: 2,
+            simulator: None
+        }));
+        assert!(!entity.update(10, 1, 5, "running"));
+        assert!(entity.assign(Assignment {
+            epoch: 3,
+            simulator: Some(20)
+        }));
+        assert_eq!(entity.snapshot(), &"walking");
+        assert!(!entity.assign(Assignment {
+            epoch: 3,
+            simulator: Some(10)
+        }));
+        assert!(!entity.update(10, 3, 1, "wrong owner"));
+        assert!(!entity.update(20, 1, 1, "wrong epoch"));
+        assert!(entity.update(20, 3, 1, "running"));
+        assert!(!entity.update(20, 3, 1, "duplicate"));
+        assert_eq!(entity.snapshot(), &"running");
+    }
+}
