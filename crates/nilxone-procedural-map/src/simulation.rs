@@ -174,6 +174,115 @@ fn select_simulator_from<'a>(
     }
 }
 
+/// A committed assignment. Epochs are scoped to a single entity and allocated
+/// by the coordination layer, which must agree on assignments before applying them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Assignment {
+    pub epoch: u64,
+    pub simulator: Option<u64>,
+}
+
+/// A final snapshot from the authenticated outgoing simulator.
+pub struct FinalSnapshot<T> {
+    pub sender: u64,
+    pub epoch: u64,
+    pub sequence: u64,
+    pub snapshot: T,
+}
+
+/// Outcome of applying an assignment from the coordination layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssignmentOutcome {
+    Applied,
+    Replay,
+    Stale,
+    Conflict,
+    InvalidFinalSnapshot,
+}
+
+/// Holds the latest accepted state of one procedural entity across handoffs.
+/// The payload can represent animal behaviour or any other simulated state.
+#[derive(Debug)]
+pub struct EntityState<T> {
+    assignment: Assignment,
+    sequence: Option<u64>,
+    snapshot: T,
+}
+
+impl<T> EntityState<T> {
+    /// Creates state from the initial committed assignment and snapshot.
+    #[must_use]
+    pub const fn new(assignment: Assignment, snapshot: T) -> Self {
+        Self {
+            assignment,
+            sequence: None,
+            snapshot,
+        }
+    }
+
+    /// Returns the snapshot a newly assigned simulator should resume from.
+    #[must_use]
+    pub const fn snapshot(&self) -> &T {
+        &self.snapshot
+    }
+
+    #[must_use]
+    pub const fn assignment(&self) -> Assignment {
+        self.assignment
+    }
+
+    #[must_use]
+    pub const fn sequence(&self) -> Option<u64> {
+        self.sequence
+    }
+
+    /// Applies a committed assignment and optionally the outgoing simulator's
+    /// final snapshot atomically. If the outgoing simulator was lost, callers
+    /// can omit the final snapshot and resume from the latest known state.
+    pub fn assign(
+        &mut self,
+        assignment: Assignment,
+        final_snapshot: Option<FinalSnapshot<T>>,
+    ) -> AssignmentOutcome {
+        match assignment.epoch.cmp(&self.assignment.epoch) {
+            core::cmp::Ordering::Less => return AssignmentOutcome::Stale,
+            core::cmp::Ordering::Equal if assignment == self.assignment => {
+                return AssignmentOutcome::Replay;
+            }
+            core::cmp::Ordering::Equal => return AssignmentOutcome::Conflict,
+            core::cmp::Ordering::Greater => {}
+        }
+        if let Some(final_snapshot) = final_snapshot {
+            if self.assignment.simulator != Some(final_snapshot.sender)
+                || self.assignment.epoch != final_snapshot.epoch
+            {
+                return AssignmentOutcome::InvalidFinalSnapshot;
+            }
+            if self.sequence.is_none_or(|sequence| final_snapshot.sequence > sequence) {
+                self.snapshot = final_snapshot.snapshot;
+            }
+        }
+        self.assignment = assignment;
+        self.sequence = None;
+        AssignmentOutcome::Applied
+    }
+
+    /// Accepts a complete snapshot only from the authenticated simulator and
+    /// only when its epoch and sequence match the current assignment's stream.
+    /// Callers must route snapshots by entity ID before applying them.
+    pub fn update(&mut self, sender: u64, epoch: u64, sequence: u64, snapshot: T) -> bool {
+        if self.assignment.simulator != Some(sender)
+            || self.assignment.epoch != epoch
+            || self.sequence.is_some_and(|previous| sequence <= previous)
+        {
+            return false;
+        }
+        self.sequence = Some(sequence);
+        self.snapshot = snapshot;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +414,43 @@ mod tests {
             select_simulator(&[owner, busy, candidate(2, 111)], Some(1), 100, 10),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::{Assignment, AssignmentOutcome, EntityState, FinalSnapshot};
+
+    #[test]
+    fn preserves_final_state_and_fences_old_updates() {
+        let assignment = |epoch, simulator| Assignment { epoch, simulator };
+        let initial = assignment(1, Some(10));
+        let awake = assignment(3, Some(20));
+        let mut entity = EntityState::new(initial, "idle");
+        assert!(entity.update(10, 1, 4, "walking"));
+        let final_snapshot = FinalSnapshot {
+            sender: 10,
+            epoch: 1,
+            sequence: 5,
+            snapshot: "running",
+        };
+        assert_eq!(
+            entity.assign(awake, Some(FinalSnapshot { sender: 99, ..final_snapshot })),
+            AssignmentOutcome::InvalidFinalSnapshot
+        );
+        assert_eq!(entity.assignment(), initial);
+        assert_eq!(entity.sequence(), Some(4));
+        let sleep = assignment(2, None);
+        assert_eq!(entity.assign(sleep, Some(final_snapshot)), AssignmentOutcome::Applied);
+        assert_eq!(entity.snapshot(), &"running");
+        assert!(!entity.update(10, 2, 0, "sleep update"));
+        assert_eq!(entity.assign(awake, None), AssignmentOutcome::Applied);
+        assert_eq!(entity.assign(awake, None), AssignmentOutcome::Replay);
+        assert_eq!(entity.assign(assignment(3, Some(10)), None), AssignmentOutcome::Conflict);
+        assert_eq!(entity.assign(sleep, None), AssignmentOutcome::Stale);
+        assert!(!entity.update(10, 1, 6, "old owner"));
+        assert_eq!(entity.snapshot(), &"running");
+        assert!(entity.update(20, 3, 0, "jumping"));
+        assert!(!entity.update(20, 3, 0, "duplicate"));
     }
 }
