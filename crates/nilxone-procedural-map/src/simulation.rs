@@ -19,32 +19,47 @@ pub struct Candidate {
 pub enum Approach {
     /// The predicted path enters the simulation radius.
     Toward,
-    /// Stationary, unknown, or moving past without entering the radius.
+    /// Remains near enough to be a standby candidate.
+    Stationary,
+    /// Unknown, or moving past without entering the radius.
     Passing,
     /// Moving farther from the entity.
     Away,
 }
 
 /// Classifies a bounded predicted path using local offsets from the entity,
-/// in millimetres. An absent or stationary prediction is treated as passing.
+/// in millimetres. An absent prediction is treated as passing.
 #[must_use]
 pub fn classify_approach(
     current: [i32; 2],
     predicted: Option<[i32; 2]>,
-    active_radius_mm: u32,
+    active_radius_mm: u64,
 ) -> Approach {
-    let Some(end) = predicted.filter(|end| *end != current) else {
+    let Some(end) = predicted else {
         return Approach::Passing;
     };
-    let [x, y] = current.map(f64::from);
-    let [end_x, end_y] = end.map(f64::from);
+    if end == current {
+        return Approach::Stationary;
+    }
+    let [x, y] = current.map(i128::from);
+    let [end_x, end_y] = end.map(i128::from);
     let (dx, dy) = (end_x - x, end_y - y);
     let dot = x * dx + y * dy;
-    if dot > 0.0 {
+    if dot > 0 {
         return Approach::Away;
     }
-    let fraction = (-dot / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-    if dot < 0.0 && (x + fraction * dx).hypot(y + fraction * dy) <= f64::from(active_radius_mm) {
+    if dot == 0 {
+        return Approach::Passing;
+    }
+    let length_squared = (dx * dx + dy * dy).unsigned_abs();
+    let radius_squared = u128::from(active_radius_mm).pow(2);
+    let intersects = if dot.unsigned_abs() >= length_squared {
+        (end_x * end_x + end_y * end_y).unsigned_abs() <= radius_squared
+    } else {
+        let cross_squared = (x * dy - y * dx).unsigned_abs().pow(2);
+        radius_squared.checked_mul(length_squared).is_none_or(|bound| cross_squared <= bound)
+    };
+    if intersects {
         Approach::Toward
     } else {
         Approach::Passing
@@ -68,44 +83,58 @@ pub struct SimulationPlan {
 
 /// Use the inner radius for active simulation and the outer radius for standby.
 /// The outer limit is exclusive. Within standby, a runtime on course to enter
-/// the inner radius outranks a closer runtime that is moving away.
+/// the inner radius outranks a stationary runtime. Departing runtimes are a
+/// fallback in case their trajectory changes. Passing paths are skipped.
 #[must_use]
 pub fn plan_simulation(
     candidates: &[TrackedCandidate],
-    current: Option<u64>,
+    current: SimulationPlan,
     active_radius_mm: u64,
     standby_radius_mm: u64,
     switch_margin_mm: u64,
 ) -> SimulationPlan {
     let simulator = select_simulator_from(
         candidates.iter().map(|tracked| &tracked.runtime),
-        current,
+        current.simulator,
         active_radius_mm,
         switch_margin_mm,
     );
-    let standby = candidates
+    let eligible_standby = candidates
         .iter()
         .filter(|tracked| {
             let runtime = tracked.runtime;
             runtime.active
                 && runtime.has_capacity
+                && Some(runtime.runtime_id) != simulator
                 && runtime.distance_mm > active_radius_mm
                 && runtime.distance_mm < standby_radius_mm
                 && tracked.approach != Approach::Passing
-        })
-        .min_by_key(|tracked| {
-            (
-                tracked.approach == Approach::Away,
-                tracked.runtime.distance_mm,
-                tracked.runtime.runtime_id,
-            )
-        })
-        .map(|tracked| tracked.runtime.runtime_id);
+        });
+    let rank = |approach| match approach {
+        Approach::Toward => 0,
+        Approach::Stationary => 1,
+        Approach::Away => 2,
+        Approach::Passing => 3,
+    };
+    let incumbent = eligible_standby.clone().find(|tracked| Some(tracked.runtime.runtime_id) == current.standby);
+    let best = eligible_standby.min_by_key(|tracked| {
+        (rank(tracked.approach), tracked.runtime.distance_mm, tracked.runtime.runtime_id)
+    });
+    let standby = match (incumbent, best) {
+        (Some(previous), Some(next))
+            if rank(previous.approach) == rank(next.approach)
+                && previous.runtime.distance_mm.saturating_sub(next.runtime.distance_mm) <= switch_margin_mm =>
+        {
+            Some(previous.runtime.runtime_id)
+        }
+        (_, next) => next.map(|tracked| tracked.runtime.runtime_id),
+    };
     SimulationPlan { simulator, standby }
 }
 
 /// Selects a simulator within range. An existing eligible simulator retains
-/// its assignment until a challenger is closer by more than the margin.
+/// its assignment through the exit margin unless a challenger is closer by
+/// more than the margin.
 /// Equal-distance challengers are ordered by runtime ID.
 ///
 /// Candidates must represent distinct runtime IDs. Each host must measure
@@ -126,13 +155,12 @@ fn select_simulator_from<'a>(
     range_mm: u64,
     switch_margin_mm: u64,
 ) -> Option<u64> {
-    let eligible =
-        candidates.filter(|candidate| candidate.active && candidate.distance_mm <= range_mm);
+    let eligible = candidates.filter(|candidate| candidate.active);
     let incumbent = eligible
         .clone()
-        .find(|candidate| Some(candidate.runtime_id) == current);
+        .find(|candidate| Some(candidate.runtime_id) == current && candidate.distance_mm <= range_mm.saturating_add(switch_margin_mm));
     let challenger = eligible
-        .filter(|candidate| candidate.has_capacity && Some(candidate.runtime_id) != current)
+        .filter(|candidate| candidate.has_capacity && candidate.distance_mm <= range_mm && Some(candidate.runtime_id) != current)
         .min_by_key(|candidate| (candidate.distance_mm, candidate.runtime_id));
 
     match (incumbent, challenger) {
@@ -160,6 +188,36 @@ mod tests {
     }
 
     #[test]
+    fn trajectory_handles_exact_boundaries_and_stationary_predictions() {
+        assert_eq!(classify_approach([10, 0], None, 3), Approach::Passing);
+        assert_eq!(classify_approach([10, 0], Some([10, 0]), 3), Approach::Stationary);
+        assert_eq!(classify_approach([10, 0], Some([10, 1]), 3), Approach::Passing);
+        assert_eq!(classify_approach([10, 0], Some([3, 0]), 3), Approach::Toward);
+        assert_eq!(classify_approach([10, 3], Some([-10, 3]), 3), Approach::Toward);
+        assert_eq!(classify_approach([10, 3], Some([-10, 3]), 2), Approach::Passing);
+        assert_eq!(
+            classify_approach([i32::MIN; 2], Some([i32::MAX; 2]), u64::MAX),
+            Approach::Toward
+        );
+    }
+
+    #[test]
+    fn retains_assignments_under_small_distance_changes() {
+        let current = SimulationPlan {
+            simulator: Some(1),
+            standby: Some(2),
+        };
+        let candidates = [
+            TrackedCandidate { runtime: candidate(1, 101), approach: Approach::Passing },
+            TrackedCandidate { runtime: candidate(2, 150), approach: Approach::Stationary },
+            TrackedCandidate { runtime: candidate(3, 145), approach: Approach::Stationary },
+            TrackedCandidate { runtime: candidate(4, 120), approach: Approach::Away },
+        ];
+        assert_eq!(plan_simulation(&candidates, current, 100, 200, 10), current);
+        assert_eq!(select_simulator(&[candidate(1, 111)], Some(1), 100, 10), None);
+    }
+
+    #[test]
     fn approaching_standby_outranks_a_nearer_departing_runtime() {
         let track = |id, metres: u64, approach| TrackedCandidate {
             runtime: candidate(id, metres * 1_000),
@@ -183,7 +241,7 @@ mod tests {
         let outer_limit = track(4, 1_000, Approach::Toward);
         let nearby = track(5, 30, Approach::Passing);
         let plan = |candidates: &[TrackedCandidate]| {
-            plan_simulation(candidates, None, 100_000, 1_000_000, 5_000)
+            plan_simulation(candidates, SimulationPlan { simulator: None, standby: None }, 100_000, 1_000_000, 5_000)
         };
         assert_eq!(
             plan(&[away, toward, passing, outer_limit]),
@@ -244,7 +302,7 @@ mod tests {
         let mut busy = candidate(3, 10);
         busy.has_capacity = false;
         assert_eq!(
-            select_simulator(&[owner, busy, candidate(2, 101)], Some(1), 100, 10),
+            select_simulator(&[owner, busy, candidate(2, 111)], Some(1), 100, 10),
             None
         );
     }

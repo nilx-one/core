@@ -3,7 +3,7 @@
 
 [package]
 name = "nilxone-procedural-map"
-description = "Deterministic procedural map generation for 0x1 Core."
+description = "Procedural map generation and simulation policies for 0x1 Core."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
