@@ -618,3 +618,31 @@ pub fn activation_sync_part(total_bytes: &str, offset: &str) -> String {
 pub fn activation_sync_digest(data: &[u8]) -> String {
     nilxone_api::activation::sync_digest(data)
 }
+
+/// Generates a JSON array of decorative map placements from a shared world profile.
+///
+/// # Errors
+///
+/// Returns a stable error string for malformed rules, an invalid cell or
+/// invalid placement weights.
+#[wasm_bindgen]
+pub fn generate_procedural_map(
+    world_seed: &str,
+    cell: &str,
+    habitat: u16,
+    rules_json: &str,
+    limit: u16,
+) -> Result<String, String> {
+    use nilxone_procedural_map::{PlacementError, PlacementRule, generate};
+
+    let rules: Vec<PlacementRule> =
+        serde_json::from_str(rules_json).map_err(|_| "invalid_rules".to_owned())?;
+    let spawns = generate(world_seed, cell, habitat, &rules, limit).map_err(|error| {
+        match error {
+            PlacementError::InvalidCell => "invalid_cell",
+            PlacementError::InvalidRules => "invalid_rules",
+        }
+        .to_owned()
+    })?;
+    serde_json::to_string(&spawns).map_err(|_| "serialization_failed".to_owned())
+}

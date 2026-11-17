@@ -6,6 +6,7 @@ members = [
     "crates/nilxone-api",
     "crates/nilxone-contracts",
     "crates/nilxone-kernel",
+    "crates/nilxone-procedural-map",
     "crates/nilxone-bindings-wasm",
     "crates/nilxone-bindings-uniffi",
     "crates/nilxone-test-support",

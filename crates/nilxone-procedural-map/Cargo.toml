@@ -1,0 +1,19 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "nilxone-procedural-map"
+description = "Deterministic procedural map generation for 0x1 Core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+h3o = "0.11"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+
+[lints]
+workspace = true
