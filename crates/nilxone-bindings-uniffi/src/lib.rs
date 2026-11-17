@@ -193,6 +193,13 @@ pub fn apply_avaia_life(state: String, owner: String, subject: String, command: 
     nilxone_contracts::apply_avaia_life(&state, &owner, &subject, &command)
 }
 
+/// The same paid Special pickup choices as the Wasm host.
+#[must_use]
+#[uniffi::export]
+pub fn special_pickup_choices(request: &str) -> String {
+    nilxone_contracts::special_pickup_choices_wire(request)
+}
+
 /// Reads the same Avaia proximity policy as the Wasm host.
 #[must_use]
 #[uniffi::export]
