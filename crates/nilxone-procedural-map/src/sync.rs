@@ -73,7 +73,8 @@ pub fn nearby(
     recipient_cell: CellIndex,
     ring: u8,
 ) -> Result<bool, InvalidResolution> {
-    if entity_cell.resolution() != Resolution::Nine || recipient_cell.resolution() != Resolution::Nine
+    if entity_cell.resolution() != Resolution::Nine
+        || recipient_cell.resolution() != Resolution::Nine
     {
         return Err(InvalidResolution);
     }
