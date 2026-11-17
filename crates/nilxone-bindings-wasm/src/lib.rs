@@ -646,3 +646,17 @@ pub fn generate_procedural_map(
     })?;
     serde_json::to_string(&spawns).map_err(|_| "serialization_failed".to_owned())
 }
+
+#[cfg(test)]
+#[test]
+fn procedural_placement_rejects_invalid_wire_inputs() {
+    let rules = r#"[{"kind":1,"habitat":7,"weight_bps":1,"weight_bp":2}]"#;
+    assert_eq!(
+        generate_procedural_map("world", "8928308280fffff", 7, rules, 0),
+        Err("invalid_rules".to_owned())
+    );
+    assert_eq!(
+        generate_procedural_map("world", "invalid", 7, "[]", 1),
+        Err("invalid_cell".to_owned())
+    );
+}
