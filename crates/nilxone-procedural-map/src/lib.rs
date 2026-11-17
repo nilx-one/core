@@ -14,13 +14,15 @@ const BASIS_POINTS: u16 = 10_000;
 
 /// Placement weight per candidate site in a given habitat.
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlacementRule {
     pub kind: u16,
     pub habitat: u16,
     pub weight_bps: u16,
 }
 
-/// A stable world-space spawn. Runtime ownership and movement are separate.
+/// A stable world-space spawn. Match across runtimes by ID.
+/// Coordinates are floating-point and may differ slightly across targets.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Spawn {
     pub id: String,
@@ -36,8 +38,9 @@ pub enum PlacementError {
 }
 
 /// Places entities at resolution-12 child centers of one resolution-9 world cell.
-/// The density profile and habitat revision are world inputs shared by all runtimes.
-/// The limit applies to the whole cell, across kinds.
+/// All runtimes must use the same habitat and density profile. Each kind draws
+/// independently. Competing hits at one site and the shared population cap can
+/// still displace placements. Surviving placements keep their IDs.
 ///
 /// # Errors
 ///
@@ -73,32 +76,35 @@ pub fn generate(
         return Ok(Vec::new());
     }
 
+    let mut seed_digest = Sha256::new();
+    seed_digest.update(DOMAIN);
+    seed_digest.update(world_seed.as_bytes());
+    let seed_hash = seed_digest.finalize();
+    let world_id = u128::from_be_bytes(core::array::from_fn(|index| seed_hash[index]));
     let mut candidates = Vec::new();
     for site in cell_index.children(Resolution::Twelve) {
-        let mut digest = Sha256::new();
-        digest.update(DOMAIN);
-        digest.update(u64::from(site).to_be_bytes());
-        digest.update(world_seed.as_bytes());
-        let hash = digest.finalize();
-        let draw = u32::from_be_bytes([hash[28], hash[29], hash[30], hash[31]]);
-        let mut roll = draw % u32::from(BASIS_POINTS);
         for rule in &eligible {
-            let weight = u32::from(rule.weight_bps);
-            if roll < weight {
+            let mut digest = Sha256::new();
+            digest.update(DOMAIN);
+            digest.update(u64::from(site).to_be_bytes());
+            digest.update(rule.kind.to_be_bytes());
+            digest.update(seed_hash);
+            let hash = digest.finalize();
+            let draw = u32::from_be_bytes([hash[28], hash[29], hash[30], hash[31]]);
+            if draw % u32::from(BASIS_POINTS) < u32::from(rule.weight_bps) {
                 candidates.push((hash, site, rule.kind));
                 break;
             }
-            roll -= weight;
         }
     }
     candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     Ok(candidates
         .into_iter()
         .take(usize::from(limit))
-        .map(|(hash, site, kind)| {
+        .map(|(_, site, kind)| {
             let center = LatLng::from(site);
             Spawn {
-                id: format!("map-v1:{site}:{kind}:{hash:x}"),
+                id: format!("map-v1:{world_id:032x}:{site}:{kind}"),
                 kind,
                 longitude: center.lng(),
                 latitude: center.lat(),
@@ -110,6 +116,33 @@ pub fn generate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_inputs_and_pins_spawn_id() {
+        let cell = "8928308280fffff";
+        let rule = PlacementRule {
+            kind: 1,
+            habitat: 7,
+            weight_bps: 10_000,
+        };
+        assert!(generate("world", cell, 7, &[rule], 0).unwrap().is_empty());
+        let other = PlacementRule {
+            kind: 2,
+            weight_bps: 1,
+            ..rule,
+        };
+        assert_eq!(
+            generate("world", cell, 7, &[rule, other], 1),
+            Err(PlacementError::InvalidRules)
+        );
+        for invalid in ["8928308280FFFFF", "8828308281fffff"] {
+            assert_eq!(generate("world", invalid, 7, &[rule], 1), Err(PlacementError::InvalidCell));
+        }
+        assert_eq!(
+            generate("world", cell, 7, &[rule], 1).unwrap()[0].id,
+            "map-v1:28091f7e86085b64e281cfbbb07f0d3d:8c28308280d07ff:1"
+        );
+    }
 
     #[test]
     fn placement_is_stable_across_rule_order_and_bounded_per_cell() {
