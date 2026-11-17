@@ -4,6 +4,9 @@
 [advisories]
 yanked = "deny"
 ignore = [
+    # Maintenance status advisory for the existing UTC calendar-month arithmetic.
+    # Remove this exception when subscription_clock migrates off chrono.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained advisory; existing UTC subscription arithmetic pending migration" },
     # basic-toml is unmaintained and has no release to move to. It reaches us
     # only through askama_derive, a proc-macro uniffi_bindgen uses for its
     # templates, so it runs at build time and never ships in a binding. Drop
