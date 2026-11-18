@@ -92,16 +92,21 @@ impl Surface {
 /// Classifies one `roads` feature. `None` means it is not walked along:
 /// highways, rail, ferries, and anything the table does not know. An unknown
 /// `kind_detail` falls back to `kind`; an unknown `kind` is never walkable.
+/// `other` is walkable only through a known detail, such as `living_street`.
 #[must_use]
 pub fn surface_of(kind: &str, kind_detail: Option<&str>) -> Option<Surface> {
     let by_kind = match kind {
-        "path" => Surface::Footway,
-        "minor_road" | "medium_road" => Surface::Street,
-        "major_road" => Surface::Carriageway,
+        "path" => Some(Surface::Footway),
+        "minor_road" | "medium_road" => Some(Surface::Street),
+        "major_road" => Some(Surface::Carriageway),
+        // The archive files some walkable ways under `other`, living streets
+        // above all; bus stops, platforms and services sit there too. Only a
+        // known walkable detail makes an `other` way walkable.
+        "other" => None,
         _ => return None,
     };
     let Some(detail) = kind_detail else {
-        return Some(by_kind);
+        return by_kind;
     };
     match detail {
         "footway" | "path" | "pedestrian" | "corridor" => Some(Surface::Footway),
@@ -112,7 +117,7 @@ pub fn surface_of(kind: &str, kind_detail: Option<&str>) -> Option<Surface> {
         "secondary" | "secondary_link" | "primary" | "primary_link" => Some(Surface::Carriageway),
         "trunk" | "trunk_link" | "motorway" | "motorway_link" | "construction" | "proposed"
         | "raceway" | "bus_guideway" | "busway" | "platform" => None,
-        _ => Some(by_kind),
+        _ => by_kind,
     }
 }
 
@@ -1067,6 +1072,19 @@ mod tests {
         assert_eq!(surface_of("major_road", Some("trunk")), None);
         assert_eq!(surface_of("highway", Some("footway")), None);
         assert_eq!(surface_of("rail", None), None);
+        // A living street the archive files under `other` is a street; the
+        // rest of `other` is not walked along.
+        assert_eq!(
+            surface_of("other", Some("living_street")),
+            Some(Surface::Street)
+        );
+        assert_eq!(
+            surface_of("other", Some("pedestrian")),
+            Some(Surface::Footway)
+        );
+        for detail in [Some("bus_stop"), Some("platform"), Some("services"), None] {
+            assert_eq!(surface_of("other", detail), None, "{detail:?}");
+        }
     }
 
     #[test]
