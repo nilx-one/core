@@ -27,7 +27,7 @@ pub use client_transition::{
     ClientTransitionBinding, ClientTransitionError, ClientTransitionRepository,
 };
 pub use legacy_migration::{
-    LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
+    BoundLegacyBond, LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
     LegacyMigrationProofRecorded, LegacyMigrationStarted,
 };
 
