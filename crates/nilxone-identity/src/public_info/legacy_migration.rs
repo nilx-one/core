@@ -14,9 +14,11 @@ use sqlx::Row;
 
 mod commit;
 mod proof;
+mod provision;
 mod session;
 pub use commit::LegacyMigrationAttached;
 pub use proof::LegacyMigrationProofRecorded;
+pub use provision::{ProvisionError, ProvisionedBond};
 pub use session::BoundLegacyBond;
 
 use super::PublicInfoRepository;
