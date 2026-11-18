@@ -11,8 +11,11 @@
 //! the Bond's *current* address, so a renamed Bond keeps its access and a
 //! deleted and recreated address never inherits it.
 //!
-//! This grants nothing by itself. The host still applies the existing
-//! product authorization and single-active-client rules before any write.
+//! This grants nothing by itself. Like `restore_session`, it deliberately
+//! accepts a live session whose `active` flag is 0: that is read identity,
+//! not write authority. A host must re-check `active = 1` and the
+//! single-active-client rule atomically with every game mutation; this
+//! lookup is never that check.
 
 use sqlx::Row as _;
 
@@ -29,6 +32,9 @@ pub struct BoundLegacyBond {
 }
 
 impl LegacyBondMigrationRepository {
+    /// An inactive but live session still resolves (read identity); writes
+    /// must independently require `active = 1`.
+    ///
     /// `None` for an unknown, expired or signed-out session, and for a live
     /// session whose profile has no binding. Never an error for either: the
     /// caller treats both as "not an existing Bond".
@@ -239,6 +245,30 @@ mod tests {
             store.resolve_session_bond(&token('b'), NOW).await.unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn an_inactive_live_session_resolves_for_reading_but_stays_inactive() {
+        let (store, _dir) = store().await;
+        let owner = profile(&store, "subject-a", &token('a')).await;
+        let bond_id = attach(&store, "0x1owner", &owner).await;
+        let active: i64 =
+            sqlx::query_scalar("SELECT active FROM product_sessions WHERE token_hash = ?")
+                .bind(token('a'))
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(active, 0, "the fixture session is not the active client");
+        let resolved = store.resolve_session_bond(&token('a'), NOW).await.unwrap();
+        assert_eq!(resolved.map(|bond| bond.bond_id), Some(bond_id));
+        // Resolving neither activates the session nor changes its owner.
+        let after: i64 =
+            sqlx::query_scalar("SELECT active FROM product_sessions WHERE token_hash = ?")
+                .bind(token('a'))
+                .fetch_one(&store.repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(after, 0);
     }
 
     #[tokio::test]
