@@ -8,6 +8,7 @@
 //! so every bit survives. Fog is the host's: it passes a mask of the nodes a
 //! walk may enter, and takes the first snap candidate its fog lets in.
 
+use nilxone_contracts::vector_tile;
 use nilxone_contracts::walk_graph::{self as core, GraphPosition};
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -15,6 +16,35 @@ use wasm_bindgen::prelude::wasm_bindgen;
 #[wasm_bindgen]
 pub struct WalkGraph {
     graph: core::WalkGraph,
+}
+
+/// Splits a host's interleaved tile addresses and concatenated bytes.
+fn road_tiles<'a>(
+    tiles: &[u32],
+    tile_lengths: &[u32],
+    bytes: &'a [u8],
+) -> Option<Vec<vector_tile::RoadTile<'a>>> {
+    let (addresses, []) = tiles.as_chunks::<3>() else {
+        return None;
+    };
+    if addresses.len() != tile_lengths.len() {
+        return None;
+    }
+    let mut rest = bytes;
+    let mut out = Vec::with_capacity(addresses.len());
+    for (&[z, x, y], &length) in addresses.iter().zip(tile_lengths) {
+        let (tile, after) = rest.split_at_checked(length as usize)?;
+        rest = after;
+        out.push(vector_tile::RoadTile {
+            tile: vector_tile::TileId {
+                z: u8::try_from(z).ok()?,
+                x,
+                y,
+            },
+            bytes: tile,
+        });
+    }
+    rest.is_empty().then_some(out)
 }
 
 fn position(edge: u32, t: f64, longitude: f64, latitude: f64) -> GraphPosition {
@@ -38,6 +68,29 @@ impl WalkGraph {
     pub fn build(features: &str, line_points: &[u32], coordinates: &[f64]) -> Option<WalkGraph> {
         core::build_walk_graph_flat(features, line_points, coordinates)
             .map(|graph| WalkGraph { graph })
+    }
+
+    /// Builds the graph straight from the archive's tiles, for a host with no
+    /// map renderer (`docs/vector-tile-roads.md`): `tiles` is every tile's
+    /// zoom, column and row, interleaved, `tile_lengths` the byte length of
+    /// every tile, and `bytes` the decompressed vector tiles one after
+    /// another. Only each tile's `roads` layer is read.
+    ///
+    /// # Errors
+    ///
+    /// Throws a stable code: `invalid` when the counts do not add up,
+    /// `invalid_tile`, `compressed` (gzip left on), `malformed` or
+    /// `too_coarse` (below zoom 14).
+    pub fn from_tiles(
+        tiles: &[u32],
+        tile_lengths: &[u32],
+        bytes: &[u8],
+    ) -> Result<WalkGraph, String> {
+        let road_tiles =
+            road_tiles(tiles, tile_lengths, bytes).ok_or_else(|| "invalid".to_owned())?;
+        vector_tile::build_walk_graph_from_tiles(&road_tiles)
+            .map(|graph| WalkGraph { graph })
+            .map_err(|error| error.code().to_owned())
     }
 
     /// The surface names, in the order of [`Self::edge_surfaces`]' codes.

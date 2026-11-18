@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use nilxone_contracts::vector_tile;
 use nilxone_contracts::walk_graph::{self as core, GraphPosition};
 
 /// The pedestrian graph an Avaia walks on, built once.
@@ -50,6 +51,80 @@ pub fn walk_graph_build(
 ) -> Option<Arc<WalkGraph>> {
     core::build_walk_graph_flat(&features, &line_points, &coordinates)
         .map(|graph| Arc::new(WalkGraph { graph }))
+}
+
+/// One decompressed vector tile of the archive and its address.
+#[derive(uniffi::Record)]
+pub struct RoadTileBytes {
+    /// Zoom.
+    pub z: u8,
+    /// Column, west to east.
+    pub x: u32,
+    /// Row, north to south.
+    pub y: u32,
+    /// The Mapbox Vector Tile, gzip already removed.
+    pub bytes: Vec<u8>,
+}
+
+/// Why tiles gave no graph; the same codes as the Wasm binding.
+#[derive(Debug, uniffi::Error)]
+pub enum WalkTileError {
+    /// A tile address is outside its zoom.
+    InvalidTile,
+    /// A tile is still gzip.
+    Compressed,
+    /// A tile is not a well-formed vector tile.
+    Malformed,
+    /// A tile is coarser than zoom 14.
+    TooCoarse,
+}
+
+impl std::fmt::Display for WalkTileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidTile => "invalid_tile",
+            Self::Compressed => "compressed",
+            Self::Malformed => "malformed",
+            Self::TooCoarse => "too_coarse",
+        })
+    }
+}
+
+impl std::error::Error for WalkTileError {}
+
+impl From<vector_tile::VectorTileError> for WalkTileError {
+    fn from(error: vector_tile::VectorTileError) -> Self {
+        match error {
+            vector_tile::VectorTileError::InvalidTile => Self::InvalidTile,
+            vector_tile::VectorTileError::Compressed => Self::Compressed,
+            vector_tile::VectorTileError::Malformed => Self::Malformed,
+            vector_tile::VectorTileError::TooCoarse => Self::TooCoarse,
+        }
+    }
+}
+
+/// Builds the graph straight from the archive's tiles, as the Wasm
+/// `WalkGraph.from_tiles` does: only each tile's `roads` layer is read.
+///
+/// # Errors
+///
+/// [`WalkTileError`] for the first tile that cannot be read.
+#[uniffi::export]
+#[allow(clippy::needless_pass_by_value, reason = "UniFFI inputs are owned")]
+pub fn walk_graph_from_tiles(tiles: Vec<RoadTileBytes>) -> Result<Arc<WalkGraph>, WalkTileError> {
+    let road_tiles: Vec<vector_tile::RoadTile<'_>> = tiles
+        .iter()
+        .map(|tile| vector_tile::RoadTile {
+            tile: vector_tile::TileId {
+                z: tile.z,
+                x: tile.x,
+                y: tile.y,
+            },
+            bytes: &tile.bytes,
+        })
+        .collect();
+    let graph = vector_tile::build_walk_graph_from_tiles(&road_tiles)?;
+    Ok(Arc::new(WalkGraph { graph }))
 }
 
 fn position(edge: u32, t: f64, longitude: f64, latitude: f64) -> GraphPosition {

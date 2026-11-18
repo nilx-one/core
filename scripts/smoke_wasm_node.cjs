@@ -160,6 +160,25 @@ assert.deepEqual(JSON.parse(core.market_return_policy()), { pending_ms: 86400000
   assert.ok(reach.cost().every((c) => c >= 0));
 }
 
+// A host with no map renderer builds the same graph straight from the archive's tiles.
+{
+  const parity = require('../crates/nilxone-contracts/tests/vector_tile/typescript_parity.json');
+  const kyiv = parity.cases.find((c) => c.name === 'kyiv_handmade');
+  const bytes = Uint8Array.from(Buffer.from(kyiv.bytes, 'hex'));
+  const at = new Uint32Array([kyiv.tile.z, kyiv.tile.x, kyiv.tile.y]);
+  const graph = core.WalkGraph.from_tiles(at, new Uint32Array([bytes.length]), bytes);
+  assert.ok(graph.edge_nodes().length > 0);
+  assert.throws(() => core.WalkGraph.from_tiles(at, new Uint32Array([bytes.length - 1]), bytes), /invalid/);
+  assert.throws(
+    () => core.WalkGraph.from_tiles(at, new Uint32Array([4]), new Uint8Array([0x1f, 0x8b, 8, 0])),
+    /compressed/,
+  );
+  assert.throws(
+    () => core.WalkGraph.from_tiles(new Uint32Array([13, 4790, 2764]), new Uint32Array([bytes.length]), bytes),
+    /too_coarse/,
+  );
+}
+
 // The wire contract's readings: a client hands the response over and branches on `kind`.
 assert.deepEqual(
   JSON.parse(core.read_find_attestation(true, '{"outcome":"attested","attestation_id":"3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b","item_id":"seed_pouch","seeds_credited":"25"}')),
