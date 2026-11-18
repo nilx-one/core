@@ -118,7 +118,7 @@ impl IdentityRepository {
                 CraftOutcome::ConflictingReplay
             });
         }
-        if !spend_session_active_in(&mut tx, owner, active_session_hash, now_ms / 1000).await? {
+        if !spend_actor_session_active_in(&mut tx, owner, active_session_hash, now_ms / 1000).await? {
             return Ok(CraftOutcome::SessionChanged);
         }
         credit_starter_seeds_in(&mut tx, owner, now_ms).await?;
@@ -393,5 +393,59 @@ mod craft_tests {
                 .unwrap(),
             CraftOutcome::ConflictingReplay
         );
+    }
+
+    // ---- AIS product session of an attached legacy Bond (#115) -----------
+
+    #[tokio::test]
+    async fn the_active_product_session_of_an_attached_bond_starts_a_craft() {
+        let (repository, _dir) = super::product_session_testing::file_repository().await;
+        let sky: PubDress = "0x1sky".parse().expect("owner");
+        repository
+            .register(&sky, &ProviderIdentity::telegram(7), 100)
+            .await
+            .expect("registration");
+        super::product_session_testing::attach(&repository, "0x1sky", true).await;
+        let session = super::product_session_testing::TOKEN;
+        let broken = attest(&repository, &sky, 'f', "broken_cd_player").await;
+        assert_eq!(
+            repository
+                .start_craft_with_seeds(&sky, &session, "craft-0101", "repair_cd_player", std::slice::from_ref(&broken), 3_000)
+                .await
+                .unwrap(),
+            CraftOutcome::Started { seeds: 200 }
+        );
+        assert_eq!(repository.read_seeds_balance(&sky).await.unwrap(), 10_000 - 200);
+    }
+
+    #[tokio::test]
+    async fn an_inactive_or_unbound_product_session_starts_no_craft() {
+        for active in [false, true] {
+            let (repository, _dir) = super::product_session_testing::file_repository().await;
+            let sky: PubDress = "0x1sky".parse().expect("owner");
+            repository
+                .register(&sky, &ProviderIdentity::telegram(7), 100)
+                .await
+                .expect("registration");
+            // Inactive: attached but not the active client. Active: a live
+            // active product session of a profile that is not attached.
+            super::product_session_testing::attach(&repository, "0x1sky", active).await;
+            if active {
+                sqlx::query("DELETE FROM legacy_bond_bindings")
+                    .execute(&repository.pool)
+                    .await
+                    .unwrap();
+            }
+            let broken = attest(&repository, &sky, 'g', "broken_cd_player").await;
+            assert_eq!(
+                repository
+                    .start_craft_with_seeds(&sky, &super::product_session_testing::TOKEN, "craft-0102", "repair_cd_player", &[broken], 3_000)
+                    .await
+                    .unwrap(),
+                CraftOutcome::SessionChanged,
+                "active={active}"
+            );
+            assert_eq!(repository.read_seeds_balance(&sky).await.unwrap(), 0, "nothing debited, nothing credited");
+        }
     }
 }

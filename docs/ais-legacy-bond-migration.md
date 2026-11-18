@@ -201,8 +201,9 @@ matches does an AIS product session count: it must be live, be the profile's
 **active** client, and belong to the Bond through the durable
 `legacy_bond_bindings` link (never a public name), and no other client of that
 profile may hold an open activation request. Absent migration/product tables
-make the product path unavailable. xPing and crafts still accept native
-sessions only; they follow in later slices. A valid AIS
+make the product path unavailable. xPing repair and craft start use the same
+check (`repair_xping_with_seeds`, `start_craft_with_seeds`); the other
+native-only write paths follow in later slices. A valid AIS
 profile with no binding is not an existing Bond. Never fall back to its public
 name, mint a native credential session, or treat product authentication as a
 `gm` role. An expired or signed-out product session cannot use the binding.

@@ -140,6 +140,63 @@ pub(crate) async fn spend_session_active_in(
     Ok(!takeover_in_progress)
 }
 
+/// Test-only: a file-backed store holding the legacy tables, the product
+/// tables and the migration store, so a Bond can be attached to an AIS profile
+/// whose live product session is the only way to act for it.
+#[cfg(test)]
+pub(crate) mod product_session_testing {
+    use super::IdentityRepository;
+
+    /// The digest bytes of the product session; its row stores the hex.
+    pub(crate) const TOKEN: [u8; 32] = [7; 32];
+
+    pub(crate) async fn file_repository() -> (IdentityRepository, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("directory");
+        let url = format!("sqlite://{}", dir.path().join("actor.sqlite").display());
+        let repository = IdentityRepository::connect(&url).await.expect("legacy store");
+        let product = crate::public_info::PublicInfoRepository::connect(&url)
+            .await
+            .expect("product store");
+        crate::public_info::LegacyBondMigrationRepository::prepare(product)
+            .await
+            .expect("migration store");
+        (repository, dir)
+    }
+
+    /// Attaches `owner` (already registered) to a fresh AIS profile whose only
+    /// live session is [`TOKEN`], `active` or not. The Bond has no native
+    /// session unless the caller creates one.
+    pub(crate) async fn attach(repository: &IdentityRepository, owner: &str, active: bool) {
+        let hex: String = TOKEN.iter().map(|byte| format!("{byte:02x}")).collect();
+        for (sql, binds) in [
+            ("INSERT INTO public_profiles (issuer, subject, last_auth_time) VALUES ('https://auth.aiaiaiai.org', 'subject-a', 1)", vec![]),
+            ("INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES (?)", vec![owner.to_owned()]),
+        ] {
+            let mut query = sqlx::query(sql);
+            for bind in &binds {
+                query = query.bind(bind);
+            }
+            query.execute(&repository.pool).await.expect(sql);
+        }
+        sqlx::query(
+            "INSERT INTO product_sessions (token_hash, issuer, subject, profile_id, created_at, expires_at, active) \
+             SELECT ?, issuer, subject, profile_id, 1, 10000000000, ? FROM public_profiles",
+        )
+        .bind(&hex)
+        .bind(i64::from(active))
+        .execute(&repository.pool)
+        .await
+        .expect("product session");
+        sqlx::query(
+            "INSERT INTO legacy_bond_bindings (bond_id, profile_id, linked_at) \
+             SELECT k.bond_id, p.profile_id, 2 FROM legacy_bond_keys k CROSS JOIN public_profiles p",
+        )
+        .execute(&repository.pool)
+        .await
+        .expect("binding");
+    }
+}
+
 /// [`spend_session_active_in`] for an actor that may be an AIS product session
 /// of an attached legacy Bond (#115). `session_hash` is the digest bytes of
 /// either kind of session; the two kinds hash under different domains, and
