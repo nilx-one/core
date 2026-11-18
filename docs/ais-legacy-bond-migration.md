@@ -258,6 +258,24 @@ the current client; it must not silently activate the rename.
 
 This document defines desired behavior, not proof that existing storage already satisfies it.
 
+
+## A new person's first sign-in creates their Bond
+
+A person who never had a legacy Bond has an AIS profile after their first
+verified sign-in but no Bond. `LegacyBondMigrationRepository::provision_new_bond`
+creates it: in one `BEGIN IMMEDIATE` transaction it inserts the human identity
+at the address AIS assigned (the profile's verified `pub_dress` claim), gives it
+its opaque `legacy_bond_keys` key and binds it to the profile, so the profile's
+product session acts for it through `resolve_session_bond`.
+
+- It never links an existing Bond. If the address already belongs to a Bond that
+  was not created from this profile (a legacy Bond, or one made for another AIS
+  account), nothing is created or bound and the result is `AddressTaken`: that
+  Bond's owner proves ownership through the migration flow, not a matching name.
+- A retry, or a concurrent first sign-in, for an already-bound profile creates
+  nothing and names the same Bond (`created = false`).
+- No profile, or no usable address on it, creates nothing.
+
 ---
 
 © 2026 aiaiaiai · aiaiaiai.org

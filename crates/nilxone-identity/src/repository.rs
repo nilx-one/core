@@ -1684,13 +1684,13 @@ impl IdentityRepository {
 const PUBLIC_LABEL_RETRY_SUFFIXES: [&str; 8] = ["2", "3", "4", "5", "6", "7", "8", "9"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HumanIdentityInsertOutcome {
+pub(crate) enum HumanIdentityInsertOutcome {
     Inserted,
     PubDressUnavailable,
     PublicLabelUnavailable,
 }
 
-async fn insert_human_with_public_label_in(
+pub(crate) async fn insert_human_with_public_label_in(
     transaction: &mut Transaction<'_, Sqlite>,
     pub_dress: &PubDress,
     now: u64,
