@@ -166,7 +166,7 @@ async fn read_xping_engine_in(
 
 #[cfg(test)]
 mod product_session_tests {
-    use super::{IdentityRepository, XpingSeedsRepairRefusal};
+    use super::XpingSeedsRepairRefusal;
     use crate::{ProviderIdentity, PubDress};
 
     #[tokio::test]
