@@ -56,26 +56,23 @@ impl From<sqlx::Error> for ProvisionError {
 }
 
 impl LegacyBondMigrationRepository {
-    /// Creates and binds the Bond of the AIS profile `(issuer, subject)` at the
+    /// Creates and binds the Bond of the AIS profile `profile_id` at the
     /// address AIS assigned it. The caller has already verified the sign-in
-    /// that created the profile; nothing here reads a name from a request.
+    /// that created the profile and passes the id of the profile Core restored
+    /// for it; nothing here reads a name from a request.
     pub async fn provision_new_bond(
         &self,
-        issuer: &str,
-        subject: &str,
+        profile_id: &str,
         now: u64,
     ) -> Result<ProvisionedBond, ProvisionError> {
         let now_i64 = i64::try_from(now).map_err(|_| LegacyMigrationError::InvalidTransaction)?;
         let mut tx = self.repository.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let profile = sqlx::query(
-            "SELECT profile_id, pub_dress FROM public_profiles WHERE issuer = ? AND subject = ?",
-        )
-        .bind(issuer)
-        .bind(subject)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(ProvisionError::NoProfile)?;
-        let profile_id: String = profile.try_get("profile_id")?;
+        let profile = sqlx::query("SELECT pub_dress FROM public_profiles WHERE profile_id = ?")
+            .bind(profile_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(ProvisionError::NoProfile)?;
+        let profile_id = profile_id.to_owned();
         let claimed: Option<String> = profile.try_get("pub_dress")?;
 
         let bound = sqlx::query(
@@ -155,7 +152,12 @@ mod tests {
         )
     }
 
-    async fn profile(store: &LegacyBondMigrationRepository, subject: &str, address: Option<&str>) {
+    /// Inserts the profile and returns its product id.
+    async fn profile(
+        store: &LegacyBondMigrationRepository,
+        subject: &str,
+        address: Option<&str>,
+    ) -> String {
         sqlx::query(
             "INSERT INTO public_profiles (issuer, subject, pub_dress, last_auth_time) VALUES (?, ?, ?, 1)",
         )
@@ -165,6 +167,14 @@ mod tests {
         .execute(&store.repository.pool)
         .await
         .unwrap();
+        sqlx::query_scalar(
+            "SELECT profile_id FROM public_profiles WHERE issuer = ? AND subject = ?",
+        )
+        .bind(ISSUER)
+        .bind(subject)
+        .fetch_one(&store.repository.pool)
+        .await
+        .unwrap()
     }
 
     async fn count(store: &LegacyBondMigrationRepository, table: &str) -> i64 {
@@ -177,11 +187,8 @@ mod tests {
     #[tokio::test]
     async fn a_first_sign_in_creates_and_binds_the_bond_at_the_assigned_address() {
         let (store, _dir) = store().await;
-        profile(&store, "subject-a", Some("0x1sky")).await;
-        let made = store
-            .provision_new_bond(ISSUER, "subject-a", NOW)
-            .await
-            .unwrap();
+        let a = profile(&store, "subject-a", Some("0x1sky")).await;
+        let made = store.provision_new_bond(&a, NOW).await.unwrap();
         assert!(made.created);
         assert_eq!(made.pub_dress, "0x1sky");
         let kind: String =
@@ -222,10 +229,10 @@ mod tests {
     #[tokio::test]
     async fn a_retry_changes_nothing_and_concurrent_first_sign_ins_make_one_bond() {
         let (store, _dir) = store().await;
-        profile(&store, "subject-a", Some("0x1sky")).await;
+        let a = profile(&store, "subject-a", Some("0x1sky")).await;
         let (first, second) = tokio::join!(
-            store.provision_new_bond(ISSUER, "subject-a", NOW),
-            store.provision_new_bond(ISSUER, "subject-a", NOW),
+            store.provision_new_bond(&a, NOW),
+            store.provision_new_bond(&a, NOW),
         );
         let (first, second) = (first.unwrap(), second.unwrap());
         assert_eq!(first.bond_id, second.bond_id);
@@ -236,10 +243,7 @@ mod tests {
                 .count(),
             1
         );
-        let again = store
-            .provision_new_bond(ISSUER, "subject-a", NOW + 5)
-            .await
-            .unwrap();
+        let again = store.provision_new_bond(&a, NOW + 5).await.unwrap();
         assert!(!again.created);
         assert_eq!(again.bond_id, first.bond_id);
         assert_eq!(count(&store, "identities").await, 1);
@@ -254,9 +258,9 @@ mod tests {
             .execute(&store.repository.pool)
             .await
             .unwrap();
-        profile(&store, "subject-a", Some("0x1sky")).await;
+        let a = profile(&store, "subject-a", Some("0x1sky")).await;
         assert!(matches!(
-            store.provision_new_bond(ISSUER, "subject-a", NOW).await,
+            store.provision_new_bond(&a, NOW).await,
             Err(ProvisionError::AddressTaken)
         ));
         assert_eq!(
@@ -273,13 +277,10 @@ mod tests {
             .execute(&store.repository.pool)
             .await
             .unwrap();
-        store
-            .provision_new_bond(ISSUER, "subject-a", NOW)
-            .await
-            .unwrap();
-        profile(&store, "subject-b", Some("0x1sky")).await;
+        store.provision_new_bond(&a, NOW).await.unwrap();
+        let b = profile(&store, "subject-b", Some("0x1sky")).await;
         assert!(matches!(
-            store.provision_new_bond(ISSUER, "subject-b", NOW).await,
+            store.provision_new_bond(&b, NOW).await,
             Err(ProvisionError::AddressTaken)
         ));
         assert_eq!(count(&store, "legacy_bond_bindings").await, 1);
@@ -289,17 +290,17 @@ mod tests {
     async fn no_profile_or_no_address_creates_nothing() {
         let (store, _dir) = store().await;
         assert!(matches!(
-            store.provision_new_bond(ISSUER, "nobody", NOW).await,
+            store.provision_new_bond(&"0".repeat(32), NOW).await,
             Err(ProvisionError::NoProfile)
         ));
-        profile(&store, "no-name", None).await;
+        let none = profile(&store, "no-name", None).await;
         assert!(matches!(
-            store.provision_new_bond(ISSUER, "no-name", NOW).await,
+            store.provision_new_bond(&none, NOW).await,
             Err(ProvisionError::NoAddress)
         ));
-        profile(&store, "bad-name", Some("not an address")).await;
+        let bad = profile(&store, "bad-name", Some("not an address")).await;
         assert!(matches!(
-            store.provision_new_bond(ISSUER, "bad-name", NOW).await,
+            store.provision_new_bond(&bad, NOW).await,
             Err(ProvisionError::NoAddress)
         ));
         assert_eq!(
