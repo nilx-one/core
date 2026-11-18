@@ -103,6 +103,42 @@ impl From<vector_tile::VectorTileError> for WalkTileError {
     }
 }
 
+/// One tile's `roads`, flat as [`walk_graph_build`] takes them.
+#[derive(uniffi::Record)]
+pub struct TileRoads {
+    /// A JSON array of `{"kind","kind_detail"?,"is_bridge"?,"lines":<count>}`.
+    pub features: String,
+    /// The number of points of every line, in order.
+    pub line_points: Vec<u32>,
+    /// Every point's longitude and latitude, interleaved.
+    pub coordinates: Vec<f64>,
+}
+
+/// The `roads` layer of one decompressed vector tile, as the Wasm
+/// `decode_tile_roads` reads it.
+///
+/// # Errors
+///
+/// [`WalkTileError`] when the tile cannot be read.
+#[uniffi::export]
+#[allow(clippy::needless_pass_by_value, reason = "UniFFI inputs are owned")]
+pub fn decode_tile_roads(tile: RoadTileBytes) -> Result<TileRoads, WalkTileError> {
+    let roads = vector_tile::decode_tile_roads_flat(
+        &tile.bytes,
+        vector_tile::TileId {
+            z: tile.z,
+            x: tile.x,
+            y: tile.y,
+        },
+        vector_tile::ROAD_SOURCE_LAYER,
+    )?;
+    Ok(TileRoads {
+        features: roads.features,
+        line_points: roads.line_points,
+        coordinates: roads.coordinates,
+    })
+}
+
 /// Builds the graph straight from the archive's tiles, as the Wasm
 /// `WalkGraph.from_tiles` does: only each tile's `roads` layer is read.
 ///

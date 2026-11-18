@@ -64,6 +64,10 @@ outside the tile, `ClosePath`, repeated keys, numeric values, a second
   above, or `invalid` when the counts do not add up.
 - **UniFFI:** `walkGraphFromTiles(tiles: [RoadTileBytes])` throwing
   `WalkTileError`.
+- **Roads only:** a host that keeps roads per tile and builds the graph later
+  (Web's road tile cache) reads them with Wasm `decode_tile_roads(bytes, z, x, y)`
+  or UniFFI `decodeTileRoads(tile)`, which answer `TileRoads`: `features`,
+  `line_points` and `coordinates`, exactly the input of `WalkGraph.build`.
 
 Either way the result is the same `WalkGraph` object as `walk_graph_build`:
 snap, route and reach on it as in [walk-graph.md](walk-graph.md).
@@ -76,7 +80,7 @@ PMTiles archive ── getZxy(14, x, y) ──▶ gzip off ──▶ WalkGraph.f
    ──▶ walk_route_available = route is not undefined   (special-pickup.md)
 ```
 
-Web still uses its TypeScript decoder; switching it is a separate change.
+Web still uses its TypeScript decoder until it moves to `decode_tile_roads`.
 
 ---
 
