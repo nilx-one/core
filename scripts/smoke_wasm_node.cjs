@@ -169,6 +169,12 @@ assert.deepEqual(JSON.parse(core.market_return_policy()), { pending_ms: 86400000
   const graph = core.WalkGraph.from_tiles(at, new Uint32Array([bytes.length]), bytes);
   assert.ok(graph.edge_nodes().length > 0);
   assert.throws(() => core.WalkGraph.from_tiles(at, new Uint32Array([bytes.length - 1]), bytes), /invalid/);
+  // A host that keeps roads before building the graph gets them flat.
+  const roads = core.decode_tile_roads(bytes, kyiv.tile.z, kyiv.tile.x, kyiv.tile.y);
+  assert.equal(JSON.parse(roads.features()).length, kyiv.roads.length);
+  const rebuilt = core.WalkGraph.build(roads.features(), roads.line_points(), roads.coordinates());
+  assert.deepEqual(Array.from(rebuilt.edge_nodes()), Array.from(graph.edge_nodes()));
+  assert.throws(() => core.decode_tile_roads(new Uint8Array([0x1f, 0x8b]), 14, 0, 0), /compressed/);
   assert.throws(
     () => core.WalkGraph.from_tiles(at, new Uint32Array([4]), new Uint8Array([0x1f, 0x8b, 8, 0])),
     /compressed/,

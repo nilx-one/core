@@ -130,6 +130,58 @@ pub fn decode_tile_roads(
     Ok(Vec::new())
 }
 
+/// Road features as a binding passes them, the input of
+/// [`build_walk_graph_flat`](crate::walk_graph::build_walk_graph_flat):
+/// numbers never pass through text, so no bit is lost.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlatRoads {
+    /// A JSON array of `{"kind","kind_detail"?,"is_bridge"?,"lines":<count>}`.
+    pub features: String,
+    /// The number of points of every line, in order.
+    pub line_points: Vec<u32>,
+    /// Every point's longitude and latitude, interleaved.
+    pub coordinates: Vec<f64>,
+}
+
+/// [`RoadFeature`]s flattened as a binding passes them.
+#[must_use]
+pub fn flatten_roads(roads: &[RoadFeature]) -> FlatRoads {
+    let mut flat = FlatRoads::default();
+    let shapes: Vec<serde_json::Value> = roads
+        .iter()
+        .map(|road| {
+            let mut shape = serde_json::json!({ "kind": road.kind, "lines": road.lines.len() });
+            if let Some(detail) = &road.kind_detail {
+                shape["kind_detail"] = detail.clone().into();
+            }
+            if road.is_bridge {
+                shape["is_bridge"] = true.into();
+            }
+            for line in &road.lines {
+                flat.line_points
+                    .push(u32::try_from(line.len()).unwrap_or(u32::MAX));
+                flat.coordinates.extend(line.iter().flatten());
+            }
+            shape
+        })
+        .collect();
+    flat.features = serde_json::Value::from(shapes).to_string();
+    flat
+}
+
+/// [`decode_tile_roads`] flattened as a binding passes it.
+///
+/// # Errors
+///
+/// As [`decode_tile_roads`].
+pub fn decode_tile_roads_flat(
+    bytes: &[u8],
+    tile: TileId,
+    layer_name: &str,
+) -> Result<FlatRoads, VectorTileError> {
+    decode_tile_roads(bytes, tile, layer_name).map(|roads| flatten_roads(&roads))
+}
+
 /// The walking graph of several tiles' `roads` layers together. Features a
 /// neighbouring tile repeats in its buffer are merged by the graph, and line
 /// ends a tile cut short are joined back, as [`build_walk_graph`] does.
@@ -723,6 +775,28 @@ mod tests {
             decode_tile_roads(&zero_extent, TILE, ROAD_SOURCE_LAYER),
             Err(VectorTileError::Malformed)
         );
+    }
+
+    #[test]
+    fn flat_roads_build_the_same_graph() {
+        let roads = decode_tile_roads(&fixture(), TILE, ROAD_SOURCE_LAYER).unwrap();
+        let flat = decode_tile_roads_flat(&fixture(), TILE, ROAD_SOURCE_LAYER).unwrap();
+        assert_eq!(
+            flat.features,
+            r#"[{"kind":"path","kind_detail":"footway","lines":1},{"is_bridge":true,"kind":"minor_road","lines":2}]"#
+        );
+        assert_eq!(flat.line_points, [2, 2, 3]);
+        assert_eq!(flat.coordinates.len(), 14);
+        let direct = build_walk_graph(&roads);
+        let via_flat = crate::walk_graph::build_walk_graph_flat(
+            &flat.features,
+            &flat.line_points,
+            &flat.coordinates,
+        )
+        .unwrap();
+        assert_eq!(direct.node_coordinates(), via_flat.node_coordinates());
+        assert_eq!(direct.edge_nodes(), via_flat.edge_nodes());
+        assert_eq!(flatten_roads(&[]).features, "[]");
     }
 
     #[test]

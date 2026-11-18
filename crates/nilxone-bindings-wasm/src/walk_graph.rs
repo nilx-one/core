@@ -18,6 +18,51 @@ pub struct WalkGraph {
     graph: core::WalkGraph,
 }
 
+/// One tile's `roads`, flat as [`WalkGraph::build`] takes them.
+#[wasm_bindgen]
+pub struct TileRoads {
+    roads: vector_tile::FlatRoads,
+}
+
+#[wasm_bindgen]
+impl TileRoads {
+    /// A JSON array of `{"kind","kind_detail"?,"is_bridge"?,"lines":<count>}`.
+    #[must_use]
+    pub fn features(&self) -> String {
+        self.roads.features.clone()
+    }
+
+    /// The number of points of every line, in order.
+    #[must_use]
+    pub fn line_points(&self) -> Vec<u32> {
+        self.roads.line_points.clone()
+    }
+
+    /// Every point's longitude and latitude, interleaved.
+    #[must_use]
+    pub fn coordinates(&self) -> Vec<f64> {
+        self.roads.coordinates.clone()
+    }
+}
+
+/// The `roads` layer of one decompressed vector tile at `z`/`x`/`y`, for a
+/// host that keeps roads before building a graph
+/// (`docs/vector-tile-roads.md`). A tile without the layer has no roads.
+///
+/// # Errors
+///
+/// Throws `invalid_tile`, `compressed` or `malformed`.
+#[wasm_bindgen]
+pub fn decode_tile_roads(bytes: &[u8], z: u8, x: u32, y: u32) -> Result<TileRoads, String> {
+    vector_tile::decode_tile_roads_flat(
+        bytes,
+        vector_tile::TileId { z, x, y },
+        vector_tile::ROAD_SOURCE_LAYER,
+    )
+    .map(|roads| TileRoads { roads })
+    .map_err(|error| error.code().to_owned())
+}
+
 /// Splits a host's interleaved tile addresses and concatenated bytes.
 fn road_tiles<'a>(
     tiles: &[u32],
