@@ -189,7 +189,20 @@ to the Bond's current address, and returns `None` for an unbound, expired,
 signed-out or foreign session. It grants nothing on its own: an inactive but
 live session still resolves (read identity, as `restore_session`), so game
 mutations must re-check `active = 1` and the single-active-client rule
-atomically with the write. A valid AIS
+atomically with the write.
+
+### Special spending through a product session (first slice)
+
+`settle_special_order` (seeds debit), `collect_special_item` and
+`activate_special_item_with` / `deliver_special_item` now authorize through
+`spend_actor_session_active_in`, inside the same `BEGIN IMMEDIATE` that owns
+the wallet. A native session is decided exactly as before. Only if none
+matches does an AIS product session count: it must be live, be the profile's
+**active** client, and belong to the Bond through the durable
+`legacy_bond_bindings` link (never a public name), and no other client of that
+profile may hold an open activation request. Absent migration/product tables
+make the product path unavailable. xPing and crafts still accept native
+sessions only; they follow in later slices. A valid AIS
 profile with no binding is not an existing Bond. Never fall back to its public
 name, mint a native credential session, or treat product authentication as a
 `gm` role. An expired or signed-out product session cannot use the binding.
