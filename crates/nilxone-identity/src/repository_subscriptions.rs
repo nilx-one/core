@@ -140,6 +140,73 @@ pub(crate) async fn spend_session_active_in(
     Ok(!takeover_in_progress)
 }
 
+/// [`spend_session_active_in`] for an actor that may be an AIS product session
+/// of an attached legacy Bond (#115). `session_hash` is the digest bytes of
+/// either kind of session; the two kinds hash under different domains, and
+/// each lookup also requires the session to belong to `owner`, so one cannot
+/// stand in for the other.
+///
+/// A native session is decided exactly as before. Only when no native session
+/// matches does a product session count, and only through the durable
+/// `legacy_bond_bindings` link to `owner`'s current address: never through a
+/// public name. It must be live and the profile's active client, and, as for
+/// native sessions, an open activation request by another client of the same
+/// profile blocks spending. When the migration or product tables are absent
+/// the product path is simply unavailable. This is a write-boundary check; it
+/// never activates anything.
+pub(crate) async fn spend_actor_session_active_in(
+    transaction: &mut Transaction<'_, Sqlite>,
+    owner: &PubDress,
+    session_hash: &[u8],
+    now_seconds: u64,
+) -> Result<bool, RepositoryError> {
+    if spend_session_active_in(transaction, owner, session_hash, now_seconds).await? {
+        return Ok(true);
+    }
+    let Ok(now) = i64::try_from(now_seconds) else { return Ok(false); };
+    if session_hash.len() != 32 { return Ok(false); }
+    let present: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+         ('legacy_bond_keys', 'legacy_bond_bindings', 'product_sessions', \
+          'public_profiles', 'product_activation_requests')",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    if present != 5 { return Ok(false); }
+    // Product sessions store the lowercase hex of their digest.
+    let token: String = session_hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    let Some(profile) = sqlx::query(
+        "SELECT s.issuer, s.subject FROM product_sessions s \
+         JOIN public_profiles p \
+           ON p.issuer = s.issuer AND p.subject = s.subject AND p.profile_id = s.profile_id \
+         JOIN legacy_bond_bindings b ON b.profile_id = p.profile_id \
+         JOIN legacy_bond_keys k ON k.bond_id = b.bond_id \
+         JOIN identities i ON i.pub_dress = k.legacy_pub_dress AND i.identity_kind = 'human' \
+         WHERE k.legacy_pub_dress = ? AND s.token_hash = ? AND s.active = 1 AND s.expires_at > ?",
+    )
+    .bind(owner.as_str())
+    .bind(&token)
+    .bind(now)
+    .fetch_optional(&mut **transaction)
+    .await? else {
+        return Ok(false);
+    };
+    let issuer: String = profile.try_get("issuer")?;
+    let subject: String = profile.try_get("subject")?;
+    let takeover_in_progress = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM product_activation_requests \
+         WHERE issuer = ? AND subject = ? AND requester_token_hash != ? \
+         AND status IN ('pending', 'approved', 'syncing') AND deadline > ?)",
+    )
+    .bind(&issuer)
+    .bind(&subject)
+    .bind(&token)
+    .bind(now)
+    .fetch_one(&mut **transaction)
+    .await? != 0;
+    Ok(!takeover_in_progress)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StarterSeedsCredit {
     Granted,
@@ -320,7 +387,7 @@ impl IdentityRepository {
         // Only a *new* debit requires the authorization to still hold.
         match &order.authorization {
             SpendAuthorization::Session(hash) => {
-                if !spend_session_active_in(&mut transaction, owner, hash, now_ms / 1000).await? {
+                if !spend_actor_session_active_in(&mut transaction, owner, hash, now_ms / 1000).await? {
                     return Ok(SpecialSeedsOutcome::SessionChanged);
                 }
             }
@@ -466,7 +533,7 @@ impl IdentityRepository {
     ) -> Result<bool, RepositoryError> {
         let now = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSeedsBalance)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        if !spend_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
+        if !spend_actor_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
             return Ok(false);
         }
         let changed = sqlx::query(
@@ -532,7 +599,7 @@ impl IdentityRepository {
     ) -> Result<SpecialActivation, RepositoryError> {
         let now = i64::try_from(now_ms).map_err(|_| RepositoryError::CorruptSubscriptionClock)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        if !spend_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
+        if !spend_actor_session_active_in(&mut tx, owner, session_hash, now_ms / 1000).await? {
             return Ok(SpecialActivation::Unavailable);
         }
         let item = sqlx::query("SELECT state, sku FROM paid_special_items
@@ -1308,5 +1375,153 @@ mod special_seeds_tests {
             "SELECT balance FROM bond_seeds WHERE owner_pub_dress = ?",
         ).bind(owner.as_str()).fetch_one(&repository.pool).await.unwrap();
         assert_eq!(balance, 1000);
+    }
+
+    // ---- AIS product sessions of an attached legacy Bond (#115) ----------
+
+    const PRODUCT_TOKEN: [u8; 32] = [7; 32];
+
+    fn product_hex() -> String {
+        PRODUCT_TOKEN.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    async fn run(repository: &IdentityRepository, sql: &str, binds: &[&str]) {
+        let mut query = sqlx::query(sql);
+        for bind in binds {
+            query = query.bind(*bind);
+        }
+        query.execute(&repository.pool).await.expect(sql);
+    }
+
+    /// A Bond with no native session at all, attached to an AIS profile whose
+    /// only live session is the active product client `PRODUCT_TOKEN`.
+    async fn attached_product_bond() -> (IdentityRepository, PubDress, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("directory");
+        let url = format!("sqlite://{}", dir.path().join("special.sqlite").display());
+        let repository = IdentityRepository::connect(&url).await.expect("legacy store");
+        let product = crate::public_info::PublicInfoRepository::connect(&url)
+            .await
+            .expect("product store");
+        crate::public_info::LegacyBondMigrationRepository::prepare(product)
+            .await
+            .expect("migration store");
+        let owner: PubDress = "0x0sky".parse().expect("owner");
+        run(&repository, "INSERT INTO identities(pub_dress, identity_kind, created_at) VALUES ('0x0sky', 'human', 1)", &[]).await;
+        run(&repository, "INSERT INTO public_profiles (issuer, subject, last_auth_time) VALUES ('https://auth.aiaiaiai.org', 'subject-a', 1)", &[]).await;
+        let hex = product_hex();
+        run(
+            &repository,
+            "INSERT INTO product_sessions (token_hash, issuer, subject, profile_id, created_at, expires_at, active) \
+             SELECT ?, issuer, subject, profile_id, 1, 100000, 1 FROM public_profiles",
+            &[&hex],
+        )
+        .await;
+        run(&repository, "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x0sky')", &[]).await;
+        run(
+            &repository,
+            "INSERT INTO legacy_bond_bindings (bond_id, profile_id, linked_at) \
+             SELECT k.bond_id, p.profile_id, 2 FROM legacy_bond_keys k CROSS JOIN public_profiles p",
+            &[],
+        )
+        .await;
+        fund_fixture(&repository, &owner, 1000).await;
+        (repository, owner, dir)
+    }
+
+    fn product_order(id: &str) -> IssuerSpecialOrderSnapshot {
+        IssuerSpecialOrderSnapshot {
+            authorization: SpendAuthorization::Session(PRODUCT_TOKEN.to_vec()),
+            ..order(id)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_active_product_session_of_an_attached_bond_buys_collects_and_activates() {
+        let (repository, owner, _dir) = attached_product_bond().await;
+        let id = "product-order-1";
+        assert_eq!(
+            repository.settle_special_order(&owner, &product_order(id), 100, true).await.unwrap(),
+            SpecialSeedsOutcome::IssuedItem
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
+        let visit = "p".repeat(43);
+        repository.create_market_visit(&visit, &owner, &PRODUCT_TOKEN, 200, 1000).await.unwrap();
+        assert!(repository.collect_special_item(&owner, id, &visit, &PRODUCT_TOKEN, 250).await.unwrap());
+        assert!(repository.activate_special_item(&owner, id, &PRODUCT_TOKEN, 300).await.unwrap());
+        let clock = repository.read_subscription_clock(&owner, 300).await.unwrap();
+        assert_eq!(clock.special_remaining_ms.get(), JANUARY_MS);
+    }
+
+    #[tokio::test]
+    async fn a_product_session_that_is_not_the_active_live_bound_client_spends_nothing() {
+        for (label, sabotage) in [
+            ("inactive", "UPDATE product_sessions SET active = 0"),
+            ("expired", "UPDATE product_sessions SET expires_at = 250"),
+            ("unbound", "DELETE FROM legacy_bond_bindings"),
+            ("signed out", "DELETE FROM product_sessions"),
+            ("profile gone", "DELETE FROM public_profiles"),
+        ] {
+            let (repository, owner, _dir) = attached_product_bond().await;
+            run(&repository, sabotage, &[]).await;
+            assert_eq!(
+                repository.settle_special_order(&owner, &product_order("product-order-x"), 300_000, true).await.unwrap(),
+                SpecialSeedsOutcome::SessionChanged,
+                "{label}"
+            );
+            assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 1000, "{label}: nothing debited");
+            assert!(!repository.collect_special_item(&owner, "product-order-x", &"p".repeat(43), &PRODUCT_TOKEN, 300_000).await.unwrap(), "{label}");
+            assert!(!repository.activate_special_item(&owner, "product-order-x", &PRODUCT_TOKEN, 300_000).await.unwrap(), "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_product_session_cannot_act_for_another_bond_or_by_a_matching_name() {
+        let (repository, owner, _dir) = attached_product_bond().await;
+        run(&repository, "INSERT INTO identities(pub_dress, identity_kind, created_at) VALUES ('0x1other', 'human', 1)", &[]).await;
+        let other: PubDress = "0x1other".parse().unwrap();
+        fund_fixture(&repository, &other, 1000).await;
+        let mut theirs = product_order("product-order-other");
+        theirs.recipient_pub_dress = "0x1other".to_owned();
+        assert_eq!(
+            repository.settle_special_order(&other, &theirs, 300, true).await.unwrap(),
+            SpecialSeedsOutcome::SessionChanged
+        );
+        // The profile's public name equals the other Bond's address: still no link.
+        run(&repository, "UPDATE public_profiles SET pub_dress = '0x1other'", &[]).await;
+        assert_eq!(
+            repository.settle_special_order(&other, &theirs, 300, true).await.unwrap(),
+            SpecialSeedsOutcome::SessionChanged
+        );
+        assert_eq!(repository.read_seeds_balance(&other).await.unwrap(), 1000);
+        // The attached Bond itself still works.
+        assert_eq!(
+            repository.settle_special_order(&owner, &product_order("product-order-mine"), 300, true).await.unwrap(),
+            SpecialSeedsOutcome::IssuedItem
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_takeover_request_by_another_client_blocks_a_product_session_until_it_lapses() {
+        let (repository, owner, _dir) = attached_product_bond().await;
+        let other_client = "f".repeat(64);
+        run(
+            &repository,
+            "INSERT INTO product_activation_requests \
+             (id, issuer, subject, requester_token_hash, approver_token_hash, requester_label, approver_label, \
+              epoch, status, created_at, deadline) \
+             SELECT ?, issuer, subject, ?, ?, 'iPhone', 'Mac', 0, 'pending', 1, 1000 FROM public_profiles",
+            &[&"a".repeat(32), &other_client, &product_hex()],
+        )
+        .await;
+        assert_eq!(
+            repository.settle_special_order(&owner, &product_order("product-order-blocked"), 500_000, true).await.unwrap(),
+            SpecialSeedsOutcome::SessionChanged,
+            "a request open at 500 s blocks spending"
+        );
+        assert_eq!(
+            repository.settle_special_order(&owner, &product_order("product-order-after"), 1_500_000, true).await.unwrap(),
+            SpecialSeedsOutcome::IssuedItem,
+            "a lapsed request no longer blocks"
+        );
     }
 }
