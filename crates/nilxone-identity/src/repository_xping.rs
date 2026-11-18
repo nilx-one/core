@@ -41,7 +41,7 @@ impl IdentityRepository {
         now_ms: u64,
     ) -> Result<Result<nilxone_contracts::XpingEngine, XpingSeedsRepairRefusal>, RepositoryError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        if !spend_session_active_in(&mut tx, owner, active_session_hash, now_ms / 1000).await? {
+        if !spend_actor_session_active_in(&mut tx, owner, active_session_hash, now_ms / 1000).await? {
             return Ok(Err(XpingSeedsRepairRefusal::SessionChanged));
         }
         credit_starter_seeds_in(&mut tx, owner, now_ms).await?;
@@ -162,4 +162,36 @@ async fn read_xping_engine_in(
             .map(|at| to_u64(at).map(DecimalU64::new))
             .transpose()?,
     })
+}
+
+#[cfg(test)]
+mod product_session_tests {
+    use super::XpingSeedsRepairRefusal;
+    use crate::{ProviderIdentity, PubDress};
+
+    #[tokio::test]
+    async fn only_the_active_attached_product_session_may_repair() {
+        for (active, bound) in [(true, true), (false, true), (true, false)] {
+            let (repository, _dir) = super::product_session_testing::file_repository().await;
+            let sky: PubDress = "0x1sky".parse().expect("owner");
+            repository
+                .register(&sky, &ProviderIdentity::telegram(7), 100)
+                .await
+                .expect("registration");
+            super::product_session_testing::attach(&repository, "0x1sky", active).await;
+            if !bound {
+                sqlx::query("DELETE FROM legacy_bond_bindings")
+                    .execute(&repository.pool)
+                    .await
+                    .unwrap();
+            }
+            let engine = repository.read_xping_engine(&sky, 5_000_000).await.unwrap();
+            let outcome = repository
+                .repair_xping_with_seeds(&sky, &super::product_session_testing::TOKEN, engine, 5_000_000)
+                .await
+                .unwrap();
+            let refused = matches!(outcome, Err(XpingSeedsRepairRefusal::SessionChanged));
+            assert_eq!(refused, !(active && bound), "active={active} bound={bound}: {outcome:?}");
+        }
+    }
 }
