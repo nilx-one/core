@@ -9,7 +9,8 @@ TypeScript copy until it switches to Core's.
 
 `nilxone_contracts::walk_graph` answers one question for every client: how
 does an Avaia walk from here to there. It is pure and deterministic. A host
-reads the `roads` features of the map tiles it loaded, builds the graph,
+reads the `roads` features of the map tiles it loaded (or hands Core the
+tiles' bytes: [vector tile roads](vector-tile-roads.md)), builds the graph,
 places points on it and routes between them. Fetching tiles, drawing the walk
 and deciding where to go (the [Avaia drive](avaia-drive.md)) stay with the
 host and the drive. The drive still never sees a coordinate.

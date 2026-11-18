@@ -159,6 +159,7 @@ pub use xping_engine::{
     xping_engine_view_wire,
 };
 
+pub mod vector_tile;
 pub mod walk_graph;
 
 mod special_seeds_terms;
