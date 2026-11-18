@@ -29,6 +29,10 @@ pub struct BoundLegacyBond {
     /// The legacy address as it is now, for the existing game repositories.
     pub pub_dress: String,
     pub profile_id: String,
+    /// Whether this session is the profile's active client. Read identity is
+    /// allowed either way; hosts use this only to answer early, and every
+    /// write still re-checks `active = 1` atomically in Core.
+    pub active: bool,
 }
 
 impl LegacyBondMigrationRepository {
@@ -47,7 +51,7 @@ impl LegacyBondMigrationRepository {
             return Ok(None);
         };
         let row = sqlx::query(
-            "SELECT k.bond_id, k.legacy_pub_dress, b.profile_id \
+            "SELECT k.bond_id, k.legacy_pub_dress, b.profile_id, s.active \
              FROM product_sessions s \
              JOIN public_profiles p \
                ON p.issuer = s.issuer AND p.subject = s.subject AND p.profile_id = s.profile_id \
@@ -65,6 +69,7 @@ impl LegacyBondMigrationRepository {
                 bond_id: row.try_get("bond_id")?,
                 pub_dress: row.try_get("legacy_pub_dress")?,
                 profile_id: row.try_get("profile_id")?,
+                active: row.try_get::<i64, _>("active")? == 1,
             })
         })
         .transpose()
@@ -184,6 +189,7 @@ mod tests {
                 bond_id,
                 pub_dress: "0x1owner".into(),
                 profile_id,
+                active: false,
             })
         );
     }
@@ -252,23 +258,35 @@ mod tests {
         let (store, _dir) = store().await;
         let owner = profile(&store, "subject-a", &token('a')).await;
         let bond_id = attach(&store, "0x1owner", &owner).await;
-        let active: i64 =
-            sqlx::query_scalar("SELECT active FROM product_sessions WHERE token_hash = ?")
+        let active = || async {
+            sqlx::query_scalar::<_, i64>("SELECT active FROM product_sessions WHERE token_hash = ?")
                 .bind(token('a'))
                 .fetch_one(&store.repository.pool)
                 .await
-                .unwrap();
-        assert_eq!(active, 0, "the fixture session is not the active client");
-        let resolved = store.resolve_session_bond(&token('a'), NOW).await.unwrap();
-        assert_eq!(resolved.map(|bond| bond.bond_id), Some(bond_id));
+                .unwrap()
+        };
+        assert_eq!(
+            active().await,
+            0,
+            "the fixture session is not the active client"
+        );
+        let resolved = store
+            .resolve_session_bond(&token('a'), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.bond_id, bond_id);
+        assert!(!resolved.active, "an inactive session reports it");
         // Resolving neither activates the session nor changes its owner.
-        let after: i64 =
-            sqlx::query_scalar("SELECT active FROM product_sessions WHERE token_hash = ?")
-                .bind(token('a'))
-                .fetch_one(&store.repository.pool)
-                .await
-                .unwrap();
-        assert_eq!(after, 0);
+        assert_eq!(active().await, 0);
+
+        exec(&store, "UPDATE product_sessions SET active = 1", &[]).await;
+        let now_active = store
+            .resolve_session_bond(&token('a'), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(now_active.active);
     }
 
     #[tokio::test]
