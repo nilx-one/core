@@ -19,7 +19,9 @@ host and the drive. The drive still never sees a coordinate.
 
 - **Builds the graph** from `RoadFeature`s: each feature's `kind` and
   `kind_detail` give a `Surface`, or none for what is not walked along
-  (highways, rail, ferries, anything unknown). Coordinates are snapped to
+  (highways, rail, ferries, anything unknown). A way of kind `other` is
+  walked only with a known detail: the archive files living streets there,
+  beside bus stops, platforms and services. Coordinates are snapped to
   1e-7 degrees. Overlapping copies keep the cheapest surface. Line ends that a
   tile cut a hair short are joined back within 1 m. The same features in any
   order give the same graph, numbering included.
