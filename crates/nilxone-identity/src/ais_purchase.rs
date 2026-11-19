@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{JsonWebKeySet, SignInError, Signature, URL_SAFE_NO_PAD, decode_json, signing_key};
 use crate::{
-    IdentityRepository, PubDress, RepositoryError,
+    IdentityRepository, RepositoryError,
     market_issuer::{IssuerOrder, TERM_POLICY},
     repository::{IssuerSpecialOrderSnapshot, SpecialSeedsOutcome, SpendAuthorization},
 };
@@ -162,8 +162,11 @@ pub async fn settle(
     {
         return Ok(SpecialSeedsOutcome::InvalidTerms);
     }
-    let Ok(owner) = market.recipient_subject.parse::<PubDress>() else {
-        return Ok(SpecialSeedsOutcome::InvalidTerms);
+    let Some(owner) = repository
+        .bond_for_purchase_subject(&claims.iss, &claims.sub)
+        .await?
+    else {
+        return Ok(SpecialSeedsOutcome::AccountUnlinked);
     };
     let snapshot = IssuerSpecialOrderSnapshot {
         order_id: wallet_order_key(&claims),

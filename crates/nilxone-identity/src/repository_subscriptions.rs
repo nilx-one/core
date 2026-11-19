@@ -375,6 +375,26 @@ impl IdentityRepository {
         u64::try_from(stored).map_err(|_| RepositoryError::CorruptSeedsBalance)
     }
 
+    pub(crate) async fn bond_for_purchase_subject(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<PubDress>, RepositoryError> {
+        let owner = sqlx::query_scalar::<_, String>(
+            "SELECT k.legacy_pub_dress FROM public_profiles p
+             JOIN legacy_bond_bindings b ON b.profile_id = p.profile_id
+             JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+             WHERE p.issuer = ? AND p.subject = ?",
+        )
+        .bind(issuer)
+        .bind(subject)
+        .fetch_optional(&self.pool)
+        .await?;
+        owner
+            .map(|owner| owner.parse().map_err(|_| RepositoryError::CorruptHumanPubDress))
+            .transpose()
+    }
+
     /// Atomic debit and Special grant for a verified 0xda-market issuer order.
     ///
     /// This is **not** proof that the caller actually authenticated the issuer;
@@ -1554,7 +1574,7 @@ mod special_seeds_tests {
             "attributes": {
                 "sku": "0x1_special_1m", "issuer": "0x1", "denomination": "seeds",
                 "price_id": 42, "amount_minor": 640, "status": "processing",
-                "recipient_subject": owner.as_str(), "link_provider": "telegram",
+                "recipient_subject": "", "link_provider": "telegram",
                 "link_provider_user_id": "123456789", "created_at": "2026-11-19T00:00:00Z",
                 "term": {"months": 1, "policy": "calendar_months_utc"}
             }
