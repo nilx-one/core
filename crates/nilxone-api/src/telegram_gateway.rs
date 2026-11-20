@@ -131,7 +131,9 @@ pub fn authorize(
     if authority.provider_verified != Verification::Confirmed {
         return Err(GatewayRefusal::InvalidProviderEvidence);
     }
-    if authority.ais_subject_linked != Verification::Confirmed || authority.product_subject_matches != Verification::Confirmed {
+    if authority.ais_subject_linked != Verification::Confirmed
+        || authority.product_subject_matches != Verification::Confirmed
+    {
         return Err(GatewayRefusal::IdentityNotLinked);
     }
     if authority.session_exists != Verification::Confirmed {
@@ -162,7 +164,9 @@ pub fn authorize(
             if authority.update_reserved != Verification::Confirmed {
                 return Err(GatewayRefusal::UpdateNotReserved);
             }
-            if authority.same_device_proved != Verification::Confirmed || authority.continuation_consumed != Verification::Confirmed {
+            if authority.same_device_proved != Verification::Confirmed
+                || authority.continuation_consumed != Verification::Confirmed
+            {
                 return Err(GatewayRefusal::ContinuityNotProven);
             }
             Ok(GatewayGrant::OpenMiniApp)
