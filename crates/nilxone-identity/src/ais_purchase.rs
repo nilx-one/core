@@ -26,7 +26,7 @@ struct Header {
 }
 
 #[derive(Deserialize)]
-struct Claims {
+pub(crate) struct Claims {
     iss: String,
     aud: String,
     sub: String,
@@ -41,6 +41,26 @@ struct Claims {
     denomination: String,
     iat: u64,
     exp: u64,
+}
+
+impl Claims {
+    pub(crate) fn order_id(&self) -> &str {
+        &self.order_id
+    }
+}
+
+pub(crate) fn verify_permit(
+    permit: &str,
+    authority: &PurchaseAuthority<'_>,
+    now: u64,
+) -> Result<Claims, SignInError> {
+    verify(
+        permit,
+        authority.keys,
+        authority.issuer,
+        authority.product,
+        now,
+    )
 }
 
 fn verify(
@@ -140,13 +160,17 @@ pub async fn settle(
     market_order: &IssuerOrder,
     now_ms: u64,
 ) -> Result<SpecialSeedsOutcome, PurchaseError> {
-    let claims = verify(
-        permit,
-        authority.keys,
-        authority.issuer,
-        authority.product,
-        now_ms / 1000,
-    )?;
+    let claims = verify_permit(permit, authority, now_ms / 1000)?;
+    Ok(settle_claims(repository, &claims, market_order, now_ms).await?)
+}
+
+/// Settle verified permit claims against the claimed Market order.
+pub(crate) async fn settle_claims(
+    repository: &IdentityRepository,
+    claims: &Claims,
+    market_order: &IssuerOrder,
+    now_ms: u64,
+) -> Result<SpecialSeedsOutcome, RepositoryError> {
     let market = &market_order.attributes;
     let telegram = claims.telegram_id.to_string();
     if market_order.id != claims.order_id
@@ -172,22 +196,22 @@ pub async fn settle(
         return Ok(SpecialSeedsOutcome::AccountUnlinked);
     };
     let snapshot = IssuerSpecialOrderSnapshot {
-        order_id: wallet_order_key(&claims),
+        order_id: wallet_order_key(claims),
         authorization: SpendAuthorization::AisTelegram {
-            issuer: claims.iss,
-            ais_subject: claims.sub,
+            issuer: claims.iss.clone(),
+            ais_subject: claims.sub.clone(),
             telegram,
         },
         issuer: market.issuer.clone(),
         denomination: market.denomination.clone(),
         status: market.status.clone(),
         recipient_pub_dress: owner.as_str().to_owned(),
-        sku: claims.sku,
+        sku: claims.sku.clone(),
         price_id: claims.price_id,
         amount_minor: claims.amount_minor,
         term_months: 1,
     };
-    Ok(repository
+    repository
         .settle_special_seeds(&owner, &snapshot, now_ms)
-        .await?)
+        .await
 }

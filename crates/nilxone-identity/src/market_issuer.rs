@@ -31,6 +31,7 @@ use nilxone_contracts::{SpecialSeedsOrder, special_seeds_term_months};
 
 use crate::{
     IdentityRepository,
+    aiaiaiai_sign_in::purchase::{PurchaseAuthority, settle_claims, verify_permit},
     repository::{IssuerSpecialOrderSnapshot, SpecialSeedsOutcome, SpendAuthorization},
 };
 
@@ -145,7 +146,8 @@ pub trait MarketIssuerApi: Send + Sync {
 pub enum Settlement {
     Fulfilled,
     Rejected(&'static str),
-    /// Another issuer decision exists already (expired, cancelled, done).
+    /// Another issuer decision exists already (expired, cancelled, done), or the order is
+    /// a Telegram order that only its AIS permit can authorize.
     Skipped,
     /// Left processing for an operator: a committed receipt disagrees with it.
     Held,
@@ -235,6 +237,12 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
     }
 
     pub async fn handle(&self, order: &IssuerOrder) -> Result<Settlement, WorkerFailure> {
+        // A Telegram order is authorized by the buyer's AIS permit, which the poller
+        // never holds: `settle_ais_permit` claims and settles it. Claiming it here
+        // would start a debit no permit authorizes, and a later pass would repeat it.
+        if order.attributes.link_provider == TELEGRAM_PROVIDER {
+            return Ok(Settlement::Skipped);
+        }
         let order = match order.attributes.status.as_str() {
             "processing" => order.clone(),
             "pending" => self.market.claim(&order.id).await?,
@@ -296,28 +304,9 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
                     SpendAuthorization::Session(visit.session_token_hash),
                 )
             }
-            // `valid_terms` admits only the visit and Telegram providers.
-            _ => {
-                let Some(owner) = self
-                    .repository
-                    .find_provider_owner(TELEGRAM_PROVIDER, &attributes.link_provider_user_id)
-                    .await?
-                else {
-                    return self.reject(order, rejection::ACCOUNT_UNLINKED).await;
-                };
-                // Market resolved the recipient through the partner lookup;
-                // a handle that no longer names the bound Bond is not paid.
-                if owner.as_str() != attributes.recipient_subject {
-                    return self.reject(order, rejection::RECIPIENT_MISMATCH).await;
-                }
-                (
-                    owner,
-                    SpendAuthorization::ProviderLink {
-                        provider: TELEGRAM_PROVIDER.to_owned(),
-                        subject: attributes.link_provider_user_id.clone(),
-                    },
-                )
-            }
+            // `handle` never passes a Telegram order here, and `valid_terms` admits
+            // only the visit and Telegram providers.
+            _ => return self.reject(order, rejection::INVALID_TERMS).await,
         };
 
         let snapshot = IssuerSpecialOrderSnapshot {
@@ -362,6 +351,50 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         }
     }
 
+    /// Settle the checkout a buyer confirmed through AIS. The permit is verified
+    /// against the authority the host pinned before Market is touched; Market's
+    /// claim then freezes the order the permit's terms are matched to. A repeat
+    /// finds the committed wallet operation and confirms the same order again.
+    pub async fn settle_ais_permit(
+        &self,
+        authority: &PurchaseAuthority<'_>,
+        permit: &str,
+    ) -> Result<Settlement, AisSettleError> {
+        let now_ms = (self.now_ms)();
+        let claims = verify_permit(permit, authority, now_ms / 1000)?;
+        let order = self
+            .market
+            .claim(claims.order_id())
+            .await
+            .map_err(WorkerFailure::from)?;
+        if order.attributes.status != "processing" {
+            return Ok(Settlement::Skipped);
+        }
+        let Some(months) = valid_terms(&order.attributes) else {
+            return Ok(self.reject(&order, rejection::INVALID_TERMS).await?);
+        };
+        let outcome = settle_claims(&self.repository, &claims, &order, now_ms)
+            .await
+            .map_err(WorkerFailure::from)?;
+        let code = match outcome {
+            SpecialSeedsOutcome::Granted
+            | SpecialSeedsOutcome::IssuedItem
+            | SpecialSeedsOutcome::AlreadyGranted => {
+                return Ok(self.fulfil(&order, months).await?);
+            }
+            SpecialSeedsOutcome::InsufficientSeeds => rejection::INSUFFICIENT_SEEDS,
+            SpecialSeedsOutcome::InvalidTerms => rejection::INVALID_TERMS,
+            SpecialSeedsOutcome::SessionChanged => rejection::SESSION_CHANGED,
+            SpecialSeedsOutcome::AccountUnlinked => rejection::ACCOUNT_UNLINKED,
+            SpecialSeedsOutcome::SpecialActive => rejection::SPECIAL_ACTIVE,
+            SpecialSeedsOutcome::ConflictingReplay => {
+                error!(order = %order.id, "order id was committed under different terms");
+                return Ok(Settlement::Held);
+            }
+        };
+        Ok(self.reject(&order, code).await?)
+    }
+
     async fn fulfil(&self, order: &IssuerOrder, months: u32) -> Result<Settlement, WorkerFailure> {
         let attributes = &order.attributes;
         let confirmation = IssuerConfirmation {
@@ -383,6 +416,15 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         self.market.reject(&order.id, code).await?;
         Ok(Settlement::Rejected(code))
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AisSettleError {
+    /// The permit is not one the pinned authority issued for this checkout.
+    #[error(transparent)]
+    Permit(#[from] crate::aiaiaiai_sign_in::SignInError),
+    #[error(transparent)]
+    Worker(#[from] WorkerFailure),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -803,6 +845,7 @@ mod tests {
 
     struct Fixture {
         _directory: tempfile::TempDir,
+        url: String,
         repository: IdentityRepository,
         pool: sqlx::SqlitePool,
         owner: PubDress,
@@ -868,6 +911,7 @@ mod tests {
             .insert("order-0001".to_owned(), order("order-0001"));
         Fixture {
             _directory: directory,
+            url,
             repository,
             pool,
             owner,
@@ -1040,19 +1084,107 @@ mod tests {
         }
     }
 
-    /// Turns the fixture's order into one placed from the Telegram account
-    /// `123456789`, optionally bound to the fixture's Bond.
-    async fn telegram_order(fixture: &Fixture, bound: bool) {
-        if bound {
-            sqlx::query(
-                "INSERT INTO identity_providers(provider, provider_subject, pub_dress) \
-                 VALUES ('telegram', '123456789', ?)",
-            )
-            .bind(fixture.owner.as_str())
-            .execute(&fixture.pool)
+    const AIS_ISSUER_FOR_TEST: &str = "https://auth.aiaiaiai.org";
+    const AIS_PRODUCT_FOR_TEST: &str = "0xda-market";
+
+    /// The fixture's Bond as an AIS person: a profile bound to the Bond, the
+    /// Telegram account `123456789` linked to it, and AIS's signing key.
+    struct AisBuyer {
+        signer: ed25519_dalek::SigningKey,
+        keys: crate::aiaiaiai_sign_in::JsonWebKeySet,
+        subject: String,
+    }
+
+    async fn ais_buyer(fixture: &Fixture) -> AisBuyer {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        let product = crate::public_info::PublicInfoRepository::connect(&fixture.url)
             .await
-            .expect("telegram link");
+            .expect("product store");
+        crate::public_info::ClientTransitionRepository::prepare(product.clone())
+            .await
+            .expect("client transition store");
+        crate::public_info::LegacyBondMigrationRepository::prepare(product)
+            .await
+            .expect("migration store");
+        let subject = URL_SAFE_NO_PAD.encode([4_u8; 32]);
+        for (sql, bind) in [
+            (
+                "INSERT INTO public_profiles (issuer, subject, last_auth_time) VALUES (?, ?, 1)",
+                true,
+            ),
+            (
+                "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x0sky')",
+                false,
+            ),
+        ] {
+            let mut query = sqlx::query(sql);
+            if bind {
+                query = query.bind(AIS_ISSUER_FOR_TEST).bind(&subject);
+            }
+            query.execute(&fixture.pool).await.expect(sql);
         }
+        sqlx::query(
+            "INSERT INTO legacy_bond_bindings (bond_id, profile_id, linked_at) \
+             SELECT k.bond_id, p.profile_id, 2 FROM legacy_bond_keys k CROSS JOIN public_profiles p",
+        )
+        .execute(&fixture.pool)
+        .await
+        .expect("bond binding");
+        sqlx::query(
+            "INSERT INTO identity_providers(provider, provider_subject, pub_dress) \
+             VALUES ('telegram', '123456789', ?)",
+        )
+        .bind(fixture.owner.as_str())
+        .execute(&fixture.pool)
+        .await
+        .expect("telegram link");
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[8_u8; 32]);
+        let keys = serde_json::from_value(serde_json::json!({
+            "keys": [{
+                "kty": "OKP", "crv": "Ed25519", "kid": "ais",
+                "x": URL_SAFE_NO_PAD.encode(signer.verifying_key().as_bytes())
+            }]
+        }))
+        .expect("keys");
+        AisBuyer {
+            signer,
+            keys,
+            subject,
+        }
+    }
+
+    /// A permit for `order-0001`'s confirmed terms unless `price_id` or `sub` say otherwise.
+    fn permit(buyer: &AisBuyer, now_ms: u64, price_id: u64, sub: &str) -> String {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ed25519_dalek::Signer as _;
+        let iat = now_ms / 1000 - 10;
+        let claims = serde_json::json!({
+            "iss": AIS_ISSUER_FOR_TEST, "aud": "0x1", "azp": AIS_PRODUCT_FOR_TEST, "sub": sub,
+            "purpose": "telegram.special.purchase", "order_id": "order-0001",
+            "telegram_id": 123456789, "sku": "0x1_special_1m", "quantity": 1,
+            "price_id": price_id, "amount_minor": 640, "denomination": "seeds",
+            "iat": iat, "exp": iat + 120
+        });
+        let head = serde_json::json!({"alg": "EdDSA", "typ": "purchase+jwt", "kid": "ais"});
+        let data = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(head.to_string()),
+            URL_SAFE_NO_PAD.encode(claims.to_string())
+        );
+        let signature = buyer.signer.sign(data.as_bytes());
+        format!("{data}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+    }
+
+    fn authority(buyer: &AisBuyer) -> PurchaseAuthority<'_> {
+        PurchaseAuthority {
+            issuer: AIS_ISSUER_FOR_TEST,
+            product: AIS_PRODUCT_FOR_TEST,
+            keys: &buyer.keys,
+        }
+    }
+
+    /// Turns the fixture's order into one placed from the Telegram account `123456789`.
+    fn telegram_order(fixture: &Fixture) {
         let mut orders = fixture.market.orders.lock().unwrap();
         let attributes = &mut orders.get_mut("order-0001").unwrap().attributes;
         attributes.link_provider = "telegram".to_owned();
@@ -1060,52 +1192,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_telegram_order_from_a_bound_account_is_paid_without_a_visit() {
+    async fn the_poller_leaves_a_telegram_order_for_its_permit() {
         let fixture = fixture(1000).await;
-        telegram_order(&fixture, true).await;
-        // No browser session and long after any visit window.
-        sqlx::query("UPDATE native_sessions SET active = 0")
-            .execute(&fixture.pool)
-            .await
-            .expect("no session");
-        worker(&fixture, NOW_MS + 7 * DAY)
-            .tick()
-            .await
-            .expect("tick");
+        let _buyer = ais_buyer(&fixture).await;
+        telegram_order(&fixture);
+        worker(&fixture, NOW_MS).tick().await.expect("tick");
+        // Not claimed, not debited, not decided: only a permit authorizes it.
+        assert_eq!(fixture.market.status("order-0001"), "pending");
+        assert_eq!(balance(&fixture).await, 1000);
+        assert!(fixture.market.rejections.lock().unwrap().is_empty());
+        assert!(fixture.market.confirmations.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ais_permit_pays_and_confirms_the_telegram_order_once() {
+        let fixture = fixture(1000).await;
+        let buyer = ais_buyer(&fixture).await;
+        telegram_order(&fixture);
+        let permit = permit(&buyer, NOW_MS, 7, &buyer.subject);
+        let worker = worker(&fixture, NOW_MS);
+
+        let first = worker.settle_ais_permit(&authority(&buyer), &permit).await;
+        assert_eq!(first.expect("first"), Settlement::Fulfilled);
         assert_eq!(fixture.market.status("order-0001"), "fulfilled");
         assert_eq!(balance(&fixture).await, 360);
         assert_eq!(
             fixture.market.confirmations.lock().unwrap()[0].recipient_subject,
             "0x0sky"
         );
+
+        // A repeated submission confirms the same order and debits nothing more.
+        let again = worker.settle_ais_permit(&authority(&buyer), &permit).await;
+        assert_eq!(again.expect("again"), Settlement::Fulfilled);
+        assert_eq!(balance(&fixture).await, 360);
+        assert_eq!(fixture.market.confirmations.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
-    async fn a_telegram_order_is_refused_when_its_account_does_not_hold_the_recipient() {
-        let unbound = fixture(1000).await;
-        telegram_order(&unbound, false).await;
-        worker(&unbound, NOW_MS).tick().await.expect("tick");
-        assert_eq!(
-            unbound.market.rejections.lock().unwrap().as_slice(),
-            [rejection::ACCOUNT_UNLINKED.to_owned()]
-        );
-
+    async fn an_ais_permit_that_does_not_match_the_order_or_buyer_is_refused_unpaid() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         let fixture = fixture(1000).await;
-        telegram_order(&fixture, true).await;
-        fixture
-            .market
-            .orders
-            .lock()
-            .unwrap()
-            .get_mut("order-0001")
-            .unwrap()
-            .attributes
-            .recipient_subject = "0xother".to_owned();
-        worker(&fixture, NOW_MS).tick().await.expect("tick");
+        let buyer = ais_buyer(&fixture).await;
+        telegram_order(&fixture);
+        let worker = worker(&fixture, NOW_MS);
+
+        // Another price than Market froze: refused, nothing debited.
+        let changed = permit(&buyer, NOW_MS, 8, &buyer.subject);
+        let outcome = worker.settle_ais_permit(&authority(&buyer), &changed).await;
         assert_eq!(
-            fixture.market.rejections.lock().unwrap().as_slice(),
-            [rejection::RECIPIENT_MISMATCH.to_owned()]
+            outcome.expect("changed"),
+            Settlement::Rejected(rejection::INVALID_TERMS)
         );
+        // A person AIS vouched for who holds no Bond here: refused, nothing debited.
+        fixture.market.set_status("order-0001", "pending");
+        let stranger = permit(&buyer, NOW_MS, 7, &URL_SAFE_NO_PAD.encode([5_u8; 32]));
+        let outcome = worker
+            .settle_ais_permit(&authority(&buyer), &stranger)
+            .await;
+        assert_eq!(
+            outcome.expect("stranger"),
+            Settlement::Rejected(rejection::ACCOUNT_UNLINKED)
+        );
+        assert_eq!(balance(&fixture).await, 1000);
+
+        // Another issuer's authority never reaches Market at all.
+        let other = PurchaseAuthority {
+            issuer: "https://ais-other.example",
+            ..authority(&buyer)
+        };
+        let good = permit(&buyer, NOW_MS, 7, &buyer.subject);
+        assert!(worker.settle_ais_permit(&other, &good).await.is_err());
         assert_eq!(balance(&fixture).await, 1000);
     }
 
@@ -1115,27 +1271,18 @@ mod tests {
         worker(&fixture, NOW_MS).tick().await.expect("first");
         assert_eq!(fixture.market.status("order-0001"), "fulfilled");
 
-        let mut second = order("order-0002");
-        second.attributes.link_provider = "telegram".to_owned();
-        second.attributes.link_provider_user_id = "123456789".to_owned();
-        sqlx::query(
-            "INSERT INTO identity_providers(provider, provider_subject, pub_dress) \
-             VALUES ('telegram', '123456789', ?)",
-        )
-        .bind(fixture.owner.as_str())
-        .execute(&fixture.pool)
-        .await
-        .expect("telegram link");
-        fixture
-            .market
-            .orders
-            .lock()
-            .unwrap()
-            .insert("order-0002".to_owned(), second);
-        worker(&fixture, NOW_MS + DAY).tick().await.expect("second");
+        // The Bond holds Special now; a Telegram purchase through AIS is refused.
+        let buyer = ais_buyer(&fixture).await;
+        telegram_order(&fixture);
+        fixture.market.set_status("order-0001", "pending");
+        let later = NOW_MS + DAY;
+        let permit = permit(&buyer, later, 7, &buyer.subject);
+        let outcome = worker(&fixture, later)
+            .settle_ais_permit(&authority(&buyer), &permit)
+            .await;
         assert_eq!(
-            fixture.market.rejections.lock().unwrap().as_slice(),
-            [rejection::SPECIAL_ACTIVE.to_owned()]
+            outcome.expect("second"),
+            Settlement::Rejected(rejection::SPECIAL_ACTIVE)
         );
         assert_eq!(balance(&fixture).await, 4360);
     }
