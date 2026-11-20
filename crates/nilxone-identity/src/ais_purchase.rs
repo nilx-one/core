@@ -139,6 +139,113 @@ pub enum PurchaseError {
     Storage(#[from] RepositoryError),
 }
 
+/// AIS as the authority for checkout permits: who signs them, which product may request one,
+/// and where its public signing keys are read. There is one AIS, so these are values here and
+/// not settings of any host. The keys are cached; a permit refused under an older cache is
+/// tried once more under fresh keys, at most once a minute, so a stream of bad permits cannot
+/// turn the service into a client hammering AIS.
+pub struct AisAuthority {
+    issuer: String,
+    product: String,
+    keys_uri: url::Url,
+    http: reqwest::Client,
+    cached: std::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<JsonWebKeySet>)>>,
+}
+
+impl AisAuthority {
+    /// The one AIS, and the only product that may request a permit for this checkout.
+    pub const ISSUER: &'static str = "https://auth.aiaiaiai.org";
+    pub const PRODUCT: &'static str = "0xda-market";
+
+    const KEY_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+    const REFRESH_AFTER_REFUSAL: std::time::Duration = std::time::Duration::from_secs(60);
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const MAX_KEY_BYTES: usize = 65_536;
+
+    pub fn production() -> Self {
+        Self::for_origin(Self::ISSUER, Self::PRODUCT).expect("the pinned AIS origin is a URL")
+    }
+
+    /// An authority at another origin, for tests and tooling.
+    pub fn for_origin(origin: &str, product: &str) -> Option<Self> {
+        let keys_uri = url::Url::parse(origin)
+            .ok()?
+            .join("/.well-known/jwks.json")
+            .ok()?;
+        Some(Self {
+            issuer: origin.trim_end_matches('/').to_owned(),
+            product: product.to_owned(),
+            keys_uri,
+            http: reqwest::Client::builder()
+                .timeout(Self::TIMEOUT)
+                .build()
+                .ok()?,
+            cached: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// Start with these keys already fetched.
+    pub fn with_keys(self, keys: JsonWebKeySet) -> Self {
+        *self.lock() = Some((std::time::Instant::now(), std::sync::Arc::new(keys)));
+        self
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<(std::time::Instant, std::sync::Arc<JsonWebKeySet>)>>
+    {
+        // A poisoned lock only means a panic elsewhere; the cache is a hint.
+        self.cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn cached(&self, max_age: std::time::Duration) -> Option<std::sync::Arc<JsonWebKeySet>> {
+        self.lock()
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < max_age)
+            .map(|(_, keys)| std::sync::Arc::clone(keys))
+    }
+
+    async fn fetch(&self) -> Option<std::sync::Arc<JsonWebKeySet>> {
+        let response = self.http.get(self.keys_uri.clone()).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body = response
+            .bytes()
+            .await
+            .ok()
+            .filter(|b| b.len() <= Self::MAX_KEY_BYTES)?;
+        let keys = std::sync::Arc::new(serde_json::from_slice::<JsonWebKeySet>(&body).ok()?);
+        *self.lock() = Some((std::time::Instant::now(), std::sync::Arc::clone(&keys)));
+        Some(keys)
+    }
+
+    pub(crate) async fn current(&self) -> Option<std::sync::Arc<JsonWebKeySet>> {
+        match self.cached(Self::KEY_TTL) {
+            Some(keys) => Some(keys),
+            None => self.fetch().await,
+        }
+    }
+
+    /// Fresh keys after a refusal, unless the cache is already younger than a minute.
+    pub(crate) async fn refreshed(&self) -> Option<std::sync::Arc<JsonWebKeySet>> {
+        match self.cached(Self::REFRESH_AFTER_REFUSAL) {
+            Some(_) => None,
+            None => self.fetch().await,
+        }
+    }
+
+    pub(crate) fn purchase<'a>(&'a self, keys: &'a JsonWebKeySet) -> PurchaseAuthority<'a> {
+        PurchaseAuthority {
+            issuer: &self.issuer,
+            product: &self.product,
+            keys,
+        }
+    }
+}
+
 /// Authority pinned by the caller's environment. The keys must come from
 /// the configured issuer, never from the permit or the Telegram request.
 pub struct PurchaseAuthority<'a> {
