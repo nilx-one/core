@@ -209,16 +209,21 @@ mod tests {
         );
         let forged = r#"{"version":1,"update_id":42,"operation":"product_write","bond":"0x0sky"}"#;
         assert!(serde_json::from_str::<GatewayRequest>(forged).is_err());
+        assert_eq!(request(GatewayOperation::SessionState).validate(), Ok(()));
         assert_eq!(
-            request(GatewayOperation::SessionState).validate(),
-            Ok(())
-        );
-        assert_eq!(
-            GatewayRequest { version: 2, ..request(GatewayOperation::SessionState) }.validate(),
+            GatewayRequest {
+                version: 2,
+                ..request(GatewayOperation::SessionState)
+            }
+            .validate(),
             Err(GatewayRefusal::UnsupportedVersion)
         );
         assert_eq!(
-            GatewayRequest { update_id: 0, ..request(GatewayOperation::SessionState) }.validate(),
+            GatewayRequest {
+                update_id: 0,
+                ..request(GatewayOperation::SessionState)
+            }
+            .validate(),
             Err(GatewayRefusal::InvalidUpdate)
         );
     }
@@ -226,24 +231,45 @@ mod tests {
     #[test]
     fn provider_sender_or_anonymous_service_never_confers_bond_permission() {
         for authority in [
-            GatewayAuthority { service_authenticated: false, ..authority() },
-            GatewayAuthority { provider_verified: false, ..authority() },
-            GatewayAuthority { ais_subject_linked: false, ..authority() },
-            GatewayAuthority { product_subject_matches: false, ..authority() },
-            GatewayAuthority { session_exists: false, ..authority() },
+            GatewayAuthority {
+                service_authenticated: false,
+                ..authority()
+            },
+            GatewayAuthority {
+                provider_verified: false,
+                ..authority()
+            },
+            GatewayAuthority {
+                ais_subject_linked: false,
+                ..authority()
+            },
+            GatewayAuthority {
+                product_subject_matches: false,
+                ..authority()
+            },
+            GatewayAuthority {
+                session_exists: false,
+                ..authority()
+            },
         ] {
             assert!(authorize(&request(GatewayOperation::ProductRead), authority).is_err());
             assert!(authorize(&request(GatewayOperation::ProductWrite), authority).is_err());
         }
         assert_eq!(
-            authorize(&request(GatewayOperation::ProductRead), GatewayAuthority::default()),
+            authorize(
+                &request(GatewayOperation::ProductRead),
+                GatewayAuthority::default()
+            ),
             Err(GatewayRefusal::ServiceAuthenticationRequired)
         );
     }
 
     #[test]
     fn inactive_session_can_only_see_minimal_session_state() {
-        let inactive = GatewayAuthority { session_may_act: false, ..authority() };
+        let inactive = GatewayAuthority {
+            session_may_act: false,
+            ..authority()
+        };
         assert_eq!(
             authorize(&request(GatewayOperation::SessionState), inactive),
             Ok(GatewayGrant::SessionState)
@@ -262,7 +288,10 @@ mod tests {
 
     #[test]
     fn mutations_require_durable_update_reservation() {
-        let unreserved = GatewayAuthority { update_reserved: false, ..authority() };
+        let unreserved = GatewayAuthority {
+            update_reserved: false,
+            ..authority()
+        };
         assert_eq!(
             authorize(&request(GatewayOperation::ProductRead), unreserved),
             Ok(GatewayGrant::ProductRead)
@@ -283,7 +312,10 @@ mod tests {
             authorize(&request(GatewayOperation::OpenMiniApp), authority()),
             Err(GatewayRefusal::ContinuityNotProven)
         );
-        let provider_only = GatewayAuthority { same_device_proved: true, ..authority() };
+        let provider_only = GatewayAuthority {
+            same_device_proved: true,
+            ..authority()
+        };
         assert_eq!(
             authorize(&request(GatewayOperation::OpenMiniApp), provider_only),
             Err(GatewayRefusal::ContinuityNotProven)
