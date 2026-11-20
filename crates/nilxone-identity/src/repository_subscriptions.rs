@@ -38,6 +38,13 @@ pub enum SpendAuthorization {
     /// It must still be bound to the paying Bond when the debit commits, so an
     /// account unlinked (or moved to another Bond) after ordering cannot spend.
     ProviderLink { provider: String, subject: String },
+    /// Both the AIS profile and the Telegram account must still belong to
+    /// this Bond when the debit commits.
+    AisTelegram {
+        issuer: String,
+        ais_subject: String,
+        telegram: String,
+    },
 }
 
 impl SpendAuthorization {
@@ -47,6 +54,11 @@ impl SpendAuthorization {
             Self::ProviderLink { provider, subject } => {
                 provider.parse::<nilxone_contracts::ProviderType>().is_ok()
                     && subject.parse::<nilxone_contracts::ProviderSubject>().is_ok()
+            }
+            Self::AisTelegram { issuer, ais_subject, telegram } => {
+                !issuer.is_empty()
+                    && ais_subject.len() == 43
+                    && telegram.parse::<i64>().is_ok_and(|value| value > 0)
             }
         }
     }
@@ -363,6 +375,26 @@ impl IdentityRepository {
         u64::try_from(stored).map_err(|_| RepositoryError::CorruptSeedsBalance)
     }
 
+    pub(crate) async fn bond_for_purchase_subject(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<PubDress>, RepositoryError> {
+        let owner = sqlx::query_scalar::<_, String>(
+            "SELECT k.legacy_pub_dress FROM public_profiles p
+             JOIN legacy_bond_bindings b ON b.profile_id = p.profile_id
+             JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+             WHERE p.issuer = ? AND p.subject = ?",
+        )
+        .bind(issuer)
+        .bind(subject)
+        .fetch_optional(&self.pool)
+        .await?;
+        owner
+            .map(|owner| owner.parse().map_err(|_| RepositoryError::CorruptHumanPubDress))
+            .transpose()
+    }
+
     /// Atomic debit and Special grant for a verified 0xda-market issuer order.
     ///
     /// This is **not** proof that the caller actually authenticated the issuer;
@@ -458,6 +490,27 @@ impl IdentityRepository {
                 .bind(owner.as_str())
                 .fetch_one(&mut *transaction)
                 .await? != 0;
+                if !bound {
+                    return Ok(SpecialSeedsOutcome::AccountUnlinked);
+                }
+            }
+            SpendAuthorization::AisTelegram { issuer, ais_subject, telegram } => {
+                let bound = sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM public_profiles p
+                        JOIN legacy_bond_bindings b ON b.profile_id = p.profile_id
+                        JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+                        JOIN identity_providers t ON t.pub_dress = k.legacy_pub_dress
+                        WHERE p.issuer = ? AND p.subject = ? AND k.legacy_pub_dress = ?
+                          AND t.provider = 'telegram' AND t.provider_subject = ?
+                    )",
+                )
+                .bind(issuer)
+                .bind(ais_subject)
+                .bind(owner.as_str())
+                .bind(telegram)
+                .fetch_one(&mut *transaction)
+                .await?;
                 if !bound {
                     return Ok(SpecialSeedsOutcome::AccountUnlinked);
                 }
@@ -1483,6 +1536,94 @@ mod special_seeds_tests {
         .await;
         fund_fixture(&repository, &owner, 1000).await;
         (repository, owner, dir)
+    }
+
+    #[tokio::test]
+    async fn ais_permit_settles_the_exact_confirmed_order_once_for_the_linked_bond() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use serde_json::json;
+
+        use crate::{
+            aiaiaiai_sign_in::{JsonWebKeySet, purchase::{PurchaseAuthority, settle}},
+            market_issuer::IssuerOrder,
+        };
+
+        const NOW_MS: u64 = 1_001_000;
+        const ISSUER: &str = "https://ais-development.example";
+        const PRODUCT: &str = "market-development";
+
+        let (repository, owner, _dir) = attached_product_bond().await;
+        let subject = URL_SAFE_NO_PAD.encode([4_u8; 32]);
+        run(&repository, "DELETE FROM product_sessions", &[]).await;
+        run(
+            &repository,
+            "UPDATE public_profiles SET issuer = ?, subject = ?",
+            &[ISSUER, &subject],
+        ).await;
+        let signer = SigningKey::from_bytes(&[8_u8; 32]);
+        let keys: JsonWebKeySet = serde_json::from_value(json!({
+            "keys": [{
+                "kty": "OKP", "crv": "Ed25519", "kid": "dev",
+                "x": URL_SAFE_NO_PAD.encode(signer.verifying_key().as_bytes())
+            }]
+        })).unwrap();
+        let authority = PurchaseAuthority { issuer: ISSUER, product: PRODUCT, keys: &keys };
+        let order_json = |id: &str| json!({
+            "id": id,
+            "attributes": {
+                "sku": "0x1_special_1m", "issuer": "0x1", "denomination": "seeds",
+                "price_id": 42, "amount_minor": 640, "status": "processing",
+                "recipient_subject": "", "link_provider": "telegram",
+                "link_provider_user_id": "123456789", "created_at": "2026-11-19T00:00:00Z",
+                "term": {"months": 1, "policy": "calendar_months_utc"}
+            }
+        });
+        let sign = |id: &str, price_id: u64| {
+            let head = json!({"alg": "EdDSA", "typ": "purchase+jwt", "kid": "dev"});
+            let claims = json!({
+                "iss": ISSUER, "aud": "0x1", "azp": PRODUCT, "sub": subject,
+                "purpose": "telegram.special.purchase", "order_id": id,
+                "telegram_id": 123456789, "sku": "0x1_special_1m", "quantity": 1,
+                "price_id": price_id, "amount_minor": 640, "denomination": "seeds",
+                "iat": 1000, "exp": 1120
+            });
+            let data = format!("{}.{}", URL_SAFE_NO_PAD.encode(head.to_string()),
+                               URL_SAFE_NO_PAD.encode(claims.to_string()));
+            format!("{data}.{}", URL_SAFE_NO_PAD.encode(signer.sign(data.as_bytes()).to_bytes()))
+        };
+        let mut order: IssuerOrder = serde_json::from_value(order_json("a")).unwrap();
+        let permit = sign("a", 42);
+
+        let production = PurchaseAuthority { issuer: "https://auth.aiaiaiai.org", ..authority };
+        assert!(settle(&repository, &production, &permit, &order, NOW_MS).await.is_err());
+
+        order.attributes.price_id = 43;
+        assert_eq!(
+            settle(&repository, &authority, &permit, &order, NOW_MS).await.unwrap(),
+            SpecialSeedsOutcome::InvalidTerms
+        );
+        order.attributes.price_id = 42;
+        link_telegram(&repository, owner.as_str()).await;
+        run(&repository, "DELETE FROM identity_providers", &[]).await;
+        assert_eq!(
+            settle(&repository, &authority, &permit, &order, NOW_MS).await.unwrap(),
+            SpecialSeedsOutcome::AccountUnlinked
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 1000);
+
+        link_telegram(&repository, owner.as_str()).await;
+        assert_eq!(
+            settle(&repository, &authority, &permit, &order, NOW_MS).await.unwrap(),
+            SpecialSeedsOutcome::Granted
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
+        run(&repository, "DELETE FROM identity_providers", &[]).await;
+        assert_eq!(
+            settle(&repository, &authority, &permit, &order, NOW_MS).await.unwrap(),
+            SpecialSeedsOutcome::AlreadyGranted
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
     }
 
     fn product_order(id: &str) -> IssuerSpecialOrderSnapshot {

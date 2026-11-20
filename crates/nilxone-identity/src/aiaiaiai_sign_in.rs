@@ -10,6 +10,9 @@
 //! the redirects; it never reads the issuer's own state, even while both run
 //! in one process (`docs/aiaiaiai-sign-in.md`).
 
+#[path = "ais_purchase.rs"]
+pub mod purchase;
+
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
