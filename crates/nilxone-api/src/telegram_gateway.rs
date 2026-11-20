@@ -61,29 +61,40 @@ impl GatewayRequest {
     }
 }
 
+/// One host-confirmed fact. Missing evidence is the default: neither a
+/// Telegram ID nor caller-supplied JSON may turn it into a verified fact.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Verification {
+    /// The host has not established the required invariant.
+    #[default]
+    Missing,
+    /// The trusted host has independently established the invariant.
+    Confirmed,
+}
+
 /// Trusted host facts, not a wire DTO. Each field MUST be derived by the host
 /// after authenticated Telegram transport, AIS and Core lookups. A Telegram
-/// user ID, callback payload or public pub_dress cannot fill these fields.
+/// user ID, callback payload or public `pub_dress` cannot fill these fields.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct GatewayAuthority {
     /// The requesting bot workload is authenticated by its own credential.
-    pub service_authenticated: bool,
+    pub service_authenticated: Verification,
     /// Telegram transport established genuine provider sender evidence.
-    pub provider_verified: bool,
+    pub provider_verified: Verification,
     /// AIS resolved a verified provider link for this exact person.
-    pub ais_subject_linked: bool,
+    pub ais_subject_linked: Verification,
     /// The AIS identity matches the owner of this Core product session.
-    pub product_subject_matches: bool,
+    pub product_subject_matches: Verification,
     /// A Core product session exists and has not been revoked.
-    pub session_exists: bool,
+    pub session_exists: Verification,
     /// The session is the active client, with no pending transfer stop.
-    pub session_may_act: bool,
+    pub session_may_act: Verification,
     /// A durable atomic update/idempotency reservation was accepted.
-    pub update_reserved: bool,
+    pub update_reserved: Verification,
     /// Core independently proved same host and device, not account equality.
-    pub same_device_proved: bool,
+    pub same_device_proved: Verification,
     /// A fresh, one-use, session/audience-bound continuation was consumed.
-    pub continuation_consumed: bool,
+    pub continuation_consumed: Verification,
 }
 
 /// A permission to execute only the requested scope; the host must still
@@ -114,44 +125,44 @@ pub fn authorize(
     authority: GatewayAuthority,
 ) -> Result<GatewayGrant, GatewayRefusal> {
     request.validate()?;
-    if !authority.service_authenticated {
+    if authority.service_authenticated != Verification::Confirmed {
         return Err(GatewayRefusal::ServiceAuthenticationRequired);
     }
-    if !authority.provider_verified {
+    if authority.provider_verified != Verification::Confirmed {
         return Err(GatewayRefusal::InvalidProviderEvidence);
     }
-    if !authority.ais_subject_linked || !authority.product_subject_matches {
+    if authority.ais_subject_linked != Verification::Confirmed || authority.product_subject_matches != Verification::Confirmed {
         return Err(GatewayRefusal::IdentityNotLinked);
     }
-    if !authority.session_exists {
+    if authority.session_exists != Verification::Confirmed {
         return Err(GatewayRefusal::ProductSessionRequired);
     }
     match request.operation {
         GatewayOperation::SessionState => Ok(GatewayGrant::SessionState),
         GatewayOperation::ProductRead => {
-            if authority.session_may_act {
+            if authority.session_may_act == Verification::Confirmed {
                 Ok(GatewayGrant::ProductRead)
             } else {
                 Err(GatewayRefusal::SessionInactive)
             }
         }
         GatewayOperation::ProductWrite => {
-            if !authority.session_may_act {
+            if authority.session_may_act != Verification::Confirmed {
                 return Err(GatewayRefusal::SessionInactive);
             }
-            if !authority.update_reserved {
+            if authority.update_reserved != Verification::Confirmed {
                 return Err(GatewayRefusal::UpdateNotReserved);
             }
             Ok(GatewayGrant::ProductWrite)
         }
         GatewayOperation::OpenMiniApp => {
-            if !authority.session_may_act {
+            if authority.session_may_act != Verification::Confirmed {
                 return Err(GatewayRefusal::SessionInactive);
             }
-            if !authority.update_reserved {
+            if authority.update_reserved != Verification::Confirmed {
                 return Err(GatewayRefusal::UpdateNotReserved);
             }
-            if !authority.same_device_proved || !authority.continuation_consumed {
+            if authority.same_device_proved != Verification::Confirmed || authority.continuation_consumed != Verification::Confirmed {
                 return Err(GatewayRefusal::ContinuityNotProven);
             }
             Ok(GatewayGrant::OpenMiniApp)
@@ -180,15 +191,15 @@ mod tests {
 
     fn authority() -> GatewayAuthority {
         GatewayAuthority {
-            service_authenticated: true,
-            provider_verified: true,
-            ais_subject_linked: true,
-            product_subject_matches: true,
-            session_exists: true,
-            session_may_act: true,
-            update_reserved: true,
-            same_device_proved: false,
-            continuation_consumed: false,
+            service_authenticated: Verification::Confirmed,
+            provider_verified: Verification::Confirmed,
+            ais_subject_linked: Verification::Confirmed,
+            product_subject_matches: Verification::Confirmed,
+            session_exists: Verification::Confirmed,
+            session_may_act: Verification::Confirmed,
+            update_reserved: Verification::Confirmed,
+            same_device_proved: Verification::Missing,
+            continuation_consumed: Verification::Missing,
         }
     }
 
@@ -232,23 +243,23 @@ mod tests {
     fn provider_sender_or_anonymous_service_never_confers_bond_permission() {
         for authority in [
             GatewayAuthority {
-                service_authenticated: false,
+                service_authenticated: Verification::Missing,
                 ..authority()
             },
             GatewayAuthority {
-                provider_verified: false,
+                provider_verified: Verification::Missing,
                 ..authority()
             },
             GatewayAuthority {
-                ais_subject_linked: false,
+                ais_subject_linked: Verification::Missing,
                 ..authority()
             },
             GatewayAuthority {
-                product_subject_matches: false,
+                product_subject_matches: Verification::Missing,
                 ..authority()
             },
             GatewayAuthority {
-                session_exists: false,
+                session_exists: Verification::Missing,
                 ..authority()
             },
         ] {
@@ -267,7 +278,7 @@ mod tests {
     #[test]
     fn inactive_session_can_only_see_minimal_session_state() {
         let inactive = GatewayAuthority {
-            session_may_act: false,
+            session_may_act: Verification::Missing,
             ..authority()
         };
         assert_eq!(
@@ -289,7 +300,7 @@ mod tests {
     #[test]
     fn mutations_require_durable_update_reservation() {
         let unreserved = GatewayAuthority {
-            update_reserved: false,
+            update_reserved: Verification::Missing,
             ..authority()
         };
         assert_eq!(
@@ -313,7 +324,7 @@ mod tests {
             Err(GatewayRefusal::ContinuityNotProven)
         );
         let provider_only = GatewayAuthority {
-            same_device_proved: true,
+            same_device_proved: Verification::Confirmed,
             ..authority()
         };
         assert_eq!(
@@ -321,8 +332,8 @@ mod tests {
             Err(GatewayRefusal::ContinuityNotProven)
         );
         let accepted = GatewayAuthority {
-            same_device_proved: true,
-            continuation_consumed: true,
+            same_device_proved: Verification::Confirmed,
+            continuation_consumed: Verification::Confirmed,
             ..authority()
         };
         assert_eq!(
