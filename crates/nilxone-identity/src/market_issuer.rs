@@ -31,7 +31,7 @@ use nilxone_contracts::{SpecialSeedsOrder, special_seeds_term_months};
 
 use crate::{
     IdentityRepository,
-    aiaiaiai_sign_in::purchase::{PurchaseAuthority, settle_claims, verify_permit},
+    aiaiaiai_sign_in::purchase::{AisAuthority, PurchaseAuthority, settle_claims, verify_permit},
     repository::{IssuerSpecialOrderSnapshot, SpecialSeedsOutcome, SpendAuthorization},
 };
 
@@ -351,11 +351,35 @@ impl<M: MarketIssuerApi> MarketIssuerWorker<M> {
         }
     }
 
-    /// Settle the checkout a buyer confirmed through AIS. The permit is verified
+    /// Settle the checkout a buyer confirmed through AIS: the one call a host makes with the
+    /// permit. AIS's keys are read, and refreshed once after a refusal, by `authority`.
+    pub async fn settle_ais_permit(
+        &self,
+        authority: &AisAuthority,
+        permit: &str,
+    ) -> Result<Settlement, AisSettleError> {
+        let keys = authority
+            .current()
+            .await
+            .ok_or(AisSettleError::KeysUnavailable)?;
+        let mut result = self
+            .settle_with_authority(&authority.purchase(&keys), permit)
+            .await;
+        if matches!(result, Err(AisSettleError::Permit(_)))
+            && let Some(fresh) = authority.refreshed().await
+        {
+            result = self
+                .settle_with_authority(&authority.purchase(&fresh), permit)
+                .await;
+        }
+        result
+    }
+
+    /// As `settle_ais_permit` under keys the caller already holds. The permit is verified
     /// against the authority the host pinned before Market is touched; Market's
     /// claim then freezes the order the permit's terms are matched to. A repeat
     /// finds the committed wallet operation and confirms the same order again.
-    pub async fn settle_ais_permit(
+    pub async fn settle_with_authority(
         &self,
         authority: &PurchaseAuthority<'_>,
         permit: &str,
@@ -423,6 +447,9 @@ pub enum AisSettleError {
     /// The permit is not one the pinned authority issued for this checkout.
     #[error(transparent)]
     Permit(#[from] crate::aiaiaiai_sign_in::SignInError),
+    /// AIS's signing keys could not be read, so no permit can be checked.
+    #[error("AIS signing keys are unavailable")]
+    KeysUnavailable,
     #[error(transparent)]
     Worker(#[from] WorkerFailure),
 }
@@ -1212,7 +1239,9 @@ mod tests {
         let permit = permit(&buyer, NOW_MS, 7, &buyer.subject);
         let worker = worker(&fixture, NOW_MS);
 
-        let first = worker.settle_ais_permit(&authority(&buyer), &permit).await;
+        let first = worker
+            .settle_with_authority(&authority(&buyer), &permit)
+            .await;
         assert_eq!(first.expect("first"), Settlement::Fulfilled);
         assert_eq!(fixture.market.status("order-0001"), "fulfilled");
         assert_eq!(balance(&fixture).await, 360);
@@ -1222,7 +1251,9 @@ mod tests {
         );
 
         // A repeated submission confirms the same order and debits nothing more.
-        let again = worker.settle_ais_permit(&authority(&buyer), &permit).await;
+        let again = worker
+            .settle_with_authority(&authority(&buyer), &permit)
+            .await;
         assert_eq!(again.expect("again"), Settlement::Fulfilled);
         assert_eq!(balance(&fixture).await, 360);
         assert_eq!(fixture.market.confirmations.lock().unwrap().len(), 2);
@@ -1238,7 +1269,9 @@ mod tests {
 
         // Another price than Market froze: refused, nothing debited.
         let changed = permit(&buyer, NOW_MS, 8, &buyer.subject);
-        let outcome = worker.settle_ais_permit(&authority(&buyer), &changed).await;
+        let outcome = worker
+            .settle_with_authority(&authority(&buyer), &changed)
+            .await;
         assert_eq!(
             outcome.expect("changed"),
             Settlement::Rejected(rejection::INVALID_TERMS)
@@ -1247,7 +1280,7 @@ mod tests {
         fixture.market.set_status("order-0001", "pending");
         let stranger = permit(&buyer, NOW_MS, 7, &URL_SAFE_NO_PAD.encode([5_u8; 32]));
         let outcome = worker
-            .settle_ais_permit(&authority(&buyer), &stranger)
+            .settle_with_authority(&authority(&buyer), &stranger)
             .await;
         assert_eq!(
             outcome.expect("stranger"),
@@ -1261,7 +1294,44 @@ mod tests {
             ..authority(&buyer)
         };
         let good = permit(&buyer, NOW_MS, 7, &buyer.subject);
-        assert!(worker.settle_ais_permit(&other, &good).await.is_err());
+        assert!(worker.settle_with_authority(&other, &good).await.is_err());
+        assert_eq!(balance(&fixture).await, 1000);
+    }
+
+    #[tokio::test]
+    async fn the_authority_supplies_ais_keys_and_a_refused_permit_is_not_retried_at_once() {
+        let fixture = fixture(1000).await;
+        let buyer = ais_buyer(&fixture).await;
+        telegram_order(&fixture);
+        let ais = AisAuthority::for_origin(AIS_ISSUER_FOR_TEST, AIS_PRODUCT_FOR_TEST)
+            .expect("authority")
+            .with_keys(buyer.keys.clone());
+        let worker = worker(&fixture, NOW_MS);
+
+        let permit = permit(&buyer, NOW_MS, 7, &buyer.subject);
+        let paid = worker.settle_ais_permit(&ais, &permit).await;
+        assert_eq!(paid.expect("paid"), Settlement::Fulfilled);
+        assert_eq!(balance(&fixture).await, 360);
+
+        // Keys fetched a moment ago are not fetched again for a bad permit; AIS is unreachable
+        // from here, so a retry would have changed nothing, and the refusal stands.
+        let refused = worker.settle_ais_permit(&ais, "a.b.c").await;
+        assert!(matches!(refused, Err(AisSettleError::Permit(_))));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_ais_leaves_the_order_untouched() {
+        let fixture = fixture(1000).await;
+        let buyer = ais_buyer(&fixture).await;
+        telegram_order(&fixture);
+        let ais = AisAuthority::for_origin("http://127.0.0.1:9", AIS_PRODUCT_FOR_TEST)
+            .expect("authority");
+        let permit = permit(&buyer, NOW_MS, 7, &buyer.subject);
+        let outcome = worker(&fixture, NOW_MS)
+            .settle_ais_permit(&ais, &permit)
+            .await;
+        assert!(matches!(outcome, Err(AisSettleError::KeysUnavailable)));
+        assert_eq!(fixture.market.status("order-0001"), "pending");
         assert_eq!(balance(&fixture).await, 1000);
     }
 
@@ -1278,7 +1348,7 @@ mod tests {
         let later = NOW_MS + DAY;
         let permit = permit(&buyer, later, 7, &buyer.subject);
         let outcome = worker(&fixture, later)
-            .settle_ais_permit(&authority(&buyer), &permit)
+            .settle_with_authority(&authority(&buyer), &permit)
             .await;
         assert_eq!(
             outcome.expect("second"),
