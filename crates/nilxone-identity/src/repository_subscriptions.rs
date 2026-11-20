@@ -384,8 +384,14 @@ impl IdentityRepository {
             "SELECT k.legacy_pub_dress FROM public_profiles p
              JOIN legacy_bond_bindings b ON b.profile_id = p.profile_id
              JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
-             WHERE p.issuer = ? AND p.subject = ?",
+             WHERE p.profile_id IN (
+                 SELECT profile_id FROM public_profiles WHERE issuer = ? AND subject = ?
+                 UNION
+                 SELECT profile_id FROM product_client_subject_links
+                 WHERE issuer = ? AND successor_subject = ?)",
         )
+        .bind(issuer)
+        .bind(subject)
         .bind(issuer)
         .bind(subject)
         .fetch_optional(&self.pool)
@@ -501,10 +507,17 @@ impl IdentityRepository {
                         JOIN legacy_bond_bindings b ON b.profile_id = p.profile_id
                         JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
                         JOIN identity_providers t ON t.pub_dress = k.legacy_pub_dress
-                        WHERE p.issuer = ? AND p.subject = ? AND k.legacy_pub_dress = ?
+                        WHERE p.profile_id IN (
+                            SELECT profile_id FROM public_profiles WHERE issuer = ? AND subject = ?
+                            UNION
+                            SELECT profile_id FROM product_client_subject_links
+                            WHERE issuer = ? AND successor_subject = ?)
+                          AND k.legacy_pub_dress = ?
                           AND t.provider = 'telegram' AND t.provider_subject = ?
                     )",
                 )
+                .bind(issuer)
+                .bind(ais_subject)
                 .bind(issuer)
                 .bind(ais_subject)
                 .bind(owner.as_str())
@@ -1512,6 +1525,9 @@ mod special_seeds_tests {
         let product = crate::public_info::PublicInfoRepository::connect(&url)
             .await
             .expect("product store");
+        crate::public_info::ClientTransitionRepository::prepare(product.clone())
+            .await
+            .expect("client transition store");
         crate::public_info::LegacyBondMigrationRepository::prepare(product)
             .await
             .expect("migration store");
@@ -1622,6 +1638,84 @@ mod special_seeds_tests {
         assert_eq!(
             settle(&repository, &authority, &permit, &order, NOW_MS).await.unwrap(),
             SpecialSeedsOutcome::AlreadyGranted
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
+    }
+
+    /// A person who signed in as the predecessor client keeps their profile under
+    /// the predecessor subject; the successor subject reaches it only through the
+    /// signed continuity link.
+    #[tokio::test]
+    async fn ais_permit_reaches_a_profile_through_its_successor_subject_link() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use serde_json::json;
+
+        use crate::{
+            aiaiaiai_sign_in::{JsonWebKeySet, purchase::{PurchaseAuthority, settle}},
+            market_issuer::IssuerOrder,
+        };
+
+        const ISSUER: &str = "https://auth.aiaiaiai.org";
+        const PRODUCT: &str = "0xda-market";
+
+        let (repository, owner, _dir) = attached_product_bond().await;
+        let successor = URL_SAFE_NO_PAD.encode([4_u8; 32]);
+        let stranger = URL_SAFE_NO_PAD.encode([5_u8; 32]);
+        run(
+            &repository,
+            "INSERT INTO product_client_subject_links \
+             (issuer, predecessor_subject, successor_subject, profile_id, linked_at) \
+             SELECT issuer, subject, ?, profile_id, 1 FROM public_profiles",
+            &[&successor],
+        )
+        .await;
+        link_telegram(&repository, owner.as_str()).await;
+        let signer = SigningKey::from_bytes(&[8_u8; 32]);
+        let keys: JsonWebKeySet = serde_json::from_value(json!({
+            "keys": [{
+                "kty": "OKP", "crv": "Ed25519", "kid": "ais",
+                "x": URL_SAFE_NO_PAD.encode(signer.verifying_key().as_bytes())
+            }]
+        }))
+        .unwrap();
+        let authority = PurchaseAuthority { issuer: ISSUER, product: PRODUCT, keys: &keys };
+        let order: IssuerOrder = serde_json::from_value(json!({
+            "id": "a",
+            "attributes": {
+                "sku": "0x1_special_1m", "issuer": "0x1", "denomination": "seeds",
+                "price_id": 42, "amount_minor": 640, "status": "processing",
+                "recipient_subject": "", "link_provider": "telegram",
+                "link_provider_user_id": "123456789", "created_at": "2026-11-19T00:00:00Z",
+                "term": {"months": 1, "policy": "calendar_months_utc"}
+            }
+        }))
+        .unwrap();
+        let sign = |sub: &str| {
+            let head = json!({"alg": "EdDSA", "typ": "purchase+jwt", "kid": "ais"});
+            let claims = json!({
+                "iss": ISSUER, "aud": "0x1", "azp": PRODUCT, "sub": sub,
+                "purpose": "telegram.special.purchase", "order_id": "a",
+                "telegram_id": 123456789, "sku": "0x1_special_1m", "quantity": 1,
+                "price_id": 42, "amount_minor": 640, "denomination": "seeds",
+                "iat": 1000, "exp": 1120
+            });
+            let data = format!(
+                "{}.{}",
+                URL_SAFE_NO_PAD.encode(head.to_string()),
+                URL_SAFE_NO_PAD.encode(claims.to_string())
+            );
+            format!("{data}.{}", URL_SAFE_NO_PAD.encode(signer.sign(data.as_bytes()).to_bytes()))
+        };
+
+        assert_eq!(
+            settle(&repository, &authority, &sign(&stranger), &order, 1_001_000).await.unwrap(),
+            SpecialSeedsOutcome::AccountUnlinked
+        );
+        assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 1000);
+        assert_eq!(
+            settle(&repository, &authority, &sign(&successor), &order, 1_001_000).await.unwrap(),
+            SpecialSeedsOutcome::Granted
         );
         assert_eq!(repository.read_seeds_balance(&owner).await.unwrap(), 360);
     }
