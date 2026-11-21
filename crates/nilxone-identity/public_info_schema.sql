@@ -35,3 +35,15 @@ CREATE TABLE IF NOT EXISTS product_sessions (
     FOREIGN KEY (issuer, subject) REFERENCES public_profiles (issuer, subject) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX IF NOT EXISTS product_sessions_by_owner ON product_sessions (issuer, subject);
+
+-- This stores only digests of ephemeral 0x1↔AIS Telegram identity challenges.
+-- It cannot create a product session, provider link or BondChain fact.
+CREATE TABLE IF NOT EXISTS telegram_provider_proof_challenges (
+    nonce_digest BLOB PRIMARY KEY NOT NULL CHECK (length(nonce_digest) = 32),
+    context_digest BLOB NOT NULL CHECK (length(context_digest) = 32),
+    expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+    consumed INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),
+    proof_jti_digest BLOB UNIQUE CHECK (proof_jti_digest IS NULL OR length(proof_jti_digest) = 32)
+) STRICT;
+CREATE INDEX IF NOT EXISTS telegram_provider_challenges_expiry
+    ON telegram_provider_proof_challenges(expires_at);

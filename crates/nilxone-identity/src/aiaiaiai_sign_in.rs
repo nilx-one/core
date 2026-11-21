@@ -518,10 +518,12 @@ pub fn verify_id_token(
     })
 }
 
+pub(crate) const TELEGRAM_PROOF_MAX_LIFETIME_SECONDS: u32 = 120;
+
 /// Verified signature and claims for an AIS lookup of an existing Telegram
 /// binding. Core must consume the nonce and proof ID before using the subject.
 #[derive(Eq, PartialEq)]
-pub struct VerifiedTelegramProvider {
+pub(crate) struct VerifiedTelegramProvider {
     pairwise_subject: String,
     replay_id: String,
 }
@@ -531,6 +533,16 @@ impl std::fmt::Debug for VerifiedTelegramProvider {
         formatter
             .debug_struct("VerifiedTelegramProvider")
             .finish_non_exhaustive()
+    }
+}
+
+impl VerifiedTelegramProvider {
+    pub(crate) fn pairwise_subject(&self) -> &str {
+        &self.pairwise_subject
+    }
+
+    pub(crate) fn replay_id(&self) -> &str {
+        &self.replay_id
     }
 }
 
@@ -570,7 +582,7 @@ struct ProviderProofClaims {
 /// Any signature, audience, purpose, nonce, lifetime or claim mismatch is a
 /// terminal rejection. Neither Telegram account equality nor `pub_dress`
 /// can override it.
-pub fn verify_telegram_provider_proof(
+pub(crate) fn verify_telegram_provider_proof(
     proof: &str,
     keys: &JsonWebKeySet,
     expected: &Expectation<'_>,
@@ -626,7 +638,7 @@ pub fn verify_telegram_provider_proof(
     if claims.iat > now
         || claims.exp <= now
         || claims.exp <= claims.iat
-        || claims.exp - claims.iat > 120
+        || claims.exp - claims.iat > u64::from(TELEGRAM_PROOF_MAX_LIFETIME_SECONDS)
     {
         return Err(SignInError::InvalidToken("telegram_proof_lifetime"));
     }
