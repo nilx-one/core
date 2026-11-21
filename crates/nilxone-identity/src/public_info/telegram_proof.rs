@@ -17,6 +17,34 @@ use super::{PublicInfoError, PublicInfoRepository};
 
 const CHALLENGE_TTL_SECONDS: u64 = 120;
 
+/// AIS identity evidence whose nonce and proof ID Core has consumed.
+/// Session authorization requires checking this issuer and subject together.
+#[derive(Eq, PartialEq)]
+pub struct ConsumedTelegramProviderProof {
+    issuer: String,
+    pairwise_subject: String,
+}
+
+impl ConsumedTelegramProviderProof {
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
+    #[must_use]
+    pub fn pairwise_subject(&self) -> &str {
+        &self.pairwise_subject
+    }
+}
+
+impl std::fmt::Debug for ConsumedTelegramProviderProof {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConsumedTelegramProviderProof")
+            .finish_non_exhaustive()
+    }
+}
+
 fn clock_window(now: u64) -> Result<(i64, i64), PublicInfoError> {
     let expires_at = now
         .checked_add(CHALLENGE_TTL_SECONDS)
@@ -80,7 +108,7 @@ impl PublicInfoRepository {
     /// It must recompute the trusted context digest from that same request
     /// context and request the AIS proof for the authenticated sender.
     ///
-    /// Returns only the 0x1 pairwise subject for a newly consumed proof.
+    /// Returns the AIS issuer and 0x1 pairwise subject for a newly consumed proof.
     /// Unverified, expired and replayed evidence returns `None`; no client
     /// session or provider binding is opened.
     ///
@@ -95,7 +123,7 @@ impl PublicInfoRepository {
         keys: &JsonWebKeySet,
         issuer: &str,
         now: u64,
-    ) -> Result<Option<String>, PublicInfoError> {
+    ) -> Result<Option<ConsumedTelegramProviderProof>, PublicInfoError> {
         let (now, _) = clock_window(now)?;
         let verified = match verify_telegram_provider_proof(
             proof,
@@ -134,7 +162,10 @@ impl PublicInfoRepository {
             return Ok(None);
         }
         transaction.commit().await?;
-        Ok(Some(verified.pairwise_subject().to_owned()))
+        Ok(Some(ConsumedTelegramProviderProof {
+            issuer: issuer.to_owned(),
+            pairwise_subject: verified.pairwise_subject().to_owned(),
+        }))
     }
 }
 
@@ -199,7 +230,10 @@ mod tests {
             repo.consume_telegram_provider_proof(&CONTEXT, &nonce, &jwt, &keys(), ISSUER, 101)
                 .await
                 .unwrap(),
-            Some(subject),
+            Some(ConsumedTelegramProviderProof {
+                issuer: ISSUER.to_owned(),
+                pairwise_subject: subject,
+            }),
         );
         drop(repo);
         let repo = PublicInfoRepository::connect(&path).await.unwrap();
