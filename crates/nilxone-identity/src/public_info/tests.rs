@@ -102,17 +102,18 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
     assert_eq!(missing_claim.profile, renamed.profile);
 
     let tables: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table'")
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
             .fetch_all(&repository.pool)
             .await
             .unwrap();
     assert_eq!(
         tables,
         [
-            "public_profiles",
-            "product_sessions",
             "product_activation_requests",
-            "product_activation_sync"
+            "product_activation_sync",
+            "product_sessions",
+            "public_profiles",
+            "telegram_provider_proof_challenges"
         ]
     );
 }
