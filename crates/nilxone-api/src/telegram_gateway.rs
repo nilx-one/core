@@ -1,14 +1,11 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Portable, fail-closed authority gate for the future Telegram text Gateway.
+//! Wire contract for the Telegram text Gateway.
 //!
-//! The Telegram Bot API identifies a *sender*, not a Bond or device. This
-//! module checks facts supplied by a trusted Core host; it NEVER verifies
-//! provider evidence, authenticates the host, persists sessions or performs
-//! a game write itself. The server must derive the snapshot from authenticated
-//! service access, verified provider evidence, AIS and durable Core session
-//! state, not from this JSON request.
+//! The request carries transport metadata only. The Core service owns the
+//! authorization decision and must derive it from AIS evidence and the
+//! matching live product session.
 
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +37,7 @@ pub struct GatewayRequest {
     pub version: u8,
     /// Telegram update ID, for stable idempotent processing by the host.
     pub update_id: u64,
-    /// Desired capability. Core still evaluates the authenticated snapshot.
+    /// Desired capability. Core verifies the caller and the live session.
     pub operation: GatewayOperation,
 }
 
@@ -61,117 +58,17 @@ impl GatewayRequest {
     }
 }
 
-/// One host-confirmed fact. Missing evidence is the default: neither a
-/// Telegram ID nor caller-supplied JSON may turn it into a verified fact.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Verification {
-    /// The host has not established the required invariant.
-    #[default]
-    Missing,
-    /// The trusted host has independently established the invariant.
-    Confirmed,
-}
-
-/// Trusted host facts, not a wire DTO. Each field MUST be derived by the host
-/// after authenticated Telegram transport, AIS and Core lookups. A Telegram
-/// user ID, callback payload or public `pub_dress` cannot fill these fields.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub struct GatewayAuthority {
-    /// The requesting bot workload is authenticated by its own credential.
-    pub service_authenticated: Verification,
-    /// Telegram transport established genuine provider sender evidence.
-    pub provider_verified: Verification,
-    /// AIS resolved a verified provider link for this exact person.
-    pub ais_subject_linked: Verification,
-    /// The AIS identity matches the owner of this Core product session.
-    pub product_subject_matches: Verification,
-    /// A Core product session exists and has not been revoked.
-    pub session_exists: Verification,
-    /// The session is the active client, with no pending transfer stop.
-    pub session_may_act: Verification,
-    /// A durable atomic update/idempotency reservation was accepted.
-    pub update_reserved: Verification,
-    /// Core independently proved same host and device, not account equality.
-    pub same_device_proved: Verification,
-    /// A fresh, one-use, session/audience-bound continuation was consumed.
-    pub continuation_consumed: Verification,
-}
-
-/// A permission to execute only the requested scope; the host must still
-/// enforce resource ownership and the typed Core action's own requirements.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GatewayGrant {
-    /// Only a minimal status, even if the client is inactive.
-    SessionState,
-    /// Private read allowed while the owning product session may act.
-    ProductRead,
-    /// One authorized, idempotency-claimed command.
-    ProductWrite,
-    /// One authorized Mini App surface transition (no activation transfer).
-    OpenMiniApp,
-}
-
-/// Evaluate one requested operation against verified host-derived facts.
-///
-/// This is **not** a credential verifier. The caller must authenticate the bot,
-/// validate Telegram evidence and AIS mapping, atomically reserve update IDs
-/// for side effects, and verify any device/continuation proof independently.
-///
-/// # Errors
-///
-/// A missing fact refuses capability; no fallback to Telegram sender identity.
-pub fn authorize(
-    request: &GatewayRequest,
-    authority: GatewayAuthority,
-) -> Result<GatewayGrant, GatewayRefusal> {
-    request.validate()?;
-    if authority.service_authenticated != Verification::Confirmed {
-        return Err(GatewayRefusal::ServiceAuthenticationRequired);
-    }
-    if authority.provider_verified != Verification::Confirmed {
-        return Err(GatewayRefusal::InvalidProviderEvidence);
-    }
-    if authority.ais_subject_linked != Verification::Confirmed
-        || authority.product_subject_matches != Verification::Confirmed
-    {
-        return Err(GatewayRefusal::IdentityNotLinked);
-    }
-    if authority.session_exists != Verification::Confirmed {
-        return Err(GatewayRefusal::ProductSessionRequired);
-    }
-    match request.operation {
-        GatewayOperation::SessionState => Ok(GatewayGrant::SessionState),
-        GatewayOperation::ProductRead => {
-            if authority.session_may_act == Verification::Confirmed {
-                Ok(GatewayGrant::ProductRead)
-            } else {
-                Err(GatewayRefusal::SessionInactive)
-            }
-        }
-        GatewayOperation::ProductWrite => {
-            if authority.session_may_act != Verification::Confirmed {
-                return Err(GatewayRefusal::SessionInactive);
-            }
-            if authority.update_reserved != Verification::Confirmed {
-                return Err(GatewayRefusal::UpdateNotReserved);
-            }
-            Ok(GatewayGrant::ProductWrite)
-        }
-        GatewayOperation::OpenMiniApp => {
-            if authority.session_may_act != Verification::Confirmed {
-                return Err(GatewayRefusal::SessionInactive);
-            }
-            if authority.update_reserved != Verification::Confirmed {
-                return Err(GatewayRefusal::UpdateNotReserved);
-            }
-            if authority.same_device_proved != Verification::Confirmed
-                || authority.continuation_consumed != Verification::Confirmed
-            {
-                return Err(GatewayRefusal::ContinuityNotProven);
-            }
-            Ok(GatewayGrant::OpenMiniApp)
-        }
-    }
+/// Successful disposition of a mutating Gateway request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayMutationOutcome {
+    /// The authorized mutation and its result were committed atomically.
+    Applied,
+    /// Return the stored result without running the mutation again.
+    ///
+    /// Core uses this only for the same authenticated caller, update ID
+    /// and operation. Reusing the ID with a different operation is a conflict.
+    Replayed,
 }
 
 refusals! {
@@ -180,11 +77,12 @@ refusals! {
         UnsupportedVersion => ("gateway_unsupported_version", 422),
         InvalidUpdate => ("gateway_invalid_update", 422),
         ServiceAuthenticationRequired => ("service_authentication_required", 401),
-        InvalidProviderEvidence => ("invalid_provider_evidence", 401),
+        InvalidProviderEvidence => ("gateway_invalid_provider_evidence", 401),
         IdentityNotLinked => ("gateway_identity_not_linked", 403),
         ProductSessionRequired => ("product_session_required", 401),
         SessionInactive => ("session_inactive", 403),
         UpdateNotReserved => ("gateway_update_not_reserved", 409),
+        ConflictingReplay => ("gateway_conflicting_replay", 409),
         ContinuityNotProven => ("gateway_continuity_not_proven", 403),
     }
 }
@@ -192,20 +90,6 @@ refusals! {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn authority() -> GatewayAuthority {
-        GatewayAuthority {
-            service_authenticated: Verification::Confirmed,
-            provider_verified: Verification::Confirmed,
-            ais_subject_linked: Verification::Confirmed,
-            product_subject_matches: Verification::Confirmed,
-            session_exists: Verification::Confirmed,
-            session_may_act: Verification::Confirmed,
-            update_reserved: Verification::Confirmed,
-            same_device_proved: Verification::Missing,
-            continuation_consumed: Verification::Missing,
-        }
-    }
 
     fn request(operation: GatewayOperation) -> GatewayRequest {
         GatewayRequest {
@@ -244,115 +128,66 @@ mod tests {
     }
 
     #[test]
-    fn provider_sender_or_anonymous_service_never_confers_bond_permission() {
-        for authority in [
-            GatewayAuthority {
-                service_authenticated: Verification::Missing,
-                ..authority()
-            },
-            GatewayAuthority {
-                provider_verified: Verification::Missing,
-                ..authority()
-            },
-            GatewayAuthority {
-                ais_subject_linked: Verification::Missing,
-                ..authority()
-            },
-            GatewayAuthority {
-                product_subject_matches: Verification::Missing,
-                ..authority()
-            },
-            GatewayAuthority {
-                session_exists: Verification::Missing,
-                ..authority()
-            },
-        ] {
-            assert!(authorize(&request(GatewayOperation::ProductRead), authority).is_err());
-            assert!(authorize(&request(GatewayOperation::ProductWrite), authority).is_err());
-        }
+    fn mutations_distinguish_new_results_from_replays() {
         assert_eq!(
-            authorize(
-                &request(GatewayOperation::ProductRead),
-                GatewayAuthority::default()
-            ),
-            Err(GatewayRefusal::ServiceAuthenticationRequired)
-        );
-    }
-
-    #[test]
-    fn inactive_session_can_only_see_minimal_session_state() {
-        let inactive = GatewayAuthority {
-            session_may_act: Verification::Missing,
-            ..authority()
-        };
-        assert_eq!(
-            authorize(&request(GatewayOperation::SessionState), inactive),
-            Ok(GatewayGrant::SessionState)
-        );
-        for operation in [
-            GatewayOperation::ProductRead,
-            GatewayOperation::ProductWrite,
-            GatewayOperation::OpenMiniApp,
-        ] {
-            assert_eq!(
-                authorize(&request(operation), inactive),
-                Err(GatewayRefusal::SessionInactive)
-            );
-        }
-    }
-
-    #[test]
-    fn mutations_require_durable_update_reservation() {
-        let unreserved = GatewayAuthority {
-            update_reserved: Verification::Missing,
-            ..authority()
-        };
-        assert_eq!(
-            authorize(&request(GatewayOperation::ProductRead), unreserved),
-            Ok(GatewayGrant::ProductRead)
+            serde_json::to_string(&GatewayMutationOutcome::Applied).unwrap(),
+            r#""applied""#
         );
         assert_eq!(
-            authorize(&request(GatewayOperation::ProductWrite), unreserved),
-            Err(GatewayRefusal::UpdateNotReserved)
-        );
-        assert_eq!(
-            authorize(&request(GatewayOperation::ProductWrite), authority()),
-            Ok(GatewayGrant::ProductWrite)
-        );
-    }
-
-    #[test]
-    fn telegram_account_match_is_not_device_continuity() {
-        assert_eq!(
-            authorize(&request(GatewayOperation::OpenMiniApp), authority()),
-            Err(GatewayRefusal::ContinuityNotProven)
-        );
-        let provider_only = GatewayAuthority {
-            same_device_proved: Verification::Confirmed,
-            ..authority()
-        };
-        assert_eq!(
-            authorize(&request(GatewayOperation::OpenMiniApp), provider_only),
-            Err(GatewayRefusal::ContinuityNotProven)
-        );
-        let accepted = GatewayAuthority {
-            same_device_proved: Verification::Confirmed,
-            continuation_consumed: Verification::Confirmed,
-            ..authority()
-        };
-        assert_eq!(
-            authorize(&request(GatewayOperation::OpenMiniApp), accepted),
-            Ok(GatewayGrant::OpenMiniApp)
+            serde_json::to_string(&GatewayMutationOutcome::Replayed).unwrap(),
+            r#""replayed""#
         );
     }
 
     #[test]
     fn refusal_codes_have_stable_statuses() {
-        assert_eq!(GatewayRefusal::SessionInactive.code(), "session_inactive");
-        assert_eq!(GatewayRefusal::ContinuityNotProven.http_status(), 403);
-        assert_eq!(
-            GatewayRefusal::from_code("gateway_update_not_reserved"),
-            Some(GatewayRefusal::UpdateNotReserved)
-        );
+        for (refusal, code, status) in [
+            (
+                GatewayRefusal::UnsupportedVersion,
+                "gateway_unsupported_version",
+                422,
+            ),
+            (GatewayRefusal::InvalidUpdate, "gateway_invalid_update", 422),
+            (
+                GatewayRefusal::ServiceAuthenticationRequired,
+                "service_authentication_required",
+                401,
+            ),
+            (
+                GatewayRefusal::InvalidProviderEvidence,
+                "gateway_invalid_provider_evidence",
+                401,
+            ),
+            (
+                GatewayRefusal::IdentityNotLinked,
+                "gateway_identity_not_linked",
+                403,
+            ),
+            (
+                GatewayRefusal::ProductSessionRequired,
+                "product_session_required",
+                401,
+            ),
+            (GatewayRefusal::SessionInactive, "session_inactive", 403),
+            (
+                GatewayRefusal::UpdateNotReserved,
+                "gateway_update_not_reserved",
+                409,
+            ),
+            (
+                GatewayRefusal::ConflictingReplay,
+                "gateway_conflicting_replay",
+                409,
+            ),
+            (
+                GatewayRefusal::ContinuityNotProven,
+                "gateway_continuity_not_proven",
+                403,
+            ),
+        ] {
+            assert_eq!(refusal.code(), code);
+            assert_eq!(refusal.http_status(), status);
+            assert_eq!(GatewayRefusal::from_code(code), Some(refusal));
+        }
     }
 }
