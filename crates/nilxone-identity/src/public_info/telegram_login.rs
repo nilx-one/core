@@ -65,9 +65,11 @@ impl PublicInfoRepository {
         request
             .validate()
             .map_err(|_| TelegramLoginError::InvalidInput)?;
-        let actor_id =
-            i64::try_from(request.provider_actor_id).map_err(|_| TelegramLoginError::InvalidInput)?;
-        if workload_subject.is_empty() || workload_subject.len() > 255 || actor_id != request.chat_id
+        let actor_id = i64::try_from(request.provider_actor_id)
+            .map_err(|_| TelegramLoginError::InvalidInput)?;
+        if workload_subject.is_empty()
+            || workload_subject.len() > 255
+            || actor_id != request.chat_id
         {
             return Err(TelegramLoginError::InvalidInput);
         }
