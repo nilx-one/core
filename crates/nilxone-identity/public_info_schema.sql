@@ -47,3 +47,20 @@ CREATE TABLE IF NOT EXISTS telegram_provider_proof_challenges (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS telegram_provider_challenges_expiry
     ON telegram_provider_proof_challenges(expires_at);
+
+-- A consumed or expired attempt retains a deduplication receipt without PKCE
+-- material. Only the OIDC callback matching state and client can claim it.
+CREATE TABLE IF NOT EXISTS telegram_login_transactions (
+    workload_subject TEXT NOT NULL,
+    actor_id INTEGER NOT NULL CHECK (actor_id > 0),
+    chat_id INTEGER NOT NULL CHECK (chat_id = actor_id),
+    message_id INTEGER NOT NULL CHECK (message_id > 0),
+    state_digest BLOB NOT NULL UNIQUE CHECK (length(state_digest) = 32),
+    issuer TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+    pending TEXT,
+    PRIMARY KEY (workload_subject, actor_id, chat_id, message_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS telegram_login_transactions_expiry
+    ON telegram_login_transactions(expires_at);

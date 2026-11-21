@@ -175,6 +175,10 @@ impl SignInClientConfig {
     pub fn client_id(&self) -> &str {
         &self.client_id
     }
+
+    pub(crate) fn redirect_uri(&self) -> &Url {
+        &self.redirect_uri
+    }
 }
 
 // The secret never reaches a log line through `{:?}`.
@@ -262,7 +266,7 @@ impl SignInClient {
         Ok((self.authorization_url(&transaction), transaction))
     }
 
-    fn authorization_url(&self, transaction: &SignInTransaction) -> Url {
+    pub(crate) fn authorization_url(&self, transaction: &SignInTransaction) -> Url {
         let mut url = self
             .config
             .issuer
