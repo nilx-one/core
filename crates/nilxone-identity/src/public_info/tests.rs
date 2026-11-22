@@ -109,6 +109,7 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
     assert_eq!(
         tables,
         [
+            "bond_private_refs",
             "product_activation_requests",
             "product_activation_sync",
             "product_sessions",
