@@ -16,6 +16,16 @@ CREATE TABLE IF NOT EXISTS public_profiles (
     PRIMARY KEY (issuer, subject)
 ) STRICT;
 
+-- Opaque references are issued by 0x1 for a specific integration audience.
+-- A deleted profile takes its mappings with it. Public projections never join this table.
+CREATE TABLE IF NOT EXISTS bond_private_refs (
+    profile_id TEXT NOT NULL REFERENCES public_profiles(profile_id) ON DELETE CASCADE,
+    audience TEXT NOT NULL COLLATE BINARY CHECK (length(audience) BETWEEN 1 AND 64),
+    priv_id TEXT NOT NULL COLLATE BINARY CHECK (length(priv_id) = 43),
+    PRIMARY KEY (profile_id, audience),
+    UNIQUE (audience, priv_id)
+) STRICT;
+
 -- Product sessions the HTTP host opens after a verified AIS callback. The
 -- host keeps the cookie and stores only a digest of its token here. A session
 -- names the exact (issuer, subject, profile_id) it was opened for, so a

@@ -663,3 +663,67 @@ async fn opening_a_session_drops_the_owners_expired_ones_only() {
             .unwrap();
     assert_eq!(left, [third, OTHER_HASH]);
 }
+
+#[tokio::test]
+async fn prism_reference_follows_the_signed_in_profile_across_a_rename() {
+    let repository = repository().await;
+    let owner = active_owner(&repository, &identity("owner", Some("0x0sky"), NOW)).await;
+    let reference = repository.prism_private_ref(&owner, NOW).await.unwrap();
+
+    repository
+        .attach(&identity("owner", Some("0x0sea"), NOW + 1))
+        .await
+        .unwrap();
+    let other = active_owner(&repository, &identity("other", Some("0x0sky"), NOW)).await;
+    let (retry, second) = tokio::join!(
+        repository.prism_private_ref(&owner, NOW + 1),
+        repository.prism_private_ref(&other, NOW + 1),
+    );
+    assert_eq!(reference.as_str().len(), 43);
+    assert_eq!(reference.as_str(), retry.unwrap().as_str());
+    assert_ne!(reference.as_str(), second.unwrap().as_str());
+    let public_json = serde_json::to_string(&owner.profile).unwrap();
+    assert!(!public_json.contains(reference.as_str()));
+    assert!(!public_json.contains("priv_id"));
+}
+
+#[tokio::test]
+async fn prism_reference_requires_a_live_active_session_even_on_retry() {
+    let repository = repository().await;
+    let sign_in = identity("owner", Some("0x0sky"), NOW);
+    let active = active_owner(&repository, &sign_in).await;
+    repository.prism_private_ref(&active, NOW).await.unwrap();
+
+    let callback_only = repository.attach(&sign_in).await.unwrap();
+    let token = "b".repeat(64);
+    assert!(
+        !repository
+            .open_session(&callback_only, &token, "", None, NOW, NOW + 3_600)
+            .await
+            .unwrap()
+    );
+    let inactive = repository
+        .restore_session(&token, NOW)
+        .await
+        .unwrap()
+        .unwrap();
+    for owner in [&callback_only, &inactive] {
+        assert!(matches!(
+            repository.prism_private_ref(owner, NOW).await,
+            Err(PrivateRefError::SessionInactive)
+        ));
+    }
+
+    assert!(matches!(
+        repository.prism_private_ref(&active, NOW + 3_600).await,
+        Err(PrivateRefError::SessionInactive)
+    ));
+    repository
+        .close_session(active.session.as_deref().unwrap(), NOW + 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        repository.prism_private_ref(&active, NOW + 1).await,
+        Err(PrivateRefError::SessionInactive)
+    ));
+}
