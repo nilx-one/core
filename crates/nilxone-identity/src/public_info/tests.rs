@@ -357,7 +357,7 @@ async fn other_product_client_and_invalid_callback_cannot_create_profiles() {
         PublicInfoService::new(flow(None, "prism-hub"), repository.clone()),
         Err(PublicInfoError::WrongClient)
     ));
-    let service = PublicInfoService::new(flow(None, "nilx-one"), repository.clone()).unwrap();
+    let service = PublicInfoService::new(flow(None, "0x1"), repository.clone()).unwrap();
     let result = service.finish(None, Callback::default(), NOW).await;
     assert!(matches!(result.outcome, Err(SignInFailure::Expired)));
     assert!(result.clear_cookie.contains("Max-Age=0"));
@@ -386,14 +386,13 @@ async fn other_product_client_and_invalid_callback_cannot_create_profiles() {
 // A local issuer substitute exercises real HTTP code exchange, JWKS and
 // Ed25519 verification, followed by product profile creation. No live AIS.
 #[tokio::test]
-async fn oidc_callback_creates_product_profile_only_for_a_valid_nilx_one_token() {
-    for audience in ["nilx-one", "prism-hub"] {
+async fn oidc_callback_creates_product_profile_only_for_a_valid_0x1_token() {
+    for audience in ["0x1", "prism-hub"] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let backchannel = format!("http://{}", listener.local_addr().unwrap());
         let repository = repository().await;
         let service =
-            PublicInfoService::new(flow(Some(&backchannel), "nilx-one"), repository.clone())
-                .unwrap();
+            PublicInfoService::new(flow(Some(&backchannel), "0x1"), repository.clone()).unwrap();
         let started = service.start(Some("/map"), NOW).unwrap();
         let pairs = started
             .location
@@ -482,7 +481,7 @@ async fn oidc_callback_creates_product_profile_only_for_a_valid_nilx_one_token()
             .fetch_one(&repository.pool)
             .await
             .unwrap();
-        if audience == "nilx-one" {
+        if audience == "0x1" {
             let signed_in = result.outcome.unwrap();
             assert_eq!(signed_in.return_path, "/map");
             assert_eq!(

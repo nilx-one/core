@@ -3,7 +3,7 @@
 
 //! Dormant verification and explicit confirmation for legacy Bond migration.
 //!
-//! Only the legacy nilx-one OIDC client may supply a signed callback here.
+//! Only the 0x1 OIDC client may supply a signed callback here.
 //! It must be the dedicated migration transaction, not an ordinary product
 //! sign-in. No user-supplied public address or unverified subject is accepted.
 
@@ -12,7 +12,7 @@ use sqlx::Row as _;
 use super::{LegacyBondMigrationRepository, LegacyMigrationError};
 use crate::aiaiaiai_sign_in::{Callback, SignInFlow};
 
-const CLIENT: &str = "nilx-one";
+const CLIENT: &str = "0x1";
 const ISSUER: &str = "https://auth.aiaiaiai.org";
 const MAX_FRESH_SECONDS: u64 = 600;
 const MIGRATION_RETURN_PREFIX: &str = "/api/v1/auth/aiaiaiai/migrate/confirm/";
