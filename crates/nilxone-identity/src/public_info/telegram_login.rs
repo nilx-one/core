@@ -271,6 +271,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn callback_checks_state_and_issuer_then_claims_before_exchange() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let client = SignInClient::new(
+            SignInClientConfig::public(
+                "https://auth.aiaiaiai.org",
+                Some("http://127.0.0.1:0"),
+                "0x1",
+                "https://nilx.one/api/v1/telegram/login/callback",
+            )
+            .unwrap(),
+        );
+        let foreign_issuer = SignInClient::new(
+            SignInClientConfig::public(
+                "https://other.example",
+                Some("http://127.0.0.1:0"),
+                "0x1",
+                "https://nilx.one/api/v1/telegram/login/callback",
+            )
+            .unwrap(),
+        );
+        let started = repository
+            .start_telegram_login(&client, "bot", &message(), 100)
+            .await
+            .unwrap()
+            .unwrap();
+        let url = url::Url::parse(&started.authorization_url).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        let state = &query["state"];
+        assert!(
+            repository
+                .complete_telegram_login(&client, &"!".repeat(32), "code", 101)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .complete_telegram_login(&foreign_issuer, state, "code", 101)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            repository
+                .complete_telegram_login(&client, state, "code", 101)
+                .await,
+            Err(TelegramLoginError::SignIn(SignInError::Unavailable))
+        ));
+        assert!(
+            repository
+                .complete_telegram_login(&client, state, "code", 101)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn refuses_a_different_chat_and_the_web_callback() {
         let repository = PublicInfoRepository::connect("sqlite::memory:")
             .await

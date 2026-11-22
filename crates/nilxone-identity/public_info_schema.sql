@@ -48,8 +48,9 @@ CREATE TABLE IF NOT EXISTS telegram_provider_proof_challenges (
 CREATE INDEX IF NOT EXISTS telegram_provider_challenges_expiry
     ON telegram_provider_proof_challenges(expires_at);
 
--- A consumed or expired attempt retains a deduplication receipt without PKCE
--- material. Only the OIDC callback matching state and client can claim it.
+-- Pending rows contain live PKCE material, valid for five minutes. A callback
+-- claim removes it immediately. A subsequent login start clears expired
+-- material and retains deduplication receipts through the retention window.
 CREATE TABLE IF NOT EXISTS telegram_login_transactions (
     workload_subject TEXT NOT NULL,
     actor_id INTEGER NOT NULL CHECK (actor_id > 0),
