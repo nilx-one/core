@@ -86,7 +86,23 @@ macro_rules! identifier_type {
     };
 }
 
-identifier_type!(BondId, "bond_", 64);
+identifier_type!(PrivId, "bond_", 64);
+
+/// Source-compatible name for the same private identifier.
+pub type BondId = PrivId;
+
+impl PrivId {
+    /// Encodes the immutable bytes allocated by the identity store.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        let mut value = String::with_capacity(69);
+        value.push_str("bond_");
+        for byte in bytes {
+            let _ = write!(value, "{byte:02x}");
+        }
+        Self(value)
+    }
+}
 identifier_type!(BondChainId, "bch_", 64);
 identifier_type!(OperationId, "op_", 32);
 identifier_type!(SpokenLineId, "line_", 64);
@@ -107,19 +123,19 @@ impl Sha256Digest {
 
 #[cfg(test)]
 mod tests {
-    use super::{BondId, IdentifierError, Sha256Digest};
+    use super::{IdentifierError, PrivId, Sha256Digest};
 
     #[test]
     fn accepts_canonical_bond_identifier() {
         let value = format!("bond_{}", "a".repeat(64));
-        let parsed: BondId = value.parse().expect("canonical Bond id must parse");
+        let parsed: PrivId = value.parse().expect("canonical Bond id must parse");
         assert_eq!(parsed.as_str(), value);
     }
 
     #[test]
     fn rejects_uppercase_hex() {
         let value = format!("bond_{}", "A".repeat(64));
-        assert_eq!(value.parse::<BondId>(), Err(IdentifierError));
+        assert_eq!(value.parse::<PrivId>(), Err(IdentifierError));
     }
 
     #[test]

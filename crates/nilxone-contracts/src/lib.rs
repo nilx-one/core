@@ -95,7 +95,7 @@ pub use geography::{
     BondLocation, BondLocationMode, GEO_COORDINATE_E7_SCALE, GeoCoordinate, GeoCoordinateError,
 };
 pub use identifier::{
-    BondChainId, BondId, IdentifierError, OperationId, Sha256Digest, SpokenLineId,
+    BondChainId, BondId, IdentifierError, OperationId, PrivId, Sha256Digest, SpokenLineId,
 };
 pub use inventory::{CraftJob, GIFT_LEVEL, Holder, Inventory, Outcome, STARTER_SEEDS};
 pub use inventory_wire::{

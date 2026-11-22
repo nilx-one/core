@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use nilxone_contracts::{
-    BondChainId, BondId, CommandEnvelope, ContractVersion, CoreError, DecimalU64,
-    EffectRequestEnvelope, EventEnvelope, InvalidHistoryReason, MissingContextPort, OperationId,
+    BondChainId, CommandEnvelope, ContractVersion, CoreError, DecimalU64, EffectRequestEnvelope,
+    EventEnvelope, InvalidHistoryReason, MissingContextPort, OperationId, PrivId,
     ProjectionEnvelope, Sha256Digest, TransitionOk, TransitionOutcome, canonical_json,
 };
 use nilxone_kernel::bond_chain::{
@@ -40,7 +40,7 @@ impl FixtureAuthorizationScope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixtureAuthorization {
-    pub bond_id: BondId,
+    pub bond_id: PrivId,
     pub scope: FixtureAuthorizationScope,
 }
 
@@ -110,8 +110,8 @@ impl FixtureLifecycle {
 #[serde(deny_unknown_fields)]
 pub struct FixtureBondChain {
     pub bch_id: BondChainId,
-    pub bond_0_id: BondId,
-    pub bond_1_id: BondId,
+    pub bond_0_id: PrivId,
+    pub bond_1_id: PrivId,
     pub previous_bch_id: Option<BondChainId>,
     pub establishment: Establishment,
     pub lifecycle: FixtureLifecycle,
@@ -147,8 +147,8 @@ pub enum FixtureRecordKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixtureOpenedBody {
-    pub bond_0_id: BondId,
-    pub bond_1_id: BondId,
+    pub bond_0_id: PrivId,
+    pub bond_1_id: PrivId,
     pub previous_bch_id: Option<BondChainId>,
     pub expires_at_unix_ms: DecimalU64,
     pub cancellable: bool,
@@ -176,7 +176,7 @@ pub struct FixtureRecord {
     pub bch_id: BondChainId,
     pub sequence: DecimalU64,
     pub previous_record_hash: Option<Sha256Digest>,
-    pub actor_bond_id: Option<BondId>,
+    pub actor_bond_id: Option<PrivId>,
     pub observed_at_unix_ms: DecimalU64,
     pub body: FixtureRecordBody,
     pub record_hash: Sha256Digest,
@@ -189,7 +189,7 @@ struct HashableRecord<'a> {
     bch_id: &'a BondChainId,
     sequence: DecimalU64,
     previous_record_hash: Option<&'a Sha256Digest>,
-    actor_bond_id: Option<&'a BondId>,
+    actor_bond_id: Option<&'a PrivId>,
     observed_at_unix_ms: DecimalU64,
     body: &'a FixtureRecordBody,
 }
@@ -200,8 +200,8 @@ struct HashableRecord<'a> {
 pub enum FixtureCommand {
     #[serde(rename = "fixture.open")]
     Open {
-        bond_0_id: BondId,
-        bond_1_id: BondId,
+        bond_0_id: PrivId,
+        bond_1_id: PrivId,
         previous_bch_id: Option<BondChainId>,
         expires_at_unix_ms: DecimalU64,
         cancellable: bool,
@@ -262,8 +262,8 @@ pub enum FixtureEffect {
 #[serde(deny_unknown_fields)]
 pub struct FixtureProjectionBondChain {
     pub bch_id: BondChainId,
-    pub bond_0_id: BondId,
-    pub bond_1_id: BondId,
+    pub bond_0_id: PrivId,
+    pub bond_1_id: PrivId,
     pub previous_bch_id: Option<BondChainId>,
     pub establishment: Establishment,
     pub lifecycle: FixtureLifecycle,
@@ -288,7 +288,7 @@ type FixtureEnvelope = CommandEnvelope<FixtureCommand, FixtureState, FixtureVeri
 #[derive(Debug)]
 struct ExistingTransition {
     record_kind: FixtureRecordKind,
-    actor: Option<BondId>,
+    actor: Option<PrivId>,
     establishment: Establishment,
     lifecycle: FixtureLifecycle,
 }
@@ -330,7 +330,7 @@ fn next_revision(
 
 fn has_authorization(
     context: &FixtureVerifiedContext,
-    bond_id: &BondId,
+    bond_id: &PrivId,
     scope: FixtureAuthorizationScope,
 ) -> bool {
     context
@@ -342,7 +342,7 @@ fn has_authorization(
 fn require_authorization(
     operation_id: &OperationId,
     context: &FixtureVerifiedContext,
-    bond_id: &BondId,
+    bond_id: &PrivId,
     scope: FixtureAuthorizationScope,
 ) -> Result<(), CoreError> {
     if has_authorization(context, bond_id, scope) {
@@ -371,7 +371,7 @@ fn make_record(
     operation_id: &OperationId,
     chain: &FixtureBondChain,
     record_kind: FixtureRecordKind,
-    actor_bond_id: Option<BondId>,
+    actor_bond_id: Option<PrivId>,
     observed_at_unix_ms: DecimalU64,
     body: FixtureRecordBody,
 ) -> Result<FixtureRecord, CoreError> {
@@ -1250,7 +1250,7 @@ mod tests {
     use super::*;
     use nilxone_contracts::{ErrorCode, canonical_json};
 
-    fn bond(hex: char) -> BondId {
+    fn bond(hex: char) -> PrivId {
         format!("bond_{}{}", "0".repeat(63), hex)
             .parse()
             .expect("fixture Bond id")

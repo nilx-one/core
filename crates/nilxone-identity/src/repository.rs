@@ -160,9 +160,31 @@ pub struct IdentityRepository {
 }
 
 impl IdentityRepository {
+    /// Internal lookup of the private identifier allocated at Bond creation.
+    /// The current address locates the record. Callers must establish their
+    /// own authority before using it and keep the identifier out of public DTOs.
+    pub async fn bond_priv_id(
+        &self,
+        pub_dress: &str,
+    ) -> Result<Option<nilxone_contracts::PrivId>, sqlx::Error> {
+        let stored: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT subject FROM identity_subjects WHERE pub_dress = ?")
+                .bind(pub_dress)
+                .fetch_optional(&self.pool)
+                .await?;
+        stored
+            .map(|bytes| {
+                let bytes = bytes.try_into().map_err(|_| {
+                    sqlx::Error::Protocol("invalid stored Bond private identifier".into())
+                })?;
+                Ok(nilxone_contracts::PrivId::from_bytes(bytes))
+            })
+            .transpose()
+    }
+
     /// Service-internal input to a partner-specific digest, never a public view.
     pub async fn market_pairwise_subject(&self, owner: &str, digester: &crate::SecretDigester) -> Result<Vec<u8>, sqlx::Error> {
-        let bytes: Vec<u8> = sqlx::query_scalar("SELECT subject FROM identity_subjects WHERE pub_dress = ?")
+        let bytes: Vec<u8> = sqlx::query_scalar("SELECT s.subject FROM identity_subjects s JOIN identities i USING (pub_dress) WHERE s.pub_dress = ? AND i.identity_kind = 'human'")
             .bind(owner.to_string()).fetch_one(&self.pool).await?;
         let subject: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(digester.digest("market-pairwise-subject-v1", &subject))
@@ -177,11 +199,14 @@ impl IdentityRepository {
         client_id: &str,
         digester: &crate::SecretDigester,
     ) -> Result<Option<String>, sqlx::Error> {
-        let bytes: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT subject FROM identity_subjects WHERE pub_dress = ?")
-                .bind(owner.as_str())
-                .fetch_optional(&self.pool)
-                .await?;
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT s.subject FROM identity_subjects s \
+             JOIN identities i USING (pub_dress) \
+             WHERE s.pub_dress = ? AND i.identity_kind = 'human'",
+        )
+        .bind(owner.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(bytes.map(|bytes| {
             let subject: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
             // Client ids carry no ':', so the joined value is unambiguous.
@@ -336,8 +361,8 @@ impl IdentityRepository {
                 .execute(&self.pool)
                 .await?;
         }
-        // Backfill stable, service-private subjects for existing humans and
-        // install the registration trigger for all future native/provider users.
+        // Backfill private identifiers existing Bonds still lack and install
+        // registration triggers for new identities.
         // The migration is idempotent; it must never rotate an existing subject.
         let mut subject_transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::raw_sql(include_str!(
@@ -3273,14 +3298,17 @@ mod tests {
             NativeRegistrationOutcome::Registered(_)
         ));
 
-        let subject: Vec<u8> = sqlx::query_scalar(
-            "SELECT subject FROM identity_subjects WHERE pub_dress = ?",
-        )
-        .bind(current.as_str())
-        .fetch_one(&repository.pool)
-        .await
-        .expect("private subject");
-        assert_eq!(subject.len(), 32);
+        let subject = repository.bond_priv_id(current.as_str()).await.unwrap().unwrap();
+        assert_eq!(subject.as_str().len(), 69);
+        let old_avaia = AvaiaPubDress::derive_default(&current);
+        repository.configure_owned_avaia(&current, &old_avaia, 101).await.unwrap();
+        let avaia_id = repository.bond_priv_id(&old_avaia.to_string()).await.unwrap().unwrap();
+        assert_ne!(subject, avaia_id);
+        assert!(sqlx::query("UPDATE identity_subjects SET subject = randomblob(32) WHERE pub_dress = ?")
+            .bind(current.as_str())
+            .execute(&repository.pool)
+            .await
+            .is_err());
 
         assert!(matches!(
             repository
@@ -3289,34 +3317,25 @@ mod tests {
                 .expect("rename"),
             PubDressRenameOutcome::Renamed(_)
         ));
-        let renamed_subject: Vec<u8> = sqlx::query_scalar(
-            "SELECT subject FROM identity_subjects WHERE pub_dress = ?",
-        )
-        .bind(next.as_str())
-        .fetch_one(&repository.pool)
-        .await
-        .expect("subject after rename");
+        let renamed_subject = repository.bond_priv_id(next.as_str()).await.unwrap().unwrap();
+        let renamed_avaia = AvaiaPubDress::derive_default(&next).to_string();
+        assert_eq!(repository.bond_priv_id(&renamed_avaia).await.unwrap(), Some(avaia_id));
+        assert!(repository.bond_priv_id(current.as_str()).await.unwrap().is_none());
         assert_eq!(subject, renamed_subject);
         repository.pool.close().await;
 
         let reopened = IdentityRepository::connect(&url).await.expect("reopen");
-        let reopened_subject: Vec<u8> = sqlx::query_scalar(
-            "SELECT subject FROM identity_subjects WHERE pub_dress = ?",
-        )
-        .bind(next.as_str())
-        .fetch_one(&reopened.pool)
-        .await
-        .expect("subject after restart");
+        let reopened_subject = reopened.bond_priv_id(next.as_str()).await.unwrap().unwrap();
         assert_eq!(subject, reopened_subject);
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identity_subjects")
             .fetch_one(&reopened.pool)
             .await
             .expect("count");
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
-    async fn private_subject_migration_backfills_existing_humans() {
+    async fn private_subject_migration_backfills_existing_bonds() {
         let database = tempfile::NamedTempFile::new().expect("database");
         let url = format!("sqlite://{}", database.path().display());
         let repository = IdentityRepository::connect(&url).await.expect("repository");
@@ -3325,6 +3344,8 @@ mod tests {
             .register(&old, &ProviderIdentity::telegram(12345), 100)
             .await
             .expect("register provider human");
+        let old_avaia = AvaiaPubDress::derive_default(&old);
+        repository.configure_owned_avaia(&old, &old_avaia, 101).await.unwrap();
 
         // Model a contract-14 database with no 0035 objects: an existing
         // human must be backfilled, not assigned a new public identity.
@@ -3332,6 +3353,10 @@ mod tests {
             .execute(&repository.pool)
             .await
             .expect("drop trigger");
+        sqlx::query("DROP TRIGGER identity_subjects_after_avaia_insert")
+            .execute(&repository.pool)
+            .await
+            .expect("drop Avaia trigger");
         sqlx::query("DROP TABLE identity_subjects")
             .execute(&repository.pool)
             .await
@@ -3347,16 +3372,19 @@ mod tests {
         .await
         .expect("backfilled subject");
         assert_eq!(count, 1);
+        assert!(migrated.bond_priv_id(&old_avaia.to_string()).await.unwrap().is_some());
         let newer: PubDress = "0x0newcomer".parse().expect("newcomer");
         migrated
             .register(&newer, &ProviderIdentity::discord("9876"), 200)
             .await
             .expect("register future human");
+        let new_avaia = AvaiaPubDress::derive_default(&newer);
+        migrated.configure_owned_avaia(&newer, &new_avaia, 201).await.unwrap();
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM identity_subjects")
             .fetch_one(&migrated.pool)
             .await
             .expect("all humans");
-        assert_eq!(count, 2);
+        assert_eq!(count, 4);
     }
 
     async fn registered_repository() -> super::IdentityRepository {
@@ -3460,6 +3488,47 @@ mod partner_subject_boundary_tests {
         let result = repository.market_pairwise_subject(owner.as_str(), &digester).await.unwrap();
         assert_eq!(result, digester.digest("market-pairwise-subject-v1", &encoded));
         assert_ne!(result, raw);
+    }
+
+    #[tokio::test]
+    async fn pairwise_digests_stay_human_only_after_avaia_subjects_exist() {
+        let repository = IdentityRepository::connect("sqlite::memory:").await.unwrap();
+        let owner: PubDress = "0x1test".parse().unwrap();
+        repository
+            .register(&owner, &ProviderIdentity::telegram(12345), 100)
+            .await
+            .unwrap();
+        let avaia = AvaiaPubDress::derive_default(&owner);
+        repository
+            .configure_owned_avaia(&owner, &avaia, 101)
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .bond_priv_id(avaia.as_str())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let digester = crate::NativeAuthConfig::new(
+            "test-auth-secret-that-is-at-least-thirty-two-bytes",
+            "test-password-pepper-that-is-at-least-thirty-two-bytes",
+        )
+        .unwrap()
+        .secret_digester();
+        assert!(
+            repository
+                .market_pairwise_subject(avaia.as_str(), &digester)
+                .await
+                .is_err()
+        );
+        assert!(
+            repository
+                .client_pairwise_subject(&owner, "nilx-one", &digester)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }
 
