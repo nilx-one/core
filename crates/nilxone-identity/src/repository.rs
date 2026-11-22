@@ -199,11 +199,14 @@ impl IdentityRepository {
         client_id: &str,
         digester: &crate::SecretDigester,
     ) -> Result<Option<String>, sqlx::Error> {
-        let bytes: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT subject FROM identity_subjects WHERE pub_dress = ?")
-                .bind(owner.as_str())
-                .fetch_optional(&self.pool)
-                .await?;
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT s.subject FROM identity_subjects s \
+             JOIN identities i USING (pub_dress) \
+             WHERE s.pub_dress = ? AND i.identity_kind = 'human'",
+        )
+        .bind(owner.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(bytes.map(|bytes| {
             let subject: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
             // Client ids carry no ':', so the joined value is unambiguous.
@@ -3485,6 +3488,47 @@ mod partner_subject_boundary_tests {
         let result = repository.market_pairwise_subject(owner.as_str(), &digester).await.unwrap();
         assert_eq!(result, digester.digest("market-pairwise-subject-v1", &encoded));
         assert_ne!(result, raw);
+    }
+
+    #[tokio::test]
+    async fn pairwise_digests_stay_human_only_after_avaia_subjects_exist() {
+        let repository = IdentityRepository::connect("sqlite::memory:").await.unwrap();
+        let owner: PubDress = "0x1test".parse().unwrap();
+        repository
+            .register(&owner, &ProviderIdentity::telegram(12345), 100)
+            .await
+            .unwrap();
+        let avaia = AvaiaPubDress::derive_default(&owner);
+        repository
+            .configure_owned_avaia(&owner, &avaia, 101)
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .bond_priv_id(avaia.as_str())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let digester = crate::NativeAuthConfig::new(
+            "test-auth-secret-that-is-at-least-thirty-two-bytes",
+            "test-password-pepper-that-is-at-least-thirty-two-bytes",
+        )
+        .unwrap()
+        .secret_digester();
+        assert!(
+            repository
+                .market_pairwise_subject(avaia.as_str(), &digester)
+                .await
+                .is_err()
+        );
+        assert!(
+            repository
+                .client_pairwise_subject(&owner, "nilx-one", &digester)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }
 

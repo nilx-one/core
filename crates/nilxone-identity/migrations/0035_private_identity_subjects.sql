@@ -1,7 +1,8 @@
 -- © 2026 aiaiaiai · aiaiaiai.org
 -- SPDX-License-Identifier: MPL-2.0
 
--- Immutable 0x1 priv_id (historically named subject in this store). Never expose this to clients or Prism.
+-- Immutable 0x1 priv_id (historically named subject in this store).
+-- Never expose this to clients or Prism.
 -- The public address remains mutable, with ON UPDATE CASCADE preserving the link.
 CREATE TABLE IF NOT EXISTS identity_subjects (
     subject BLOB PRIMARY KEY NOT NULL CHECK (length(subject) = 32),
