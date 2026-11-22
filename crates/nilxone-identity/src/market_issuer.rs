@@ -1127,9 +1127,6 @@ mod tests {
         let product = crate::public_info::PublicInfoRepository::connect(&fixture.url)
             .await
             .expect("product store");
-        crate::public_info::ClientTransitionRepository::prepare(product.clone())
-            .await
-            .expect("client transition store");
         crate::public_info::LegacyBondMigrationRepository::prepare(product)
             .await
             .expect("migration store");

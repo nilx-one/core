@@ -19,7 +19,6 @@ use crate::{
 };
 
 mod activation;
-mod client_transition;
 mod legacy_migration;
 mod telegram_login;
 mod telegram_proof;
@@ -27,9 +26,6 @@ pub use telegram_login::{TelegramLoginCallback, TelegramLoginError};
 pub use telegram_proof::ConsumedTelegramProviderProof;
 
 pub use activation::ActivationError;
-pub use client_transition::{
-    ClientTransitionBinding, ClientTransitionError, ClientTransitionRepository,
-};
 pub use legacy_migration::{
     BoundLegacyBond, LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
     LegacyMigrationProofRecorded, LegacyMigrationStarted, ProvisionError, ProvisionedBond,

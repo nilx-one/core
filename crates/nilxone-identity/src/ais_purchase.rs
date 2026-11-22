@@ -257,9 +257,7 @@ pub struct PurchaseAuthority<'a> {
 /// Apply an AIS purchase after the adapter independently authenticates and
 /// claims the Market order. Market must freeze the active offer when it claims
 /// the order. AIS vouches for the buyer and their confirmation, not the price.
-/// The permit's subject is the 0x1 client's; a profile that signed in as the predecessor client
-/// is found through its signed continuity link, so the host must have prepared the client
-/// transition store (`ClientTransitionRepository::prepare`) on the same database.
+/// The permit's subject is the 0x1 client's pairwise subject, and it names the profile directly.
 pub async fn settle(
     repository: &IdentityRepository,
     authority: &PurchaseAuthority<'_>,
