@@ -7,7 +7,7 @@ Status: proposed protocol contract; **not activated**. Tracks #114; implementati
 
 ## Authorities and invariants
 
-AIS is authoritative for authentication and issues a verified `(iss, pairwise sub)` for the registered `nilx-one` client. Core is authoritative for Bond ownership and 0x1 product state. `pub_dress` is a mutable display label, never proof of ownership, a migration key, or a fallback lookup.
+AIS is authoritative for authentication and issues a verified `(iss, pairwise sub)` for the registered `0x1` client. Core is authoritative for Bond ownership and 0x1 product state. `pub_dress` is a mutable display label, never proof of ownership, a migration key, or a fallback lookup.
 
 A migration **attaches an AIS identity to an already existing Bond**; it must not create a replacement Bond, reset XP, Avaia, subscriptions, inventory, wallets, or any completed BondChain interaction. Preserve the legacy Bond's stable domain identifier. The current `public_info` product `profile_id` is a distinct randomly generated identifier: do **not** assume that it equals the legacy Bond identifier. A migration may need an explicit, unique `legacy_bond_id -> product_profile_id` mapping, with existing references kept intact. Verify actual schema and ownership of each state store before implementing this mapping.
 
@@ -87,7 +87,7 @@ Allocate a needed profile and the binding only in the successful transaction.
 
 ## Required proof
 
-A migration transaction is started from a **freshly authenticated legacy Bond session**, or an equivalent server-verified legacy credential. The server resolves the legacy Bond identifier from that authenticated context, never from an untrusted browser field. Separately, the user completes the normal AIS authorization-code + PKCE flow. Core accepts only a validated `nilx-one` OIDC result with correct issuer, audience, state, nonce, token lifetime, and pairwise subject. The host binds both proofs to one short-lived, single-use migration transaction and requires explicit user confirmation.
+A migration transaction is started from a **freshly authenticated legacy Bond session**, or an equivalent server-verified legacy credential. The server resolves the legacy Bond identifier from that authenticated context, never from an untrusted browser field. Separately, the user completes the normal AIS authorization-code + PKCE flow. Core accepts only a validated `0x1` OIDC result with correct issuer, audience, state, nonce, token lifetime, and pairwise subject. The host binds both proofs to one short-lived, single-use migration transaction and requires explicit user confirmation.
 
 Neither equal `pub_dress` values, an email match, a public Bond ID, a screenshot, nor possession of an AIS token **alone** authorizes legacy ownership transfer. Do not accept an AIS subject issued to another client.
 
@@ -149,7 +149,7 @@ activation requests, consumes the intent, and writes a pseudonymous audit.
 Existing AIS profiles are conflicts, never automatically merged or overwritten.
 
 The migration is NOT enabled: the host must still supply a migration-specific
-OIDC callback for the registered legacy nilx-one client, bind both proofs to
+OIDC callback for the registered 0x1 client, bind both proofs to
 the server-issued transaction, require CSRF-protected explicit confirmation,
 and restore new AIS-backed game sessions through the durable binding. No
 production data migration, client-id cutover or deploy is authorized.
@@ -157,12 +157,12 @@ production data migration, client-id cutover or deploy is authorized.
 ### Staged verified callback and explicit confirmation (Core #115)
 
 The migration repository now has a dormant record_ais_callback operation. It
-calls a dedicated migration SignInFlow for the registered legacy nilx-one
+calls a dedicated migration SignInFlow for the registered 0x1
 OIDC client; that flow verifies state, nonce, PKCE, issuer, signature, audience
 and auth_time before Core records the resulting pairwise subject. The host
 must bind a server-issued transaction to its expected signed return path.
-Ordinary product sign-in and successor 0x1 client tokens are not migration
-proof. A separate confirm_verified operation rechecks the native session,
+An ordinary product sign-in transaction is not migration proof, even for the
+same 0x1 client: the migration flow has its own cookie and MAC domain. A separate confirm_verified operation rechecks the native session,
 pending AIS proof and hard expiry, and requires a CSRF-protected explicit
 owner action in the host. Only then is commit_confirmed eligible to attach.
 
@@ -210,15 +210,14 @@ name, mint a native credential session, or treat product authentication as a
 Migration must not grant a second active writer; #115/#621 must preserve the
 existing single-active-client policy before enabling game mutations.
 
-## Client-id transition is a separate identity migration
+## Client id
 
-Current AIS registration and Core/Web validation use `nilx-one`; `0x1` is the
-agreed target. Because the pairwise subject changes with client id, do not
-replace the audience string and reattach by name. Before transition, inventory
-issued subjects and local bindings without exporting private AIS identifiers.
-A transition must use AIS-authoritative continuity evidence for the same
-identity, bound to the old and new client, or fresh verified control of both
-bindings. Define that proof contract before implementing aliases.
+AIS registers 0x1 as `0x1`, and Core validates only that client (owner
+decision, 2026-11-22). The former `nilx-one` client was retired before anyone
+signed in through it, so no pairwise subject or local binding exists under it
+and no continuity migration is needed. The pairwise subject depends on the
+client id: a later rename would orphan every `(iss, sub)` binding, so it
+would require AIS-authoritative continuity evidence for the same identity.
 
 The account's `profile_id`, product Bond key and all game references must remain
 stable. Old/new subject aliases must be unique and scoped to the exact issuer

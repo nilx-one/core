@@ -13,7 +13,7 @@ in Web's `docs/identity-boundary.md`. AIS remains `aiaiaiai-org/4x-ais`.
 | AIS (`4x-ais`) | 0x1 (Core, server-side) |
 | --- | --- |
 | Shared identity, unique public name, credentials, connected providers | Product profile attached to that identity |
-| OIDC issuer and client-specific pairwise subjects | Validates AIS sign-in for client `nilx-one` |
+| OIDC issuer and client-specific pairwise subjects | Validates AIS sign-in for client `0x1` |
 | Identity's own sessions | Product session, owned and checked by its HTTP host |
 | Current `pub_dress` claim | Display snapshot of `pub_dress`, never an account key |
 | No game concepts | 0x1 public information; other game state remains in its existing modules |
@@ -34,7 +34,7 @@ location does not make it part of AIS's data authority.
    `SignInFlow::verify_callback` checks the signed transaction, expiry,
    state, code exchange, PKCE binding, EdDSA signature, issuer, audience,
    nonce and token/authentication times with the existing implementation.
-3. The service accepts only the `nilx-one` client configuration. A token for
+3. The service accepts only the `0x1` client configuration. A token for
    Prism or Market does not authorize access to a 0x1 profile.
 4. A single atomic upsert finds or creates the local profile by `(iss, sub)`.
    No lookup by `pub_dress` attaches an old Bond. Equal public names from

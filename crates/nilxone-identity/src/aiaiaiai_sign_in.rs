@@ -910,11 +910,11 @@ impl SignInFlow {
     }
 
     /// Separate the opt-in legacy Bond migration from ordinary product sign-in.
-    /// Only the legacy nilx-one OIDC audience may prove pre-migration ownership.
+    /// Only the 0x1 OIDC audience may prove pre-migration ownership.
     /// This scope uses its own cookie name AND MAC domain, so neither flow can
     /// accept the other's browser transaction even under the same host key.
     pub fn legacy_migration(client: SignInClient, signer: crate::SecretDigester) -> Option<Self> {
-        (client.config().client_id() == "nilx-one").then_some(Self {
+        (client.config().client_id() == "0x1").then_some(Self {
             client,
             signer,
             purpose: SignInFlowPurpose::LegacyMigration,
@@ -1773,8 +1773,23 @@ mod tests {
         let digester = crate::NativeAuthConfig::new([1; 32], [2; 32])
             .unwrap()
             .secret_digester();
-        let migration = SignInFlow::legacy_migration(SignInClient::new(config()), digester.clone())
-            .expect("the registered legacy OIDC client is accepted");
+        let product_client = || {
+            SignInClientConfig::new(
+                ISSUER,
+                None,
+                "0x1",
+                "a-client-secret-of-thirty-two-bytes!",
+                CALLBACK,
+            )
+            .unwrap()
+        };
+        assert!(
+            SignInFlow::legacy_migration(SignInClient::new(config()), digester.clone()).is_none(),
+            "only the 0x1 client may prove legacy ownership"
+        );
+        let migration =
+            SignInFlow::legacy_migration(SignInClient::new(product_client()), digester.clone())
+                .expect("the registered 0x1 OIDC client is accepted");
         assert!(migration.is_legacy_migration());
         assert!(!normal.is_legacy_migration());
         let product_started = normal.start(Some("/map"), NOW).unwrap();

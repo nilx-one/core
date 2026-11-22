@@ -39,7 +39,7 @@ const MAX_CARRY_XP: u64 = 1_000_000_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PublicInfoError {
-    #[error("0x1 public information requires the nilx-one OIDC client")]
+    #[error("0x1 public information requires the 0x1 OIDC client")]
     WrongClient,
     #[error("the verified identity has an invalid public address")]
     InvalidPublicAddress,
@@ -351,7 +351,7 @@ impl PublicInfoRepository {
     }
 
     // This function is deliberately private. The service calls it only with
-    // the result of SignInFlow's callback verification for client nilx-one.
+    // the result of SignInFlow's callback verification for client 0x1.
     async fn attach(
         &self,
         identity: &VerifiedSignIn,
@@ -459,7 +459,7 @@ impl PublicInfoService {
         flow: SignInFlow,
         repository: PublicInfoRepository,
     ) -> Result<Self, PublicInfoError> {
-        if flow.client_id() != "nilx-one" {
+        if flow.client_id() != "0x1" {
             return Err(PublicInfoError::WrongClient);
         }
         Ok(Self { flow, repository })
