@@ -49,6 +49,18 @@ fn check_client(client: &SignInClient) -> Result<&str, TelegramLoginError> {
     Ok(redirect.as_str())
 }
 
+/// Erase expired PKCE material while preserving update deduplication.
+async fn erase_expired_pending(db: &mut sqlx::SqliteConnection, now: i64) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE telegram_login_transactions SET pending = NULL
+         WHERE expires_at <= ? AND pending IS NOT NULL",
+    )
+    .bind(now)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 impl PublicInfoRepository {
     /// Start or recover the same link for an authenticated workload and a
     /// verified, fresh private Telegram message. The HTTP host authenticates
@@ -79,14 +91,7 @@ impl PublicInfoRepository {
             .ok_or(TelegramLoginError::InvalidInput)?;
 
         let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        // Erase expired PKCE material while preserving update deduplication.
-        sqlx::query(
-            "UPDATE telegram_login_transactions SET pending = NULL
-             WHERE expires_at <= ? AND pending IS NOT NULL",
-        )
-        .bind(now)
-        .execute(&mut *db)
-        .await?;
+        erase_expired_pending(&mut db, now).await?;
         sqlx::query("DELETE FROM telegram_login_transactions WHERE expires_at <= ?")
             .bind(now.saturating_sub(UPDATE_RETENTION_SECONDS))
             .execute(&mut *db)
@@ -180,7 +185,9 @@ impl PublicInfoRepository {
         .fetch_optional(&mut *db)
         .await?;
         let Some(row) = row else {
-            db.rollback().await?;
+            // A late callback must not leave its verifier behind either.
+            erase_expired_pending(&mut db, now_sql).await?;
+            db.commit().await?;
             return Ok(None);
         };
         let pending: String = row.try_get("pending")?;
@@ -261,6 +268,13 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        // The late callback alone erased the expired verifier.
+        let pending: Option<String> =
+            sqlx::query_scalar("SELECT pending FROM telegram_login_transactions")
+                .fetch_one(&repository.pool)
+                .await
+                .unwrap();
+        assert!(pending.is_none());
         assert!(
             repository
                 .start_telegram_login(&client, "bot", &message, 400)
@@ -271,27 +285,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn callback_checks_state_and_issuer_then_claims_before_exchange() {
+    async fn callback_checks_state_issuer_and_redirect_then_claims_before_exchange() {
         let repository = PublicInfoRepository::connect("sqlite::memory:")
             .await
             .unwrap();
-        let client = SignInClient::new(
-            SignInClientConfig::public(
-                "https://auth.aiaiaiai.org",
-                Some("http://127.0.0.1:0"),
-                "0x1",
-                "https://nilx.one/api/v1/telegram/login/callback",
+        let offline = |issuer: &str, redirect: &str| {
+            SignInClient::new(
+                SignInClientConfig::public(issuer, Some("http://127.0.0.1:0"), "0x1", redirect)
+                    .unwrap(),
             )
-            .unwrap(),
+        };
+        let client = offline(
+            "https://auth.aiaiaiai.org",
+            "https://nilx.one/api/v1/telegram/login/callback",
         );
-        let foreign_issuer = SignInClient::new(
-            SignInClientConfig::public(
-                "https://other.example",
-                Some("http://127.0.0.1:0"),
-                "0x1",
-                "https://nilx.one/api/v1/telegram/login/callback",
-            )
-            .unwrap(),
+        let foreign_issuer = offline(
+            "https://other.example",
+            "https://nilx.one/api/v1/telegram/login/callback",
+        );
+        let foreign_redirect = offline(
+            "https://auth.aiaiaiai.org",
+            "https://other.example/api/v1/telegram/login/callback",
         );
         let started = repository
             .start_telegram_login(&client, "bot", &message(), 100)
@@ -311,6 +325,13 @@ mod tests {
         assert!(
             repository
                 .complete_telegram_login(&foreign_issuer, state, "code", 101)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .complete_telegram_login(&foreign_redirect, state, "code", 101)
                 .await
                 .unwrap()
                 .is_none()
