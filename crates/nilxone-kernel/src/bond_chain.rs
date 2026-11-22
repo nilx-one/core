@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-use nilxone_contracts::BondId;
+use nilxone_contracts::PrivId;
 
 /// Structural participant violation independent of an interaction contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +27,8 @@ pub enum HistoryRelation {
 /// Returns [`InvalidParticipants`] when both stable participant positions contain the
 /// same Bond identifier.
 pub fn validate_participants(
-    bond_0_id: &BondId,
-    bond_1_id: &BondId,
+    bond_0_id: &PrivId,
+    bond_1_id: &PrivId,
 ) -> Result<(), InvalidParticipants> {
     if bond_0_id == bond_1_id {
         Err(InvalidParticipants)

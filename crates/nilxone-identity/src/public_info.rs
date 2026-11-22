@@ -20,7 +20,6 @@ use crate::{
 
 mod activation;
 mod legacy_migration;
-mod private_ref;
 mod telegram_login;
 mod telegram_proof;
 pub use telegram_login::{TelegramLoginCallback, TelegramLoginError};
@@ -31,7 +30,6 @@ pub use legacy_migration::{
     BoundLegacyBond, LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
     LegacyMigrationProofRecorded, LegacyMigrationStarted, ProvisionError, ProvisionedBond,
 };
-pub use private_ref::{BondPrivateRef, PrivateRefError};
 
 const MAX_CARRY_XP: u64 = 1_000_000_000;
 

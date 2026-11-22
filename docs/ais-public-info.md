@@ -161,21 +161,3 @@ deleted profile). Client activation has its own tests, listed in
 [its contract](client-activation.md). A local substitute
 issuer exercises HTTP token exchange, JWKS, signature/audience verification
 and profile creation through the real Core flow. It is not a live AIS E2E run.
-
-## References for Prism transit
-
-0x1 can allocate a `priv_id` for the active product profile and the
-`prism-hub` audience. The value is opaque, stable across `pub_dress`
-changes and absent from public profile JSON. The current public address
-continues to serve discovery, display and any public action that names a
-Bond by address. Neither identifier is proof of control.
-
-A server adapter issuing a specific Hub request must authorize that operation
-before asking Core for the reference. Hub verifies its AIS-issued product
-credential and route grants, and uses any included private reference only in
-flight. The receiving product verifies person or action evidence under that
-operation's contract. The reference is never a bearer credential, an AIS
-pairwise subject, a signing key, or proof of a counterparty action.
-
-This repository method is the identity prerequisite for that adapter. It
-does not expose a lookup endpoint or implement signed Interaction delivery.
