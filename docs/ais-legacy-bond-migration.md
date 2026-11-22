@@ -238,8 +238,6 @@ the current client; it must not silently activate the rename.
 - Product-session restore resolves the intended Bond and preserves existing
   game authorization; an unbound or foreign profile cannot act for that Bond.
 - Logout revokes product access; replay of a migration handle cannot reopen it.
-- Client-id transition tests preserve the same profile and Bond while rejecting
-  collisions, foreign-client tokens and unverified continuity claims.
 - Matching public address with a different verified AIS subject **never** grants legacy access.
 - A forged or stale legacy session, wrong OIDC client, replayed callback, expired transaction and missing confirmation fail without writes.
 - Concurrent attempts for the same Bond or AIS identity cannot create two bindings.
