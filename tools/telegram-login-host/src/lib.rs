@@ -339,7 +339,9 @@ async fn confirm_login(
     // A first sign-in gets its Bond, as in the browser. Without one the chat
     // session would be a profile nobody can play: sign it out again.
     if let Some(provisioning) = chat.provisioning.as_ref()
-        && let Err(failure) = provisioning.provision_new_bond(&profile.profile_id, now).await
+        && let Err(failure) = provisioning
+            .provision_new_bond(&profile.profile_id, now)
+            .await
     {
         tracing::error!(
             ?failure,

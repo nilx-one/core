@@ -7,7 +7,9 @@ use nilxone_identity::{
     aiaiaiai_sign_in::{SignInClient, SignInClientConfig},
     public_info::{LegacyBondMigrationRepository, PublicInfoRepository},
 };
-use nilxone_telegram_login_host::{Authority, ChatSignIn, HostAisToken, ISSUER, authenticated_router};
+use nilxone_telegram_login_host::{
+    Authority, ChatSignIn, HostAisToken, ISSUER, authenticated_router,
+};
 
 fn configured(name: &str) -> io::Result<String> {
     env::var(name).map_err(|_| io::Error::other(format!("{name} is required")))
