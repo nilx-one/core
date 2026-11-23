@@ -267,6 +267,15 @@ impl SignInClient {
     }
 
     pub(crate) fn authorization_url(&self, transaction: &SignInTransaction) -> Url {
+        self.authorization_url_with_scope(transaction, SCOPE)
+    }
+
+    /// The same request, asking for `scope` instead of the default.
+    pub(crate) fn authorization_url_with_scope(
+        &self,
+        transaction: &SignInTransaction,
+        scope: &str,
+    ) -> Url {
         let mut url = self
             .config
             .issuer
@@ -276,7 +285,7 @@ impl SignInClient {
             .append_pair("response_type", "code")
             .append_pair("client_id", &self.config.client_id)
             .append_pair("redirect_uri", self.config.redirect_uri.as_str())
-            .append_pair("scope", SCOPE)
+            .append_pair("scope", scope)
             .append_pair("state", &transaction.state)
             .append_pair("nonce", &transaction.nonce)
             .append_pair(
@@ -295,6 +304,19 @@ impl SignInClient {
         transaction: &SignInTransaction,
         now: u64,
     ) -> Result<VerifiedSignIn, SignInError> {
+        self.complete_with_binding(code, transaction, now)
+            .await
+            .map(|(identity, _)| identity)
+    }
+
+    /// [`Self::complete`], also returning the verified ID token's
+    /// `telegram_binding` claim, if it has one.
+    pub(crate) async fn complete_with_binding(
+        &self,
+        code: &str,
+        transaction: &SignInTransaction,
+        now: u64,
+    ) -> Result<(VerifiedSignIn, Option<String>), SignInError> {
         if code.is_empty() || code.len() > 512 {
             return Err(SignInError::CodeRejected);
         }
@@ -337,7 +359,7 @@ impl SignInClient {
             .await
             .map_err(|_| SignInError::InvalidToken("token_response"))?;
         let keys = self.signing_keys().await?;
-        verify_id_token(
+        verify_id_token_with_binding(
             &tokens.id_token,
             &keys,
             &Expectation {
@@ -347,42 +369,6 @@ impl SignInClient {
             },
             now,
         )
-    }
-
-    pub(crate) async fn telegram_identity_proof(
-        &self,
-        access_token: &str,
-        telegram_id: i64,
-        nonce: &str,
-    ) -> Result<Option<(String, JsonWebKeySet)>, SignInError> {
-        #[derive(Deserialize)]
-        struct ProviderEvidence {
-            proof: String,
-        }
-
-        let url = self
-            .config
-            .backchannel
-            .join("family/telegram-identity")
-            .map_err(|_| SignInError::Unavailable)?;
-        let response = self
-            .http
-            .post(url)
-            .bearer_auth(access_token)
-            .json(&serde_json::json!({"telegram_id": telegram_id, "nonce": nonce}))
-            .send()
-            .await
-            .map_err(|_| SignInError::Unavailable)?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let result = response
-            .error_for_status()
-            .map_err(|_| SignInError::Unavailable)?
-            .json::<ProviderEvidence>()
-            .await
-            .map_err(|_| SignInError::InvalidToken("telegram_proof_response"))?;
-        Ok(Some((result.proof, self.signing_keys().await?)))
     }
 
     async fn signing_keys(&self) -> Result<JsonWebKeySet, SignInError> {
@@ -467,6 +453,8 @@ enum Audience {
 
 #[derive(Deserialize)]
 struct Claims {
+    #[serde(default)]
+    telegram_binding: Option<String>,
     iss: String,
     sub: String,
     aud: Audience,
@@ -486,6 +474,28 @@ pub fn verify_id_token(
     expected: &Expectation<'_>,
     now: u64,
 ) -> Result<VerifiedSignIn, SignInError> {
+    verify_id_token_with_binding(token, keys, expected, now).map(|(identity, _)| identity)
+}
+
+/// AIS's `telegram_binding` claim for a Telegram account and the sign-in's
+/// nonce (4x-ais `docs/runtime.md`). Only a party that already knows both can
+/// compute it, so the claim proves the link without disclosing the account.
+#[must_use]
+pub fn telegram_binding(nonce: &str, telegram_id: i64) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"ais-telegram-binding-v1\0");
+    digest.update(nonce.as_bytes());
+    digest.update(b"\0");
+    digest.update(telegram_id.to_string().as_bytes());
+    URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+fn verify_id_token_with_binding(
+    token: &str,
+    keys: &JsonWebKeySet,
+    expected: &Expectation<'_>,
+    now: u64,
+) -> Result<(VerifiedSignIn, Option<String>), SignInError> {
     let mut parts = token.split('.');
     let (Some(header_part), Some(claims_part), Some(signature_part), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -550,155 +560,15 @@ pub fn verify_id_token(
     {
         return Err(SignInError::InvalidToken("subject"));
     }
-    Ok(VerifiedSignIn {
-        issuer: claims.iss,
-        subject: claims.sub,
-        pub_dress: claims.pub_dress,
-        auth_time,
-    })
-}
-
-pub(crate) const TELEGRAM_PROOF_MAX_LIFETIME_SECONDS: u32 = 120;
-
-/// Verified signature and claims for an AIS lookup of an existing Telegram
-/// binding. Core must consume the nonce and proof ID before using the subject.
-#[derive(Eq, PartialEq)]
-pub(crate) struct VerifiedTelegramProvider {
-    pairwise_subject: String,
-    replay_id: String,
-}
-
-impl std::fmt::Debug for VerifiedTelegramProvider {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("VerifiedTelegramProvider")
-            .finish_non_exhaustive()
-    }
-}
-
-impl VerifiedTelegramProvider {
-    pub(crate) fn pairwise_subject(&self) -> &str {
-        &self.pairwise_subject
-    }
-
-    pub(crate) fn replay_id(&self) -> &str {
-        &self.replay_id
-    }
-}
-
-#[derive(Deserialize)]
-struct ProviderProofHeader {
-    alg: String,
-    typ: String,
-    kid: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderProofClaims {
-    iss: String,
-    aud: String,
-    sub: String,
-    azp: String,
-    provider: String,
-    purpose: String,
-    nonce: String,
-    iat: u64,
-    exp: u64,
-    jti: String,
-}
-
-/// Verify the short-lived `provider-evidence+jwt` issued only by AIS's
-/// `/family/telegram-identity` route. The issuer cannot decide Core session
-/// authority, and this function does not perform an authorization transition.
-///
-/// The Gateway must generate and remember a cryptographically random nonce
-/// before asking AIS, and atomically mark both request and returned `jti`
-/// consumed. A read from another process, a reused nonce or missing storage
-/// proof must be refused by the host, even when this signature is valid.
-///
-/// # Errors
-///
-/// Any signature, audience, purpose, nonce, lifetime or claim mismatch is a
-/// terminal rejection. Neither Telegram account equality nor `pub_dress`
-/// can override it.
-pub(crate) fn verify_telegram_provider_proof(
-    proof: &str,
-    keys: &JsonWebKeySet,
-    expected: &Expectation<'_>,
-    now: u64,
-) -> Result<VerifiedTelegramProvider, SignInError> {
-    if proof.len() > 4096 || expected.client_id != "0x1" {
-        return Err(SignInError::InvalidToken("telegram_proof_context"));
-    }
-    if !(32..=128).contains(&expected.nonce.len())
-        || !expected
-            .nonce
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err(SignInError::InvalidToken("nonce"));
-    }
-    let mut parts = proof.split('.');
-    let (Some(header_part), Some(claims_part), Some(signature_part), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Err(SignInError::InvalidToken("format"));
-    };
-    let header: ProviderProofHeader = decode_json(header_part, "header")?;
-    if header.alg != ALGORITHM || header.typ != "provider-evidence+jwt" {
-        return Err(SignInError::InvalidToken("telegram_proof_type"));
-    }
-    if header.kid.is_empty() {
-        return Err(SignInError::InvalidToken("kid"));
-    }
-    let key = signing_key(keys, Some(&header.kid))?;
-    let signature_bytes = URL_SAFE_NO_PAD
-        .decode(signature_part)
-        .map_err(|_| SignInError::InvalidToken("signature"))?;
-    let signature = Signature::from_slice(&signature_bytes)
-        .map_err(|_| SignInError::InvalidToken("signature"))?;
-    let signed = &proof[..header_part.len() + 1 + claims_part.len()];
-    key.verify_strict(signed.as_bytes(), &signature)
-        .map_err(|_| SignInError::InvalidToken("signature"))?;
-
-    let claims: ProviderProofClaims = decode_json(claims_part, "telegram_proof_claims")?;
-    if claims.iss != expected.issuer {
-        return Err(SignInError::InvalidToken("issuer"));
-    }
-    if claims.aud != "0x1" || claims.azp != "0x1" {
-        return Err(SignInError::InvalidToken("audience"));
-    }
-    if claims.provider != "telegram" || claims.purpose != "telegram.identity.resolve" {
-        return Err(SignInError::InvalidToken("telegram_proof_purpose"));
-    }
-    if !bool::from(claims.nonce.as_bytes().ct_eq(expected.nonce.as_bytes())) {
-        return Err(SignInError::InvalidToken("nonce"));
-    }
-    if claims.iat > now
-        || claims.exp <= now
-        || claims.exp <= claims.iat
-        || claims.exp - claims.iat > u64::from(TELEGRAM_PROOF_MAX_LIFETIME_SECONDS)
-    {
-        return Err(SignInError::InvalidToken("telegram_proof_lifetime"));
-    }
-    let subject_valid = claims.sub.len() == 43
-        && URL_SAFE_NO_PAD
-            .decode(&claims.sub)
-            .is_ok_and(|bytes| bytes.len() == 32);
-    if !subject_valid
-        || !(16..=128).contains(&claims.jti.len())
-        || !claims
-            .jti
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err(SignInError::InvalidToken("telegram_proof_identity"));
-    }
-    Ok(VerifiedTelegramProvider {
-        pairwise_subject: claims.sub,
-        replay_id: claims.jti,
-    })
+    Ok((
+        VerifiedSignIn {
+            issuer: claims.iss,
+            subject: claims.sub,
+            pub_dress: claims.pub_dress,
+            auth_time,
+        },
+        claims.telegram_binding,
+    ))
 }
 
 fn decode_json<T: for<'de> Deserialize<'de>>(
@@ -1128,162 +998,47 @@ mod tests {
         sign(&signing_key(), header(), claims)
     }
 
-    fn telegram_proof_claims() -> serde_json::Value {
-        json!({
-            "iss": ISSUER,
-            "aud": "0x1",
-            "sub": URL_SAFE_NO_PAD.encode([33_u8; 32]),
-            "azp": "0x1",
-            "provider": "telegram",
-            "purpose": "telegram.identity.resolve",
-            "nonce": "a-fresh-core-gateway-nonce-000000000000001",
-            "iat": NOW,
-            "exp": NOW + 120,
-            "jti": "test-proof-replay-id-1234",
-        })
-    }
-
-    fn telegram_proof_header() -> serde_json::Value {
-        json!({ "alg": "EdDSA", "kid": "k1", "typ": "provider-evidence+jwt" })
-    }
-
-    fn telegram_expected() -> Expectation<'static> {
-        Expectation {
-            issuer: ISSUER,
-            client_id: "0x1",
-            nonce: "a-fresh-core-gateway-nonce-000000000000001",
-        }
-    }
-
-    #[test]
-    fn verifies_ais_provider_evidence_without_granting_a_session() {
-        let claim = telegram_proof_claims();
-        let encoded = sign(&signing_key(), telegram_proof_header(), claim.clone());
-        let verified = verify_telegram_provider_proof(
-            &encoded,
-            &key_set(&signing_key(), "k1"),
-            &telegram_expected(),
-            NOW,
-        )
-        .unwrap();
-        assert_eq!(verified.pairwise_subject, claim["sub"].as_str().unwrap());
-        assert_eq!(verified.replay_id, "test-proof-replay-id-1234");
-    }
-
-    #[test]
-    fn rejects_cross_product_replay_tampering_and_untrusted_issuer() {
-        let keys = key_set(&signing_key(), "k1");
-        let proof = sign(
-            &signing_key(),
-            telegram_proof_header(),
-            telegram_proof_claims(),
-        );
-        let expected = telegram_expected();
-
-        let mismatch = Expectation {
-            nonce: "another-core-request-nonce-000000000000001",
-            ..expected
-        };
-        assert_eq!(
-            verify_telegram_provider_proof(&proof, &keys, &mismatch, NOW),
-            Err(SignInError::InvalidToken("nonce"))
-        );
-        assert_eq!(
-            verify_telegram_provider_proof(
-                &proof,
-                &keys,
-                &Expectation {
-                    client_id: "nilx-one",
-                    ..telegram_expected()
-                },
-                NOW
-            ),
-            Err(SignInError::InvalidToken("telegram_proof_context"))
-        );
-        let bad_signer = sign(
-            &SigningKey::from_bytes(&[9_u8; 32]),
-            telegram_proof_header(),
-            telegram_proof_claims(),
-        );
-        assert_eq!(
-            verify_telegram_provider_proof(&bad_signer, &keys, &telegram_expected(), NOW),
-            Err(SignInError::InvalidToken("signature"))
-        );
-        let jwt_header = sign(&signing_key(), header(), telegram_proof_claims());
-        assert_eq!(
-            verify_telegram_provider_proof(&jwt_header, &keys, &telegram_expected(), NOW),
-            Err(SignInError::InvalidToken("telegram_proof_type"))
-        );
-        let mut changed = telegram_proof_claims();
-        changed["aud"] = json!("another-product");
-        let wrong_audience = sign(&signing_key(), telegram_proof_header(), changed);
-        assert_eq!(
-            verify_telegram_provider_proof(&wrong_audience, &keys, &telegram_expected(), NOW),
-            Err(SignInError::InvalidToken("audience"))
-        );
-    }
-
-    #[test]
-    fn rejects_signed_proofs_with_invalid_nonce_grammar() {
-        let keys = key_set(&signing_key(), "k1");
-        for nonce in [
-            "",
-            "too-short",
-            "invalid/nonce-even-though-it-is-long-enough",
-        ] {
-            let mut claims = telegram_proof_claims();
-            claims["nonce"] = json!(nonce);
-            let proof = sign(&signing_key(), telegram_proof_header(), claims);
-            let expected = Expectation {
-                nonce,
-                ..telegram_expected()
-            };
-            assert_eq!(
-                verify_telegram_provider_proof(&proof, &keys, &expected, NOW),
-                Err(SignInError::InvalidToken("nonce"))
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_forged_purpose_lifetime_and_external_identity_values() {
-        let keys = key_set(&signing_key(), "k1");
-        let failure = |key: &str, value: serde_json::Value, expected: &'static str| {
-            let mut payload = telegram_proof_claims();
-            payload[key] = value;
-            let proof = sign(&signing_key(), telegram_proof_header(), payload);
-            assert_eq!(
-                verify_telegram_provider_proof(&proof, &keys, &telegram_expected(), NOW),
-                Err(SignInError::InvalidToken(expected))
-            );
-        };
-        failure(
-            "purpose",
-            json!("telegram.special.purchase"),
-            "telegram_proof_purpose",
-        );
-        failure("provider", json!("discord"), "telegram_proof_purpose");
-        failure("iat", json!(NOW + 1), "telegram_proof_lifetime");
-        failure("exp", json!(NOW + 121), "telegram_proof_lifetime");
-        failure("exp", json!(NOW), "telegram_proof_lifetime");
-        failure("sub", json!("0x0sky"), "telegram_proof_identity");
-        failure("jti", json!("bad id"), "telegram_proof_identity");
-
-        let mut leaked = telegram_proof_claims();
-        leaked["telegram_id"] = json!(654321);
-        let proof = sign(&signing_key(), telegram_proof_header(), leaked);
-        assert_eq!(
-            verify_telegram_provider_proof(&proof, &keys, &telegram_expected(), NOW),
-            Err(SignInError::InvalidToken("telegram_proof_claims"))
-        );
-    }
-
     #[test]
     fn accepts_a_token_that_answers_this_transaction() {
         let verified = verify(&sign(&signing_key(), header(), claims())).unwrap();
         assert_eq!(verified.subject, "pairwise-subject");
         assert_eq!(verified.pub_dress.as_deref(), Some("0x0sky"));
         assert_eq!(verified.issuer, ISSUER);
+    }
+
+    #[test]
+    fn the_telegram_binding_matches_ais_and_rides_in_the_id_token() {
+        // The same vector as 4x-ais `telegram_binding`.
+        assert_eq!(
+            telegram_binding("nonce-1", 4242),
+            "KTSkEvqiZPu8zg12JF-SCr7qSFZRr7iwp4k9wyD3Ttg"
+        );
+        assert_ne!(
+            telegram_binding("nonce-1", 4243),
+            telegram_binding("nonce-1", 4242)
+        );
+        assert_ne!(
+            telegram_binding("nonce-2", 4242),
+            telegram_binding("nonce-1", 4242)
+        );
+        let token = with("telegram_binding", json!(telegram_binding("the-nonce", 42)));
+        let (_, binding) = verify_id_token_with_binding(
+            &token,
+            &key_set(&signing_key(), "k1"),
+            &expectation(),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(binding, Some(telegram_binding("the-nonce", 42)));
+        let plain = sign(&signing_key(), header(), claims());
+        let (_, binding) = verify_id_token_with_binding(
+            &plain,
+            &key_set(&signing_key(), "k1"),
+            &expectation(),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(binding, None);
     }
 
     #[test]

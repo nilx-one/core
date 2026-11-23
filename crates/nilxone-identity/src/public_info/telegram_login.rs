@@ -11,12 +11,14 @@ use sqlx::Row;
 
 use crate::aiaiaiai_sign_in::{SignInClient, SignInError, SignInTransaction, VerifiedSignIn};
 
-use super::{
-    AuthenticatedProfile, ConsumedTelegramProviderProof, PublicInfoError, PublicInfoRepository,
-};
+use subtle::ConstantTimeEq as _;
+
+use super::{AuthenticatedProfile, PublicInfoError, PublicInfoRepository};
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
 const LOGIN_LIFETIME_SECONDS: i64 = 300;
+/// The chat login also asks AIS to prove the linked Telegram account.
+const TELEGRAM_LOGIN_SCOPE: &str = "openid pub_dress telegram_binding";
 /// How long a verified callback waits for the sender's confirmation.
 const CONFIRMATION_LIFETIME_SECONDS: i64 = 300;
 /// The label a Telegram chat session shows to the owner's other clients.
@@ -41,10 +43,6 @@ pub enum TelegramLoginError {
 pub enum TelegramLoginVerificationError {
     #[error(transparent)]
     Callback(#[from] TelegramLoginError),
-    #[error("Telegram provider proof could not be resolved")]
-    Resolve(#[from] SignInError),
-    #[error("Telegram provider proof could not be verified")]
-    ProviderProof(#[from] PublicInfoError),
 }
 
 /// A browser callback that proved an AIS identity for a pending Telegram
@@ -78,28 +76,6 @@ impl TelegramLoginAwaitingConfirmation {
     #[must_use]
     pub fn callback(&self) -> &TelegramLoginCallback {
         &self.0
-    }
-}
-
-impl TelegramLoginCallback {
-    pub(super) fn provider_context(&self, state: &str) -> [u8; 32] {
-        let mut digest = Sha256::new();
-        digest.update(b"telegram-login-provider-evidence-v1");
-        digest.update(Sha256::digest(self.workload_subject.as_bytes()));
-        digest.update(self.actor_id.to_be_bytes());
-        digest.update(self.chat_id.to_be_bytes());
-        digest.update(self.message_id.to_be_bytes());
-        digest.update(Sha256::digest(state.as_bytes()));
-        digest.finalize().into()
-    }
-
-    pub(super) fn match_provider(
-        self,
-        proof: &ConsumedTelegramProviderProof,
-    ) -> Option<TelegramLoginAwaitingConfirmation> {
-        (self.identity.issuer == proof.issuer()
-            && self.identity.subject == proof.pairwise_subject())
-        .then_some(TelegramLoginAwaitingConfirmation(self))
     }
 }
 
@@ -228,7 +204,7 @@ impl PublicInfoRepository {
         let Some((pending, lifetime)) = result else {
             return Ok(None);
         };
-        let mut url = client.authorization_url(&pending);
+        let mut url = client.authorization_url_with_scope(&pending, TELEGRAM_LOGIN_SCOPE);
         url.set_path("/0x1");
         Ok(Some(LoginStartResponse {
             authorization_url: url.into(),
@@ -240,16 +216,15 @@ impl PublicInfoRepository {
     /// Exchange the callback and verify that AIS links the authenticated
     /// identity to the Telegram sender recorded at login start.
     ///
-    /// The host provides its direct AIS access token, scoped to
-    /// `telegram.identity.resolve`. The token never comes from the browser or
-    /// the bot. The resulting value only authorizes asking the original sender
+    /// The proof is the ID token's `telegram_binding` claim, bound to this
+    /// transaction's nonce and the sender's account: no AIS credential of the
+    /// host takes part. The result only authorizes asking the original sender
     /// for confirmation. It does not create or switch a product session.
     pub async fn verify_telegram_login_callback(
         &self,
         client: &SignInClient,
         state: &str,
         code: &str,
-        ais_access_token: &str,
     ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
         let Some(callback) = self
             .complete_telegram_login(client, state, code, unix_seconds()?)
@@ -257,32 +232,7 @@ impl PublicInfoRepository {
         else {
             return Ok(None);
         };
-        let context = callback.provider_context(state);
-        let nonce = self
-            .start_telegram_provider_proof(&context, unix_seconds()?)
-            .await?;
-        let Some((signed, keys)) = client
-            .telegram_identity_proof(ais_access_token, callback.chat_id, &nonce)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(proof) = self
-            .consume_telegram_provider_proof(
-                &context,
-                &nonce,
-                &signed,
-                &keys,
-                client.config().issuer(),
-                unix_seconds()?,
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(awaiting) = callback.match_provider(&proof) else {
-            return Ok(None);
-        };
+        let awaiting = TelegramLoginAwaitingConfirmation(callback);
         self.await_telegram_confirmation(&awaiting, unix_seconds()?)
             .await?;
         Ok(Some(awaiting))
@@ -519,12 +469,21 @@ impl PublicInfoRepository {
             .await?;
         db.commit().await?;
 
-        let identity = client.complete(code, &pending, now).await?;
+        let chat_id: i64 = row.try_get("chat_id")?;
+        let (identity, binding) = client.complete_with_binding(code, &pending, now).await?;
+        // AIS proves that this identity's linked Telegram account is the
+        // sender recorded at login start; anything else asks for nothing.
+        let expected = crate::aiaiaiai_sign_in::telegram_binding(&pending.nonce, chat_id);
+        let bound = binding
+            .is_some_and(|binding| bool::from(binding.as_bytes().ct_eq(expected.as_bytes())));
+        if !bound {
+            return Ok(None);
+        }
         Ok(Some(TelegramLoginCallback {
             workload_subject: row.try_get("workload_subject")?,
             actor_id: u64::try_from(row.try_get::<i64, _>("actor_id")?)
                 .map_err(|_| TelegramLoginError::InvalidInput)?,
-            chat_id: row.try_get("chat_id")?,
+            chat_id,
             message_id: row.try_get("message_id")?,
             identity,
         }))
@@ -581,6 +540,7 @@ mod tests {
         assert_eq!(url.path(), "/0x1");
         let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
         assert_eq!(query["code_challenge_method"], "S256");
+        assert_eq!(query["scope"], "openid pub_dress telegram_binding");
         assert!(!query.contains_key("code_verifier"));
         assert!(
             repository

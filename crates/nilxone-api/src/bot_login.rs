@@ -116,6 +116,100 @@ refusals! {
     }
 }
 
+/// The header that carries the bot's request signature.
+pub const SIGNATURE_HEADER: &str = "x-0x1-telegram-bot-signature";
+/// How far a signature's timestamp may be from the host's clock.
+pub const SIGNATURE_MAX_SKEW_SECONDS: u64 = 60;
+
+/// The numeric bot id that prefixes a Telegram Bot API token. The host names
+/// the workload after it: `telegram-bot:<id>`.
+#[must_use]
+pub fn bot_id(bot_token: &str) -> Option<u64> {
+    let (id, secret) = bot_token.split_once(':')?;
+    if secret.is_empty() || id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok().filter(|id| *id > 0)
+}
+
+/// The workload subject of the bot that holds `bot_token`.
+#[must_use]
+pub fn workload_subject(bot_token: &str) -> Option<String> {
+    bot_id(bot_token).map(|id| format!("telegram-bot:{id}"))
+}
+
+fn signature_key(bot_token: &str) -> [u8; 32] {
+    use hmac::Mac as _;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"0x1-telegram-bot-request-v1")
+        .expect("HMAC accepts any key length");
+    mac.update(bot_token.as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+fn request_mac(
+    bot_token: &str,
+    timestamp: u64,
+    path: &str,
+    body: &[u8],
+) -> hmac::Hmac<sha2::Sha256> {
+    use hmac::Mac as _;
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&signature_key(bot_token))
+        .expect("HMAC accepts any key length");
+    mac.update(timestamp.to_string().as_bytes());
+    mac.update(b"\n");
+    mac.update(path.as_bytes());
+    mac.update(b"\n");
+    mac.update(body);
+    mac
+}
+
+/// Signs a bot request with the Telegram Bot API token the bot and the host
+/// already hold, so the bot needs no credential of its own. Whoever holds the
+/// token already controls the chat; the signature adds no new authority.
+/// Value: `t=<unix seconds>,v1=<lowercase hex HMAC-SHA256>`.
+#[must_use]
+pub fn sign_request(bot_token: &str, timestamp: u64, path: &str, body: &[u8]) -> String {
+    use hmac::Mac as _;
+    let tag = request_mac(bot_token, timestamp, path, body)
+        .finalize()
+        .into_bytes();
+    let mut value = format!("t={timestamp},v1=");
+    for byte in tag {
+        use std::fmt::Write as _;
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
+}
+
+/// Verifies [`sign_request`] in constant time, within
+/// [`SIGNATURE_MAX_SKEW_SECONDS`] of `now`. Replays inside that window reach
+/// only idempotent login start or one-use confirmation.
+#[must_use]
+pub fn verify_request(bot_token: &str, header: &str, path: &str, body: &[u8], now: u64) -> bool {
+    use hmac::Mac as _;
+    let Some((timestamp, tag)) = header
+        .strip_prefix("t=")
+        .and_then(|rest| rest.split_once(",v1="))
+    else {
+        return false;
+    };
+    let Ok(timestamp) = timestamp.parse::<u64>() else {
+        return false;
+    };
+    if timestamp.abs_diff(now) > SIGNATURE_MAX_SKEW_SECONDS || tag.len() != 64 {
+        return false;
+    }
+    let Some(tag) = (0..32)
+        .map(|index| u8::from_str_radix(tag.get(index * 2..index * 2 + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()
+    else {
+        return false;
+    };
+    request_mac(bot_token, timestamp, path, body)
+        .verify_slice(&tag)
+        .is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +310,46 @@ mod tests {
             Some(LoginConfirmRefusal::ConfirmationNotFound)
         );
         assert_eq!(LoginConfirmRefusal::ConfirmationNotFound.http_status(), 404);
+    }
+
+    #[test]
+    fn bot_requests_are_signed_with_the_existing_bot_token_only() {
+        let token = "123456:secret-part";
+        assert_eq!(bot_id(token), Some(123_456));
+        assert_eq!(
+            workload_subject(token).as_deref(),
+            Some("telegram-bot:123456")
+        );
+        for bad in ["", "123456", "abc:secret", ":secret", "0:secret", "123456:"] {
+            assert_eq!(bot_id(bad), None, "{bad}");
+        }
+        let body = br#"{"version":1}"#;
+        let header = sign_request(token, 1_000, START_PATH, body);
+        assert!(header.starts_with("t=1000,v1="));
+        assert!(verify_request(token, &header, START_PATH, body, 1_030));
+        assert!(
+            !verify_request(token, &header, START_PATH, body, 1_061),
+            "stale"
+        );
+        assert!(
+            !verify_request(token, &header, CONFIRM_PATH, body, 1_000),
+            "other route"
+        );
+        assert!(
+            !verify_request(token, &header, START_PATH, b"{}", 1_000),
+            "other body"
+        );
+        assert!(
+            !verify_request("123456:other", &header, START_PATH, body, 1_000),
+            "other token"
+        );
+        assert!(!verify_request(
+            token,
+            "t=1000,v1=zz",
+            START_PATH,
+            body,
+            1_000
+        ));
+        assert!(!verify_request(token, "garbage", START_PATH, body, 1_000));
     }
 }

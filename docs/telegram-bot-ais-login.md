@@ -8,7 +8,7 @@ The Core-owned product host is the relying party for Telegram bot commands. It a
 
 Route: POST /api/v1/telegram/login/start
 
-Authentication: dedicated service credential scoped to the official test bot, never the Telegram Bot API token, anonymous cookie, or public user identifier.
+Authentication: the bot signs each request with the Telegram Bot API token of `@nilxone_bot`. The bot and the host both already hold that token, so no other credential exists (`nilxone_api::bot_login::sign_request`). The header `x-0x1-telegram-bot-signature: t=<unix>,v1=<hex>` carries HMAC-SHA256 under a key derived from the token, over the timestamp, the path and the body. The host accepts it within 60 seconds and names the workload `telegram-bot:<bot id>`. Whoever holds the bot token already controls the chat, so the signature grants no new authority. A replay inside the window reaches only idempotent login start or one-use confirmation.
 
 Request JSON:
 
@@ -32,12 +32,15 @@ The host (not the bot) exchanges the authorization code and verifies issuer, EdD
 
 Single Active Client remains enforced. A linked provider does not silently activate Telegram or permit game writes. The Telegram text client is a separate Core-controlled product client from the Web Mini App, with its **own** product session. Switching between these clients requires the canonical confirmed handoff; no implicit sharing, cookie reuse, or activated session inference is permitted. E2E cases must cover expiry, replay, wrong sender, wrong browser account, callback tampering, revocation, conflict, restoration, sign-out and handoff.
 
-The Core callback verifier uses the product host’s direct AIS access token
-with audience `ais` and scope `telegram.identity.resolve`. It looks up the
-Telegram sender recorded in the login transaction. It verifies AIS’s signed
-response against a one-use nonce and compares its issuer and 0x1 pairwise
-subject with the verified browser callback. A match allows the host to ask
-for confirmation in the original chat.
+Login start asks AIS for the scope `openid pub_dress telegram_binding`. AIS
+then puts `telegram_binding` in the ID token, a nonce-bound SHA-256 of the
+person's linked Telegram account (4x-ais `docs/runtime.md`). The callback
+verifier computes the same value from the transaction's nonce and the sender
+recorded at login start, and compares the two in constant time. The comparison
+sits inside the ID token Core already verifies, so the host holds no AIS
+credential and makes no second request. A missing or different binding stops
+the login. A match allows the host to ask for confirmation in the original
+chat.
 
 ## Sender confirmation and the chat session
 
@@ -82,7 +85,7 @@ Refusals are `LoginConfirmRefusal`; `login_confirmation_not_found` (404) covers 
 
 ## Dependencies
 
-Core persists login transactions, confirmations and the chat session binding. The host still needs to expose the callback and confirm routes, register client_id=0x1 in AIS, and hold the direct AIS token for provider verification.
+Core persists login transactions, confirmations and the chat session binding. `tools/telegram-login-host` serves start, callback and confirm with `TELEGRAM_BOT_TOKEN` and the product `DATABASE_URL`. AIS must allow `telegram_binding` for client `0x1` (aiaiaiai-org/4x-ais#28).
 
 - nilx-one/bot#4 — test Telegram adapter for gateway-issued AIS URL (depends on bot#1)
 - nilx-one/core#122 — authenticated Core-owned Gateway runtime
