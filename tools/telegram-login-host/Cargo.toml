@@ -1,0 +1,33 @@
+# © 2026 aiaiaiai · aiaiaiai.org
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "nilxone-telegram-login-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+ed25519-dalek = "2"
+getrandom = "0.3"
+jsonwebtoken = "9"
+nilxone-api = { path = "../../crates/nilxone-api", version = "0.1.0" }
+nilxone-identity = { path = "../../crates/nilxone-identity", version = "0.1.0" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"

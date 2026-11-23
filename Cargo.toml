@@ -12,6 +12,7 @@ members = [
     "crates/nilxone-test-support",
     "crates/nilxone-identity",
     "tools/identity-operator",
+    "tools/telegram-login-host",
 ]
 resolver = "2"
 
