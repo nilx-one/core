@@ -11,10 +11,16 @@ use sqlx::Row;
 
 use crate::aiaiaiai_sign_in::{SignInClient, SignInError, SignInTransaction, VerifiedSignIn};
 
-use super::{ConsumedTelegramProviderProof, PublicInfoError, PublicInfoRepository};
+use super::{
+    AuthenticatedProfile, ConsumedTelegramProviderProof, PublicInfoError, PublicInfoRepository,
+};
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
 const LOGIN_LIFETIME_SECONDS: i64 = 300;
+/// How long a verified callback waits for the sender's confirmation.
+const CONFIRMATION_LIFETIME_SECONDS: i64 = 300;
+/// The label a Telegram chat session shows to the owner's other clients.
+pub const TELEGRAM_CHAT_CLIENT_LABEL: &str = "Telegram · Chat";
 const UPDATE_RETENTION_SECONDS: i64 = 86_400;
 
 #[derive(Debug, thiserror::Error)]
@@ -54,7 +60,19 @@ pub struct TelegramLoginCallback {
 
 /// Browser sign-in and Telegram binding matched in AIS. This result is
 /// eligible for confirmation by the original sender.
+/// It is stored by `verify_telegram_login_callback` and redeemed once by
+/// `confirm_telegram_login`.
 pub struct TelegramLoginAwaitingConfirmation(TelegramLoginCallback);
+
+/// The original sender confirmed a verified callback in the original chat.
+pub struct TelegramChatSignedIn {
+    /// The owner of the new chat session. It identifies the owner for reads;
+    /// a write still requires `restore_telegram_chat_session` and an active
+    /// session.
+    pub owner: AuthenticatedProfile,
+    /// Whether the chat became the active client (Single Active Client).
+    pub active: bool,
+}
 
 impl TelegramLoginAwaitingConfirmation {
     #[must_use]
@@ -83,6 +101,17 @@ impl TelegramLoginCallback {
             && self.identity.subject == proof.pairwise_subject())
         .then_some(TelegramLoginAwaitingConfirmation(self))
     }
+}
+
+/// A fresh session id that nobody holds: the chat is named by its binding,
+/// so only the digest is ever stored.
+fn chat_session_token_hash() -> Result<String, PublicInfoError> {
+    let mut token = [0u8; 32];
+    getrandom::fill(&mut token).map_err(|_| PublicInfoError::TelegramEntropyUnavailable)?;
+    Ok(Sha256::digest(token)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn unix_seconds() -> Result<u64, TelegramLoginError> {
@@ -251,7 +280,201 @@ impl PublicInfoRepository {
         else {
             return Ok(None);
         };
-        Ok(callback.match_provider(&proof))
+        let Some(awaiting) = callback.match_provider(&proof) else {
+            return Ok(None);
+        };
+        self.await_telegram_confirmation(&awaiting, unix_seconds()?)
+            .await?;
+        Ok(Some(awaiting))
+    }
+
+    /// Keep a verified callback until its sender confirms it in the chat.
+    async fn await_telegram_confirmation(
+        &self,
+        awaiting: &TelegramLoginAwaitingConfirmation,
+        now: u64,
+    ) -> Result<(), TelegramLoginError> {
+        let callback = awaiting.callback();
+        let now = i64::try_from(now).map_err(|_| TelegramLoginError::InvalidInput)?;
+        let actor_id =
+            i64::try_from(callback.actor_id).map_err(|_| TelegramLoginError::InvalidInput)?;
+        let auth_time = i64::try_from(callback.identity.auth_time)
+            .map_err(|_| TelegramLoginError::InvalidInput)?;
+        let expires_at = now
+            .checked_add(CONFIRMATION_LIFETIME_SECONDS)
+            .ok_or(TelegramLoginError::InvalidInput)?;
+        let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("DELETE FROM telegram_login_confirmations WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&mut *db)
+            .await?;
+        // The callback claim is one-use, so a login message is confirmed at
+        // most once; a conflict here is a storage fault, never a retry.
+        sqlx::query(
+            "INSERT INTO telegram_login_confirmations
+             (workload_subject, actor_id, chat_id, message_id, issuer, subject,
+              pub_dress, auth_time, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&callback.workload_subject)
+        .bind(actor_id)
+        .bind(callback.chat_id)
+        .bind(callback.message_id)
+        .bind(&callback.identity.issuer)
+        .bind(&callback.identity.subject)
+        .bind(&callback.identity.pub_dress)
+        .bind(auth_time)
+        .bind(expires_at)
+        .execute(&mut *db)
+        .await?;
+        db.commit().await?;
+        Ok(())
+    }
+
+    /// The original sender pressed confirm in the original private chat.
+    ///
+    /// The host passes the bot workload it authenticated and the sender,
+    /// chat and `/login` message from a verified Telegram update; nothing
+    /// else selects the identity. A different sender, chat, workload or
+    /// message, an expired or a used confirmation returns None. Otherwise
+    /// the confirmation is consumed and a product session is opened for the
+    /// chat under Single Active Client: it is active only when the owner has
+    /// no other active client, and it replaces this chat's previous session.
+    pub async fn confirm_telegram_login(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        chat_id: i64,
+        message_id: i32,
+        now: u64,
+        session_expires_at: u64,
+    ) -> Result<Option<TelegramChatSignedIn>, PublicInfoError> {
+        let actor_id = i64::try_from(sender_id).map_err(|_| PublicInfoError::InvalidSession)?;
+        let now_sql = i64::try_from(now).map_err(|_| PublicInfoError::InvalidSession)?;
+        let expires_sql =
+            i64::try_from(session_expires_at).map_err(|_| PublicInfoError::InvalidSession)?;
+        if workload_subject.is_empty()
+            || actor_id <= 0
+            || chat_id != actor_id
+            || message_id <= 0
+            || expires_sql <= now_sql
+        {
+            return Err(PublicInfoError::InvalidSession);
+        }
+        // Claim first: a failure below needs a new /login, never a replay.
+        let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("DELETE FROM telegram_login_confirmations WHERE expires_at <= ?")
+            .bind(now_sql)
+            .execute(&mut *db)
+            .await?;
+        let row = sqlx::query(
+            "DELETE FROM telegram_login_confirmations
+             WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?
+             RETURNING issuer, subject, pub_dress, auth_time",
+        )
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(chat_id)
+        .bind(message_id)
+        .fetch_optional(&mut *db)
+        .await?;
+        db.commit().await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let identity = VerifiedSignIn {
+            issuer: row.try_get("issuer")?,
+            subject: row.try_get("subject")?,
+            pub_dress: row.try_get("pub_dress")?,
+            auth_time: u64::try_from(row.try_get::<i64, _>("auth_time")?)
+                .map_err(|_| PublicInfoError::InvalidSession)?,
+        };
+        let owner = self.attach(&identity).await?;
+        let token_hash = chat_session_token_hash()?;
+
+        let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let previous: Option<String> = sqlx::query_scalar(
+            "SELECT token_hash FROM telegram_chat_sessions
+             WHERE workload_subject = ? AND actor_id = ?",
+        )
+        .bind(workload_subject)
+        .bind(actor_id)
+        .fetch_optional(&mut *db)
+        .await?;
+        let active = super::open_session_in(
+            &mut db,
+            &owner,
+            &token_hash,
+            TELEGRAM_CHAT_CLIENT_LABEL,
+            previous.as_deref(),
+            now_sql,
+            expires_sql,
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO telegram_chat_sessions (workload_subject, actor_id, token_hash)
+             VALUES (?, ?, ?)
+             ON CONFLICT (workload_subject, actor_id) DO UPDATE SET token_hash = excluded.token_hash",
+        )
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(&token_hash)
+        .execute(&mut *db)
+        .await?;
+        db.commit().await?;
+        Ok(Some(TelegramChatSignedIn { owner, active }))
+    }
+
+    /// The owner of the live session this chat signed in to, for a later
+    /// update from the same bot workload and verified sender. An inactive
+    /// session restores too; a write checks activity itself.
+    pub async fn restore_telegram_chat_session(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        now: u64,
+    ) -> Result<Option<AuthenticatedProfile>, PublicInfoError> {
+        let Some(token_hash) = self
+            .telegram_chat_session(workload_subject, sender_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.restore_session(&token_hash, now).await
+    }
+
+    /// Sign the chat out. Idempotent, like `close_session`.
+    pub async fn close_telegram_chat_session(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        now: u64,
+    ) -> Result<(), PublicInfoError> {
+        if let Some(token_hash) = self
+            .telegram_chat_session(workload_subject, sender_id)
+            .await?
+        {
+            self.close_session(&token_hash, now).await?;
+        }
+        Ok(())
+    }
+
+    async fn telegram_chat_session(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+    ) -> Result<Option<String>, PublicInfoError> {
+        let Ok(actor_id) = i64::try_from(sender_id) else {
+            return Ok(None);
+        };
+        Ok(sqlx::query_scalar(
+            "SELECT token_hash FROM telegram_chat_sessions
+             WHERE workload_subject = ? AND actor_id = ?",
+        )
+        .bind(workload_subject)
+        .bind(actor_id)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     /// Claim the matching callback once, before contacting AIS. Any exchange
@@ -475,5 +698,202 @@ mod tests {
                 .await,
             Err(TelegramLoginError::WrongClient)
         ));
+    }
+
+    fn verified(message_id: i32, subject: &str) -> TelegramLoginAwaitingConfirmation {
+        TelegramLoginAwaitingConfirmation(TelegramLoginCallback {
+            workload_subject: "bot".into(),
+            actor_id: 42,
+            chat_id: 42,
+            message_id,
+            identity: VerifiedSignIn {
+                issuer: "https://auth.aiaiaiai.org".into(),
+                subject: subject.into(),
+                pub_dress: Some("0x0sky".into()),
+                auth_time: 90,
+            },
+        })
+    }
+
+    async fn chat_sessions(repository: &PublicInfoRepository) -> Vec<(String, bool)> {
+        sqlx::query_as(
+            "SELECT client_label, active FROM product_sessions ORDER BY created_at, rowid",
+        )
+        .fetch_all(&repository.pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_the_original_sender_in_the_original_chat_confirms_once() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        repository
+            .await_telegram_confirmation(&verified(7, "pairwise"), 100)
+            .await
+            .unwrap();
+        for (workload, sender, chat, message) in [
+            ("other-bot", 42, 42, 7),
+            ("bot", 43, 43, 7),
+            ("bot", 42, 42, 8),
+        ] {
+            assert!(
+                repository
+                    .confirm_telegram_login(workload, sender, chat, message, 101, 1_000)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(matches!(
+            repository
+                .confirm_telegram_login("bot", 42, 43, 7, 101, 1_000)
+                .await,
+            Err(PublicInfoError::InvalidSession)
+        ));
+        assert!(
+            repository
+                .restore_telegram_chat_session("bot", 42, 101)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let signed_in = repository
+            .confirm_telegram_login("bot", 42, 42, 7, 101, 1_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(signed_in.active, "the first client of a profile is active");
+        assert!(
+            repository
+                .confirm_telegram_login("bot", 42, 42, 7, 102, 1_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "a confirmation is one-use"
+        );
+        let restored = repository
+            .restore_telegram_chat_session("bot", 42, 102)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.public_profile(), signed_in.owner.public_profile());
+        assert!(
+            repository
+                .restore_telegram_chat_session("other-bot", 42, 102)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .restore_telegram_chat_session("bot", 42, 1_000)
+                .await
+                .unwrap()
+                .is_none(),
+            "the chat session expires"
+        );
+        let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM telegram_login_confirmations")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, 0);
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_callback_expires() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        repository
+            .await_telegram_confirmation(&verified(7, "pairwise"), 100)
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .confirm_telegram_login("bot", 42, 42, 7, 400, 1_000)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_chat_joins_single_active_client_with_the_owners_other_clients() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // The owner already signed in in the Mini App, which is active.
+        let web = repository
+            .attach(&verified(1, "pairwise").callback().identity)
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .open_session(
+                    &web,
+                    &"w".repeat(64),
+                    "Telegram · Mini App",
+                    None,
+                    100,
+                    1_000
+                )
+                .await
+                .unwrap()
+        );
+        repository
+            .await_telegram_confirmation(&verified(7, "pairwise"), 100)
+            .await
+            .unwrap();
+        let chat = repository
+            .confirm_telegram_login("bot", 42, 42, 7, 101, 1_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!chat.active, "signing in never takes activity away");
+        assert_eq!(chat.owner.public_profile(), web.public_profile());
+        // A second /login in the same chat replaces the chat's session.
+        repository
+            .await_telegram_confirmation(&verified(8, "pairwise"), 102)
+            .await
+            .unwrap();
+        repository
+            .confirm_telegram_login("bot", 42, 42, 8, 103, 1_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            chat_sessions(&repository).await,
+            [
+                ("Telegram · Mini App".to_owned(), true),
+                (TELEGRAM_CHAT_CLIENT_LABEL.to_owned(), false),
+            ]
+        );
+        // Signing the chat out leaves the Mini App alone.
+        repository
+            .close_telegram_chat_session("bot", 42, 104)
+            .await
+            .unwrap();
+        repository
+            .close_telegram_chat_session("bot", 42, 104)
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .restore_telegram_chat_session("bot", 42, 104)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            chat_sessions(&repository).await,
+            [("Telegram · Mini App".to_owned(), true)]
+        );
+        let bindings: i64 = sqlx::query_scalar("SELECT count(*) FROM telegram_chat_sessions")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(bindings, 0);
     }
 }

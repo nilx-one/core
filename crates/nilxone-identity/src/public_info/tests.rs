@@ -113,6 +113,8 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
             "product_activation_sync",
             "product_sessions",
             "public_profiles",
+            "telegram_chat_sessions",
+            "telegram_login_confirmations",
             "telegram_login_transactions",
             "telegram_provider_proof_challenges"
         ]
