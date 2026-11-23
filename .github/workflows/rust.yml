@@ -67,6 +67,22 @@ jobs:
           "$tool" --validate add-member 0xdstudio 0x1alice owner
           if "$tool" --validate create-business 0xdstudio; then exit 1; fi
           if "$tool" --validate add-member 0xdstudio 0x1alice maintainer; then exit 1; fi
+      - name: Validate static Telegram login host package
+        run: |
+          cargo build --locked --release --target x86_64-unknown-linux-musl -p nilxone-telegram-login-host
+          host=target/x86_64-unknown-linux-musl/release/nilxone-telegram-login-host
+          if env -u TELEGRAM_LOGIN_AIS_PUBLIC_JWK "$host" >telegram-login-host-check.log 2>&1; then
+            echo "Telegram login host started without required AIS configuration"
+            exit 1
+          fi
+          grep -F 'TELEGRAM_LOGIN_AIS_PUBLIC_JWK is required' telegram-login-host-check.log
+      - name: Preserve verified Telegram login host package
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-telegram-login-host-${{ github.sha }}
+          path: target/x86_64-unknown-linux-musl/release/nilxone-telegram-login-host
+          if-no-files-found: error
+          retention-days: 30
       - name: Preserve verified operator package
         uses: actions/upload-artifact@v4
         with:
