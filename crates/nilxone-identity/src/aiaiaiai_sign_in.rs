@@ -349,6 +349,42 @@ impl SignInClient {
         )
     }
 
+    pub(crate) async fn telegram_identity_proof(
+        &self,
+        access_token: &str,
+        telegram_id: i64,
+        nonce: &str,
+    ) -> Result<Option<(String, JsonWebKeySet)>, SignInError> {
+        #[derive(Deserialize)]
+        struct ProviderEvidence {
+            proof: String,
+        }
+
+        let url = self
+            .config
+            .backchannel
+            .join("family/telegram-identity")
+            .map_err(|_| SignInError::Unavailable)?;
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({"telegram_id": telegram_id, "nonce": nonce}))
+            .send()
+            .await
+            .map_err(|_| SignInError::Unavailable)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let result = response
+            .error_for_status()
+            .map_err(|_| SignInError::Unavailable)?
+            .json::<ProviderEvidence>()
+            .await
+            .map_err(|_| SignInError::InvalidToken("telegram_proof_response"))?;
+        Ok(Some((result.proof, self.signing_keys().await?)))
+    }
+
     async fn signing_keys(&self) -> Result<JsonWebKeySet, SignInError> {
         let url = self
             .config

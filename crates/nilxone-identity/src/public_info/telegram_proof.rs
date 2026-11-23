@@ -215,6 +215,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn callback_requires_proof_for_the_same_issuer_subject_and_login_attempt() {
+        use crate::{aiaiaiai_sign_in::VerifiedSignIn, public_info::TelegramLoginCallback};
+
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let callback = |actor_id, issuer: &str, subject: String| TelegramLoginCallback {
+            workload_subject: "test-bot".into(),
+            actor_id,
+            chat_id: i64::try_from(actor_id).unwrap(),
+            message_id: 42,
+            identity: VerifiedSignIn {
+                issuer: issuer.into(),
+                subject,
+                pub_dress: Some("0x1display".into()),
+                auth_time: 100,
+            },
+        };
+        let subject = URL_SAFE_NO_PAD.encode([17_u8; 32]);
+        let context = callback(7, ISSUER, subject.clone()).provider_context("original-state");
+        let nonce = repository
+            .start_telegram_provider_proof(&context, 100)
+            .await
+            .unwrap();
+        let signed = proof(&nonce, 100, "test-login-proof-unique");
+        let other_context = callback(8, ISSUER, subject.clone()).provider_context("original-state");
+        assert!(
+            repository
+                .consume_telegram_provider_proof(
+                    &other_context,
+                    &nonce,
+                    &signed,
+                    &keys(),
+                    ISSUER,
+                    101
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let evidence = repository
+            .consume_telegram_provider_proof(&context, &nonce, &signed, &keys(), ISSUER, 101)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            callback(7, ISSUER, URL_SAFE_NO_PAD.encode([18_u8; 32]))
+                .match_provider(&evidence)
+                .is_none()
+        );
+        assert!(
+            callback(7, "https://other.example", subject.clone())
+                .match_provider(&evidence)
+                .is_none()
+        );
+        assert_eq!(
+            callback(7, ISSUER, subject)
+                .match_provider(&evidence)
+                .unwrap()
+                .callback()
+                .actor_id,
+            7
+        );
+    }
+
+    #[tokio::test]
     async fn proof_is_single_use_across_process_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = format!("sqlite://{}", dir.path().join("proof.db").display());
