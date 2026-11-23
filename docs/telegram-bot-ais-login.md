@@ -68,6 +68,18 @@ sender, chat, workload or message, an expired or a used confirmation returns
   later update. `close_telegram_chat_session` signs the chat out. Ending or
   expiring the session drops the binding.
 
+### Confirm route
+
+Route: POST /api/v1/telegram/login/confirm (`nilxone_api::bot_login::CONFIRM_PATH`), behind the same bot-service authentication as login start.
+
+Request JSON is the login-start shape, carrying the confirm press's sender and chat and the original `/login` message id. Response JSON:
+
+~~~json
+{"profile_id":"…","pub_dress":"0x0sky","active":false}
+~~~
+
+Refusals are `LoginConfirmRefusal`; `login_confirmation_not_found` (404) covers an unfinished, expired or used browser step and a different sender alike. The response never carries a session token.
+
 ## Dependencies
 
 Core persists login transactions, confirmations and the chat session binding. The host still needs to expose the callback and confirm routes, register client_id=0x1 in AIS, and hold the direct AIS token for provider verification.
