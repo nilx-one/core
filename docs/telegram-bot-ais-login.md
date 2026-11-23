@@ -32,6 +32,13 @@ The host (not the bot) exchanges the authorization code and verifies issuer, EdD
 
 Single Active Client remains enforced. A linked provider does not silently activate Telegram or permit game writes. The Telegram text client is a separate Core-controlled product client from the Web Mini App, with its **own** product session. Switching between these clients requires the canonical confirmed handoff; no implicit sharing, cookie reuse, or activated session inference is permitted. E2E cases must cover expiry, replay, wrong sender, wrong browser account, callback tampering, revocation, conflict, restoration, sign-out and handoff.
 
+The Core callback verifier uses the product host’s direct AIS access token
+with audience `ais` and scope `telegram.identity.resolve`. It looks up the
+Telegram sender recorded in the login transaction. It verifies AIS’s signed
+response against a one-use nonce and compares its issuer and 0x1 pairwise
+subject with the verified browser callback. A match allows the host to ask
+for confirmation in the original chat.
+
 ## Dependencies
 
 Core persists ephemeral login transactions. The host still needs to expose the HTTP routes, register client_id=0x1 in AIS, verify and confirm the account binding, and authorize a product session.

@@ -3,13 +3,15 @@
 
 //! Durable OIDC transactions for Telegram chat sign-in.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use nilxone_api::bot_login::{LoginStartRequest, LoginStartResponse};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row;
 
 use crate::aiaiaiai_sign_in::{SignInClient, SignInError, SignInTransaction, VerifiedSignIn};
 
-use super::PublicInfoRepository;
+use super::{ConsumedTelegramProviderProof, PublicInfoError, PublicInfoRepository};
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
 const LOGIN_LIFETIME_SECONDS: i64 = 300;
@@ -29,6 +31,16 @@ pub enum TelegramLoginError {
     InvalidTransaction(#[from] serde_json::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TelegramLoginVerificationError {
+    #[error(transparent)]
+    Callback(#[from] TelegramLoginError),
+    #[error("Telegram provider proof could not be resolved")]
+    Resolve(#[from] SignInError),
+    #[error("Telegram provider proof could not be verified")]
+    ProviderProof(#[from] PublicInfoError),
+}
+
 /// A browser callback that proved an AIS identity for a pending Telegram
 /// request. The host must still verify the provider link and require the
 /// original sender's confirmation before authorizing a Core session.
@@ -38,6 +50,46 @@ pub struct TelegramLoginCallback {
     pub chat_id: i64,
     pub message_id: i32,
     pub identity: VerifiedSignIn,
+}
+
+/// Browser sign-in and Telegram binding matched in AIS. This result is
+/// eligible for confirmation by the original sender.
+pub struct TelegramLoginAwaitingConfirmation(TelegramLoginCallback);
+
+impl TelegramLoginAwaitingConfirmation {
+    #[must_use]
+    pub fn callback(&self) -> &TelegramLoginCallback {
+        &self.0
+    }
+}
+
+impl TelegramLoginCallback {
+    pub(super) fn provider_context(&self, state: &str) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"telegram-login-provider-evidence-v1");
+        digest.update(Sha256::digest(self.workload_subject.as_bytes()));
+        digest.update(self.actor_id.to_be_bytes());
+        digest.update(self.chat_id.to_be_bytes());
+        digest.update(self.message_id.to_be_bytes());
+        digest.update(Sha256::digest(state.as_bytes()));
+        digest.finalize().into()
+    }
+
+    pub(super) fn match_provider(
+        self,
+        proof: &ConsumedTelegramProviderProof,
+    ) -> Option<TelegramLoginAwaitingConfirmation> {
+        (self.identity.issuer == proof.issuer()
+            && self.identity.subject == proof.pairwise_subject())
+        .then_some(TelegramLoginAwaitingConfirmation(self))
+    }
+}
+
+fn unix_seconds() -> Result<u64, TelegramLoginError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| TelegramLoginError::InvalidInput)
 }
 
 fn check_client(client: &SignInClient) -> Result<&str, TelegramLoginError> {
@@ -154,6 +206,52 @@ impl PublicInfoRepository {
             expires_in_seconds: u64::try_from(lifetime)
                 .map_err(|_| TelegramLoginError::InvalidInput)?,
         }))
+    }
+
+    /// Exchange the callback and verify that AIS links the authenticated
+    /// identity to the Telegram sender recorded at login start.
+    ///
+    /// The host provides its direct AIS access token, scoped to
+    /// `telegram.identity.resolve`. The token never comes from the browser or
+    /// the bot. The resulting value only authorizes asking the original sender
+    /// for confirmation. It does not create or switch a product session.
+    pub async fn verify_telegram_login_callback(
+        &self,
+        client: &SignInClient,
+        state: &str,
+        code: &str,
+        ais_access_token: &str,
+    ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
+        let Some(callback) = self
+            .complete_telegram_login(client, state, code, unix_seconds()?)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let context = callback.provider_context(state);
+        let nonce = self
+            .start_telegram_provider_proof(&context, unix_seconds()?)
+            .await?;
+        let Some((signed, keys)) = client
+            .telegram_identity_proof(ais_access_token, callback.chat_id, &nonce)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(proof) = self
+            .consume_telegram_provider_proof(
+                &context,
+                &nonce,
+                &signed,
+                &keys,
+                client.config().issuer(),
+                unix_seconds()?,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(callback.match_provider(&proof))
     }
 
     /// Claim the matching callback once, before contacting AIS. Any exchange
