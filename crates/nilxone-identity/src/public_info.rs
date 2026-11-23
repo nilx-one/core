@@ -21,12 +21,10 @@ use crate::{
 mod activation;
 mod legacy_migration;
 mod telegram_login;
-mod telegram_proof;
 pub use telegram_login::{
     TELEGRAM_CHAT_CLIENT_LABEL, TelegramChatSignedIn, TelegramLoginAwaitingConfirmation,
     TelegramLoginCallback, TelegramLoginError, TelegramLoginVerificationError,
 };
-pub use telegram_proof::ConsumedTelegramProviderProof;
 
 pub use activation::ActivationError;
 pub use legacy_migration::{
@@ -52,10 +50,8 @@ pub enum PublicInfoError {
     SessionInactive,
     #[error("public information storage is unavailable")]
     Storage(#[from] sqlx::Error),
-    #[error("Telegram proof challenge entropy is unavailable")]
+    #[error("Telegram session entropy is unavailable")]
     TelegramEntropyUnavailable,
-    #[error("Telegram proof challenge has an invalid time window")]
-    TelegramInvalidTime,
 }
 
 /// The explicit public allowlist. Never serialize a database row or OIDC

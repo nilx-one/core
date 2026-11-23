@@ -7,9 +7,7 @@ use nilxone_identity::{
     aiaiaiai_sign_in::{SignInClient, SignInClientConfig},
     public_info::{LegacyBondMigrationRepository, PublicInfoRepository},
 };
-use nilxone_telegram_login_host::{
-    Authority, ChatSignIn, HostAisToken, ISSUER, authenticated_router,
-};
+use nilxone_telegram_login_host::{Authority, ChatSignIn, ISSUER, authenticated_router};
 
 fn configured(name: &str) -> io::Result<String> {
     env::var(name).map_err(|_| io::Error::other(format!("{name} is required")))
@@ -21,14 +19,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let callback = "https://nilx.one/api/v1/telegram/login/callback";
     let config = SignInClientConfig::public(ISSUER, None, "0x1", callback)?;
-    let authority = Authority::from_public_jwk(&configured("TELEGRAM_LOGIN_AIS_PUBLIC_JWK")?)
-        .ok_or_else(|| io::Error::other("invalid AIS signing JWK"))?;
-    let ais = HostAisToken::new(
-        ISSUER,
-        &configured("TELEGRAM_LOGIN_HOST_AIS_KEY_ID")?,
-        &configured("TELEGRAM_LOGIN_HOST_AIS_SIGNING_SEED")?,
-    )
-    .ok_or_else(|| io::Error::other("invalid AIS product workload signing configuration"))?;
+    // The bot signs its requests with the @nilxone_bot token both processes
+    // already hold; the host holds no other credential.
+    let authority = Authority::from_bot_token(&configured("TELEGRAM_BOT_TOKEN")?)
+        .ok_or_else(|| io::Error::other("TELEGRAM_BOT_TOKEN is not a Telegram Bot API token"))?;
     let session_ttl_seconds = configured("TELEGRAM_LOGIN_SESSION_TTL_SECONDS")?.parse()?;
     if session_ttl_seconds == 0 {
         return Err(io::Error::other("Telegram session TTL must be positive").into());
@@ -40,7 +34,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         SignInClient::new(config),
         authority,
         Some(ChatSignIn {
-            ais,
             provisioning: Some(provisioning),
             session_ttl_seconds,
         }),

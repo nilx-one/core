@@ -1,185 +1,149 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Direct AIS workload grants for the isolated Telegram login-start route.
+//! Bot workload authentication with the Telegram Bot API token the bot and
+//! this host already hold. No other credential exists for the bot: whoever
+//! holds the token already controls the chat, so signing with it grants no
+//! new authority.
 
 use axum::{
+    body::{Body, to_bytes},
     extract::{Request, State},
-    http::header::AUTHORIZATION,
     middleware::Next,
     response::Response,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::VerifyingKey;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
-use nilxone_api::bot_login::LoginStartRefusal;
-use serde::Deserialize;
+use nilxone_api::bot_login::{
+    LoginStartRefusal, SIGNATURE_HEADER, verify_request, workload_subject,
+};
 
 use crate::{AuthorizedLoginBot, now_unix_seconds, refusal};
 
 pub const ISSUER: &str = "https://auth.aiaiaiai.org";
-const CLIENT: &str = "0x1-telegram-test-bot";
-const SCOPE: &str = "telegram.login.start";
+/// Login requests are small JSON documents.
+const MAX_BODY_BYTES: usize = 4_096;
 
 #[derive(Clone)]
 pub struct Authority {
-    kid: String,
-    key: DecodingKey,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Claims {
-    iss: String,
-    aud: String,
-    sub: String,
-    client_id: String,
-    scope: String,
-    jti: String,
-    iat: u64,
-    exp: u64,
+    bot_token: String,
+    subject: String,
 }
 
 impl Authority {
-    /// A trusted public key provisioned by the operator from the AIS JWKS.
-    pub fn from_public_jwk(json: &str) -> Option<Self> {
-        #[derive(Deserialize)]
-        struct Jwk {
-            kid: String,
-            kty: String,
-            crv: String,
-            alg: String,
-            #[serde(rename = "use")]
-            usage: String,
-            x: String,
-        }
-        let jwk: Jwk = serde_json::from_str(json).ok()?;
-        if jwk.kid.is_empty()
-            || jwk.kty != "OKP"
-            || jwk.crv != "Ed25519"
-            || jwk.alg != "EdDSA"
-            || jwk.usage != "sig"
-        {
-            return None;
-        }
-        let bytes: [u8; 32] = URL_SAFE_NO_PAD.decode(&jwk.x).ok()?.try_into().ok()?;
-        let key = VerifyingKey::from_bytes(&bytes).ok()?;
-        if key.is_weak() {
-            return None;
-        }
+    /// The `@nilxone_bot` token. Refuses a value that is not a Bot API token.
+    pub fn from_bot_token(bot_token: &str) -> Option<Self> {
+        let bot_token = bot_token.trim();
         Some(Self {
-            kid: jwk.kid,
-            key: DecodingKey::from_ed_der(&bytes),
+            subject: workload_subject(bot_token)?,
+            bot_token: bot_token.to_owned(),
         })
     }
 
-    fn accepts(&self, token: &str, now: u64) -> bool {
-        if token.len() > 4096 {
-            return false;
-        }
-        let Ok(h) = decode_header(token) else {
-            return false;
-        };
-        if h.alg != Algorithm::EdDSA
-            || h.typ.as_deref() != Some("at+jwt")
-            || h.kid.as_ref() != Some(&self.kid)
-        {
-            return false;
-        }
-        let mut validation = Validation::new(Algorithm::EdDSA);
-        validation.set_audience(&["0x1"]);
-        validation.set_issuer(&[ISSUER]);
-        validation.leeway = 0;
-        let Ok(data) = decode::<Claims>(token, &self.key, &validation) else {
-            return false;
-        };
-        let c = data.claims;
-        c.iss == ISSUER
-            && c.aud == "0x1"
-            && c.sub == CLIENT
-            && c.client_id == CLIENT
-            && c.scope == SCOPE
-            && !c.jti.is_empty()
-            && c.iat <= now
-            && c.exp > now
-            && c.exp.saturating_sub(c.iat) <= 300
+    fn accepts(&self, header: &str, path: &str, body: &[u8], now: u64) -> bool {
+        verify_request(&self.bot_token, header, path, body, now)
     }
 }
 
 pub(super) async fn authenticate(
     State(authority): State<Authority>,
-    mut req: Request,
+    request: Request,
     next: Next,
 ) -> Response {
-    let mut values = req.headers().get_all(AUTHORIZATION).iter();
-    let token = values
-        .next()
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    if values.next().is_some()
-        || !token
+    let (parts, body) = request.into_parts();
+    let mut values = parts.headers.get_all(SIGNATURE_HEADER).iter();
+    let header = values.next().and_then(|value| value.to_str().ok());
+    let single = values.next().is_none();
+    let Ok(body) = to_bytes(body, MAX_BODY_BYTES).await else {
+        return refusal(LoginStartRefusal::ServiceAuthenticationRequired);
+    };
+    let accepted = single
+        && header
             .zip(now_unix_seconds())
-            .is_some_and(|(t, now)| authority.accepts(t, now))
-    {
+            .is_some_and(|(header, now)| authority.accepts(header, parts.uri.path(), &body, now));
+    if !accepted {
         return refusal(LoginStartRefusal::ServiceAuthenticationRequired);
     }
-    req.extensions_mut()
-        .insert(AuthorizedLoginBot(CLIENT.to_owned()));
-    next.run(req).await
+    let mut request = Request::from_parts(parts, Body::from(body));
+    request
+        .extensions_mut()
+        .insert(AuthorizedLoginBot(authority.subject));
+    next.run(request).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
-    use serde_json::{Value, json};
+    use axum::{Router, http::StatusCode, routing::post};
+    use nilxone_api::bot_login::{START_PATH, sign_request};
+    use tower::ServiceExt as _;
 
-    fn signed(key: &SigningKey, claims: &Value, typ: &str) -> String {
-        let header = json!({"alg":"EdDSA", "typ":typ, "kid":"ais-test"});
-        let input = format!(
-            "{}.{}",
-            URL_SAFE_NO_PAD.encode(header.to_string()),
-            URL_SAFE_NO_PAD.encode(claims.to_string())
-        );
-        format!(
-            "{input}.{}",
-            URL_SAFE_NO_PAD.encode(key.sign(input.as_bytes()).to_bytes())
-        )
+    const TOKEN: &str = "123456:test-bot-token";
+
+    fn app() -> Router {
+        Router::new()
+            .route(
+                START_PATH,
+                post(
+                    |axum::Extension(AuthorizedLoginBot(subject)): axum::Extension<
+                        AuthorizedLoginBot,
+                    >,
+                     body: String| async move { format!("{subject} {body}") },
+                ),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                Authority::from_bot_token(TOKEN).unwrap(),
+                authenticate,
+            ))
+    }
+
+    fn request(signature: Option<String>, body: &'static str) -> Request {
+        let mut builder = Request::post(START_PATH);
+        if let Some(signature) = signature {
+            builder = builder.header(SIGNATURE_HEADER, signature);
+        }
+        builder.body(Body::from(body)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_a_fresh_signature_of_this_bot_token_passes() {
+        let now = now_unix_seconds().unwrap();
+        let body = r#"{"version":1}"#;
+        let ok = app()
+            .oneshot(request(
+                Some(sign_request(TOKEN, now, START_PATH, body.as_bytes())),
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let text = to_bytes(ok.into_body(), 1024).await.unwrap();
+        assert_eq!(&text[..], format!("telegram-bot:123456 {body}").as_bytes());
+
+        for signature in [
+            None,
+            Some(sign_request(
+                "123456:other-token",
+                now,
+                START_PATH,
+                body.as_bytes(),
+            )),
+            Some(sign_request(TOKEN, now - 120, START_PATH, body.as_bytes())),
+            Some(sign_request(TOKEN, now, START_PATH, b"{}")),
+            Some(sign_request(
+                TOKEN,
+                now,
+                "/api/v1/telegram/login/confirm",
+                body.as_bytes(),
+            )),
+        ] {
+            let refused = app().oneshot(request(signature, body)).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     #[test]
-    fn accepts_only_the_direct_scoped_test_bot_grant() {
-        let key = SigningKey::from_bytes(&[19; 32]);
-        let jwk = json!({"kid":"ais-test","kty":"OKP","crv":"Ed25519","alg":"EdDSA",
-            "use":"sig","x":URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes())});
-        let authority = Authority::from_public_jwk(&jwk.to_string()).unwrap();
-        let now = now_unix_seconds().unwrap();
-        let claims = json!({"iss":ISSUER, "sub":CLIENT, "client_id":CLIENT, "aud":"0x1", "scope":SCOPE,
-            "iat":now, "exp":now+300, "jti":"test-grant"});
-        let token = signed(&key, &claims, "at+jwt");
-        assert!(authority.accepts(&token, now));
-        assert!(!authority.accepts(&token, now + 300));
-        for (field, value) in [
-            ("aud", json!("ais")),
-            ("sub", json!("another-bot")),
-            ("client_id", json!("another-bot")),
-            ("iss", json!("https://other.example")),
-            ("scope", json!("telegram.identity.resolve")),
-            ("act", json!({"sub":CLIENT})),
-            ("exp", json!(now + 301)),
-            ("iat", json!(now + 1)),
-        ] {
-            let mut wrong = claims.clone();
-            wrong[field] = value;
-            assert!(
-                !authority.accepts(&signed(&key, &wrong, "at+jwt"), now),
-                "{field}"
-            );
-        }
-        assert!(!authority.accepts(&signed(&key, &claims, "JWT"), now));
-        assert!(!authority.accepts(
-            &signed(&SigningKey::from_bytes(&[3; 32]), &claims, "at+jwt"),
-            now
-        ));
+    fn refuses_a_value_that_is_not_a_bot_token() {
+        assert!(Authority::from_bot_token("").is_none());
+        assert!(Authority::from_bot_token("not-a-token").is_none());
+        assert!(Authority::from_bot_token(" 123456:ok ").is_some());
     }
 }

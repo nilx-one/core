@@ -10,9 +10,7 @@
 //! chat: a confirmed chat session lives beside their sessions and follows the
 //! same Single Active Client rules.
 
-mod ais_token;
 mod authority;
-pub use ais_token::HostAisToken;
 pub use authority::{Authority, ISSUER};
 
 use std::{
@@ -51,8 +49,6 @@ struct AuthorizedLoginBot(String);
 
 /// What the host needs to finish a chat sign-in after login start.
 pub struct ChatSignIn {
-    /// The host's own AIS grant for Telegram provider evidence.
-    pub ais: HostAisToken,
     /// Gives a first-time owner their Bond, as browser sign-in does.
     pub provisioning: Option<LegacyBondMigrationRepository>,
     /// The chat session lifetime; the same as a browser product session.
@@ -252,14 +248,14 @@ fn callback_page(verified: bool) -> Response {
 }
 
 async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQuery>) -> Response {
-    let Some(chat) = host.chat.as_ref() else {
+    if host.chat.is_none() {
         return callback_page(false);
-    };
+    }
     let (Some(state), Some(code)) = (query.state, query.code) else {
         return callback_page(false);
     };
     // Core checks the state first; this only keeps a malformed request from
-    // costing an AIS grant.
+    // costing a code exchange.
     if state.len() != 32 || code.is_empty() || code.len() > 512 {
         return callback_page(false);
     }
@@ -273,12 +269,9 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
     {
         return callback_page(false);
     }
-    let Some(token) = chat.ais.access_token().await else {
-        return callback_page(false);
-    };
     match host
         .repository
-        .verify_telegram_login_callback(&host.client, &state, &code, &token)
+        .verify_telegram_login_callback(&host.client, &state, &code)
         .await
     {
         Ok(Some(_)) => callback_page(true),
@@ -388,14 +381,7 @@ mod tests {
     }
 
     fn chat() -> ChatSignIn {
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
         ChatSignIn {
-            ais: HostAisToken::new(
-                "https://auth.aiaiaiai.org",
-                "host-test",
-                &URL_SAFE_NO_PAD.encode([3u8; 32]),
-            )
-            .unwrap(),
             provisioning: None,
             session_ttl_seconds: 3_600,
         }
