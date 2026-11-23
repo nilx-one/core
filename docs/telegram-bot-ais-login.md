@@ -1,6 +1,6 @@
 # Telegram AIS login — Gateway wire v1
 
-Status: typed Core contract and durable OIDC transactions, **no public route or production activation**.
+Status: typed Core contract, durable OIDC transactions, sender confirmation and the chat product session; **no public route or production activation**.
 
 The Core-owned product host is the relying party for Telegram bot commands. It authenticates the dedicated bot service, verifies that update metadata came from a genuine private Telegram message, rate-limits and deduplicates the provider/actor/chat/message tuple, and creates a durable, one-time sign-in transaction. A bot transport cannot bind an AIS identity to a Bond.
 
@@ -39,9 +39,50 @@ response against a one-use nonce and compares its issuer and 0x1 pairwise
 subject with the verified browser callback. A match allows the host to ask
 for confirmation in the original chat.
 
+## Sender confirmation and the chat session
+
+A verified, provider-matched callback is stored in
+`telegram_login_confirmations` for at most 300 seconds. It holds the AIS
+issuer, pairwise subject, display snapshot and `auth_time` it will attach by,
+keyed by the one-use `/login` message: bot workload, sender, private chat and
+message ID.
+
+`PublicInfoRepository::confirm_telegram_login(workload, sender, chat, message,
+now, session_expires_at)` is the only way from a callback to a product
+session. The host calls it with the workload it authenticated and the sender,
+chat and `/login` message from a verified Telegram confirm press. A different
+sender, chat, workload or message, an expired or a used confirmation returns
+`None`. Otherwise Core deletes the confirmation, attaches the profile by
+`(issuer, subject)` and opens a session labelled `Telegram · Chat`:
+
+- Single Active Client holds across all of the owner's clients in the same
+  product database. The chat is active only when no other client is; when the
+  Mini App or a browser is active, the chat signs in inactive and becomes
+  active through the canonical confirmed handoff.
+- A new confirmation in the same chat replaces that chat's previous session
+  in the same transaction, so signing in again on the active chat keeps it
+  active.
+- The session token is random and discarded: the chat never holds a bearer
+  value. `telegram_chat_sessions` binds (workload, sender) to the session
+  digest, and `restore_telegram_chat_session` re-proves the owner in SQL for a
+  later update. `close_telegram_chat_session` signs the chat out. Ending or
+  expiring the session drops the binding.
+
+### Confirm route
+
+Route: POST /api/v1/telegram/login/confirm (`nilxone_api::bot_login::CONFIRM_PATH`), behind the same bot-service authentication as login start.
+
+Request JSON is the login-start shape, carrying the confirm press's sender and chat and the original `/login` message id. Response JSON:
+
+~~~json
+{"profile_id":"…","pub_dress":"0x0sky","active":false}
+~~~
+
+Refusals are `LoginConfirmRefusal`; `login_confirmation_not_found` (404) covers an unfinished, expired or used browser step and a different sender alike. The response never carries a session token.
+
 ## Dependencies
 
-Core persists ephemeral login transactions. The host still needs to expose the HTTP routes, register client_id=0x1 in AIS, verify and confirm the account binding, and authorize a product session.
+Core persists login transactions, confirmations and the chat session binding. The host still needs to expose the callback and confirm routes, register client_id=0x1 in AIS, and hold the direct AIS token for provider verification.
 
 - nilx-one/bot#4 — test Telegram adapter for gateway-issued AIS URL (depends on bot#1)
 - nilx-one/core#122 — authenticated Core-owned Gateway runtime

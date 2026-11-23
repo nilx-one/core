@@ -23,8 +23,8 @@ mod legacy_migration;
 mod telegram_login;
 mod telegram_proof;
 pub use telegram_login::{
-    TelegramLoginAwaitingConfirmation, TelegramLoginCallback, TelegramLoginError,
-    TelegramLoginVerificationError,
+    TELEGRAM_CHAT_CLIENT_LABEL, TelegramChatSignedIn, TelegramLoginAwaitingConfirmation,
+    TelegramLoginCallback, TelegramLoginError, TelegramLoginVerificationError,
 };
 pub use telegram_proof::ConsumedTelegramProviderProof;
 
@@ -236,65 +236,16 @@ impl PublicInfoRepository {
             return Err(PublicInfoError::InvalidSession);
         }
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        sqlx::query(
-            "DELETE FROM product_sessions WHERE issuer = ? AND subject = ? AND expires_at <= ?",
+        let active = open_session_in(
+            &mut transaction,
+            owner,
+            token_hash,
+            client_label,
+            supersede_token_hash,
+            now,
+            expires_at,
         )
-        .bind(&owner.issuer)
-        .bind(&owner.subject)
-        .bind(now)
-        .execute(&mut *transaction)
         .await?;
-        if let Some(previous) = supersede_token_hash.filter(|previous| *previous != token_hash) {
-            activation::end_session(
-                &mut transaction,
-                previous,
-                Some((&owner.issuer, &owner.subject)),
-                now,
-            )
-            .await?;
-        }
-        // Expired rows are gone, so any active row left is a live one.
-        let another_is_active = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM product_sessions \
-             WHERE issuer = ? AND subject = ? AND active = 1)",
-        )
-        .bind(&owner.issuer)
-        .bind(&owner.subject)
-        .fetch_one(&mut *transaction)
-        .await?;
-        let active = !another_is_active;
-        // The profile is re-read inside the insert: a session is never
-        // opened for a binding that no longer exists.
-        let opened = sqlx::query(
-            "INSERT INTO product_sessions \
-             (token_hash, issuer, subject, profile_id, created_at, expires_at, active, client_label) \
-             SELECT ?, issuer, subject, profile_id, ?, ?, ?, ? FROM public_profiles \
-             WHERE issuer = ? AND subject = ? AND profile_id = ?",
-        )
-        .bind(token_hash)
-        .bind(now)
-        .bind(expires_at)
-        .bind(active)
-        .bind(client_label)
-        .bind(&owner.issuer)
-        .bind(&owner.subject)
-        .bind(&owner.profile.profile_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| match error {
-            sqlx::Error::Database(database)
-                if database.is_unique_violation() || database.is_check_violation() =>
-            {
-                PublicInfoError::InvalidSession
-            }
-            other => PublicInfoError::Storage(other),
-        })?;
-        if opened.rows_affected() != 1 {
-            return Err(PublicInfoError::ProfileGone);
-        }
-        if active {
-            activation::advance_epoch(&mut transaction, &owner.issuer, &owner.subject).await?;
-        }
         transaction.commit().await?;
         Ok(active)
     }
@@ -382,6 +333,79 @@ impl PublicInfoRepository {
             session: None,
         })
     }
+}
+
+/// The body of [`PublicInfoRepository::open_session`], inside the caller's
+/// `BEGIN IMMEDIATE` transaction, so another write can commit with it.
+async fn open_session_in(
+    transaction: &mut sqlx::SqliteConnection,
+    owner: &AuthenticatedProfile,
+    token_hash: &str,
+    client_label: &str,
+    supersede_token_hash: Option<&str>,
+    now: i64,
+    expires_at: i64,
+) -> Result<bool, PublicInfoError> {
+    sqlx::query(
+        "DELETE FROM product_sessions WHERE issuer = ? AND subject = ? AND expires_at <= ?",
+    )
+    .bind(&owner.issuer)
+    .bind(&owner.subject)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    if let Some(previous) = supersede_token_hash.filter(|previous| *previous != token_hash) {
+        activation::end_session(
+            transaction,
+            previous,
+            Some((&owner.issuer, &owner.subject)),
+            now,
+        )
+        .await?;
+    }
+    // Expired rows are gone, so any active row left is a live one.
+    let another_is_active = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM product_sessions \
+         WHERE issuer = ? AND subject = ? AND active = 1)",
+    )
+    .bind(&owner.issuer)
+    .bind(&owner.subject)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let active = !another_is_active;
+    // The profile is re-read inside the insert: a session is never
+    // opened for a binding that no longer exists.
+    let opened = sqlx::query(
+        "INSERT INTO product_sessions \
+         (token_hash, issuer, subject, profile_id, created_at, expires_at, active, client_label) \
+         SELECT ?, issuer, subject, profile_id, ?, ?, ?, ? FROM public_profiles \
+         WHERE issuer = ? AND subject = ? AND profile_id = ?",
+    )
+    .bind(token_hash)
+    .bind(now)
+    .bind(expires_at)
+    .bind(active)
+    .bind(client_label)
+    .bind(&owner.issuer)
+    .bind(&owner.subject)
+    .bind(&owner.profile.profile_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| match error {
+        sqlx::Error::Database(database)
+            if database.is_unique_violation() || database.is_check_violation() =>
+        {
+            PublicInfoError::InvalidSession
+        }
+        other => PublicInfoError::Storage(other),
+    })?;
+    if opened.rows_affected() != 1 {
+        return Err(PublicInfoError::ProfileGone);
+    }
+    if active {
+        activation::advance_epoch(transaction, &owner.issuer, &owner.subject).await?;
+    }
+    Ok(active)
 }
 
 /// Brings a store created before sessions were active or inactive up to the

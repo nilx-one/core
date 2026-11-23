@@ -80,6 +80,42 @@ refusals! {
     }
 }
 
+/// POST, with the same authenticated bot-service credentials as login start.
+/// The original sender pressed confirm in the original private chat.
+pub const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
+
+/// Metadata from the verified confirm press: its sender and chat, and the
+/// `/login` message the confirmation belongs to. The fields and checks are
+/// those of [`LoginStartRequest`]; it selects no identity either.
+pub type LoginConfirmRequest = LoginStartRequest;
+
+/// The chat is signed in to its own product session. Under Single Active
+/// Client it may start inactive; the activation handoff is the only way to
+/// make it active while another client of the owner is.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginConfirmResponse {
+    /// The owner's public product profile id, not a credential.
+    pub profile_id: String,
+    /// The public address display snapshot, if any.
+    pub pub_dress: Option<String>,
+    /// Whether the chat is now the owner's active client.
+    pub active: bool,
+}
+
+refusals! {
+    /// Why a confirmation did not open a session. None of these is a login.
+    /// `ConfirmationNotFound`: no verified callback waits for this sender,
+    /// chat and message; the browser step is unfinished, expired or used, or
+    /// another sender pressed.
+    LoginConfirmRefusal {
+        InvalidProviderEvidence => ("invalid_provider_evidence", 422),
+        ServiceAuthenticationRequired => ("service_authentication_required", 401),
+        ConfirmationNotFound => ("login_confirmation_not_found", 404),
+        LoginServiceUnavailable => ("login_service_unavailable", 503),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +192,29 @@ mod tests {
             LoginStartRefusal::from_code("login_service_unavailable"),
             Some(LoginStartRefusal::LoginServiceUnavailable)
         );
+    }
+
+    #[test]
+    fn confirmation_wire_is_closed_and_has_stable_refusals() {
+        let response = LoginConfirmResponse {
+            profile_id: "p".into(),
+            pub_dress: None,
+            active: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"profile_id":"p","pub_dress":null,"active":false}"#
+        );
+        assert!(
+            serde_json::from_str::<LoginConfirmResponse>(
+                r#"{"profile_id":"p","pub_dress":null,"active":true,"token":"t"}"#
+            )
+            .is_err()
+        );
+        assert_eq!(
+            LoginConfirmRefusal::from_code("login_confirmation_not_found"),
+            Some(LoginConfirmRefusal::ConfirmationNotFound)
+        );
+        assert_eq!(LoginConfirmRefusal::ConfirmationNotFound.http_status(), 404);
     }
 }
