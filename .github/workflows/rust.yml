@@ -71,11 +71,11 @@ jobs:
         run: |
           cargo build --locked --release --target x86_64-unknown-linux-musl -p nilxone-telegram-login-host
           host=target/x86_64-unknown-linux-musl/release/nilxone-telegram-login-host
-          if env -u TELEGRAM_LOGIN_AIS_PUBLIC_JWK "$host" >telegram-login-host-check.log 2>&1; then
-            echo "Telegram login host started without required AIS configuration"
+          if env -u TELEGRAM_BOT_TOKEN "$host" >telegram-login-host-check.log 2>&1; then
+            echo "Telegram login host started without the bot token"
             exit 1
           fi
-          grep -F 'TELEGRAM_LOGIN_AIS_PUBLIC_JWK is required' telegram-login-host-check.log
+          grep -F 'TELEGRAM_BOT_TOKEN is required' telegram-login-host-check.log
       - name: Preserve verified Telegram login host package
         uses: actions/upload-artifact@v4
         with:

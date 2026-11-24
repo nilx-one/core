@@ -32,15 +32,18 @@ The host (not the bot) exchanges the authorization code and verifies issuer, EdD
 
 Single Active Client remains enforced. A linked provider does not silently activate Telegram or permit game writes. The Telegram text client is a separate Core-controlled product client from the Web Mini App, with its **own** product session. Switching between these clients requires the canonical confirmed handoff; no implicit sharing, cookie reuse, or activated session inference is permitted. E2E cases must cover expiry, replay, wrong sender, wrong browser account, callback tampering, revocation, conflict, restoration, sign-out and handoff.
 
-Login start asks AIS for the scope `openid pub_dress telegram_binding`. AIS
-then puts `telegram_binding` in the ID token, a nonce-bound SHA-256 of the
-person's linked Telegram account (4x-ais `docs/runtime.md`). The callback
-verifier computes the same value from the transaction's nonce and the sender
-recorded at login start, and compares the two in constant time. The comparison
-sits inside the ID token Core already verifies, so the host holds no AIS
-credential and makes no second request. A missing or different binding stops
+Login start asks AIS for the scope `openid pub_dress telegram_binding` on the
+Telegram callback, the only redirect AIS accepts it on. It also sends
+`telegram_binding_hint`, a SHA-256 over the transaction's nonce and the
+`/login` sender (`aiaiaiai_sign_in::telegram_binding_hint`). AIS answers with
+one bit inside the ID token Core already verifies: `"telegram_binding": true`
+if the person's linked Telegram account is that sender and the PKCE code
+exchange supplies the same hint, recomputed from the stored sender. AIS
+discloses nothing else about the linked account, the host holds no AIS
+credential, and no second request is made. A missing or `false` binding stops
 the login. A match allows the host to ask for confirmation in the original
-chat.
+chat. The hint travels in the authorization URL, which goes only to the
+sender's own chat (4x-ais `docs/runtime.md` states the guarantees).
 
 ## Sender confirmation and the chat session
 
