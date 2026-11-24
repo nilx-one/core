@@ -11,14 +11,10 @@ use sqlx::Row;
 
 use crate::aiaiaiai_sign_in::{SignInClient, SignInError, SignInTransaction, VerifiedSignIn};
 
-use subtle::ConstantTimeEq as _;
-
 use super::{AuthenticatedProfile, PublicInfoError, PublicInfoRepository};
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
 const LOGIN_LIFETIME_SECONDS: i64 = 300;
-/// The chat login also asks AIS to prove the linked Telegram account.
-const TELEGRAM_LOGIN_SCOPE: &str = "openid pub_dress telegram_binding";
 /// How long a verified callback waits for the sender's confirmation.
 const CONFIRMATION_LIFETIME_SECONDS: i64 = 300;
 /// The label a Telegram chat session shows to the owner's other clients.
@@ -204,7 +200,9 @@ impl PublicInfoRepository {
         let Some((pending, lifetime)) = result else {
             return Ok(None);
         };
-        let mut url = client.authorization_url_with_scope(&pending, TELEGRAM_LOGIN_SCOPE);
+        // AIS is asked whether the person's linked Telegram account is the
+        // sender of this /login, and answers that one bit in the ID token.
+        let mut url = client.telegram_authorization_url(&pending, request.chat_id);
         url.set_path("/0x1");
         Ok(Some(LoginStartResponse {
             authorization_url: url.into(),
@@ -470,12 +468,9 @@ impl PublicInfoRepository {
         db.commit().await?;
 
         let chat_id: i64 = row.try_get("chat_id")?;
-        let (identity, binding) = client.complete_with_binding(code, &pending, now).await?;
-        // AIS proves that this identity's linked Telegram account is the
-        // sender recorded at login start; anything else asks for nothing.
-        let expected = crate::aiaiaiai_sign_in::telegram_binding(&pending.nonce, chat_id);
-        let bound = binding
-            .is_some_and(|binding| bool::from(binding.as_bytes().ct_eq(expected.as_bytes())));
+        let (identity, bound) = client.complete_with_binding(code, &pending, now).await?;
+        // AIS confirmed that this identity's linked Telegram account is the
+        // sender named in the request; anything else asks for nothing.
         if !bound {
             return Ok(None);
         }
@@ -541,6 +536,11 @@ mod tests {
         let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
         assert_eq!(query["code_challenge_method"], "S256");
         assert_eq!(query["scope"], "openid pub_dress telegram_binding");
+        let nonce = &query["nonce"];
+        assert_eq!(
+            query["telegram_binding_hint"],
+            crate::aiaiaiai_sign_in::telegram_binding_hint(nonce, 42)
+        );
         assert!(!query.contains_key("code_verifier"));
         assert!(
             repository

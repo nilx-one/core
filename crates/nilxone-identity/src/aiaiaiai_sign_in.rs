@@ -270,12 +270,24 @@ impl SignInClient {
         self.authorization_url_with_scope(transaction, SCOPE)
     }
 
-    /// The same request, asking for `scope` instead of the default.
-    pub(crate) fn authorization_url_with_scope(
+    /// The Telegram chat login's request: the default scope plus
+    /// `telegram_binding`, naming the expected account in its hint.
+    pub(crate) fn telegram_authorization_url(
         &self,
         transaction: &SignInTransaction,
-        scope: &str,
+        telegram_id: i64,
     ) -> Url {
+        let mut url =
+            self.authorization_url_with_scope(transaction, "openid pub_dress telegram_binding");
+        url.query_pairs_mut().append_pair(
+            "telegram_binding_hint",
+            &telegram_binding_hint(&transaction.nonce, telegram_id),
+        );
+        url
+    }
+
+    /// The same request, asking for `scope` instead of the default.
+    fn authorization_url_with_scope(&self, transaction: &SignInTransaction, scope: &str) -> Url {
         let mut url = self
             .config
             .issuer
@@ -309,14 +321,14 @@ impl SignInClient {
             .map(|(identity, _)| identity)
     }
 
-    /// [`Self::complete`], also returning the verified ID token's
-    /// `telegram_binding` claim, if it has one.
+    /// [`Self::complete`], also returning whether the verified ID token
+    /// says `"telegram_binding": true`.
     pub(crate) async fn complete_with_binding(
         &self,
         code: &str,
         transaction: &SignInTransaction,
         now: u64,
-    ) -> Result<(VerifiedSignIn, Option<String>), SignInError> {
+    ) -> Result<(VerifiedSignIn, bool), SignInError> {
         if code.is_empty() || code.len() > 512 {
             return Err(SignInError::CodeRejected);
         }
@@ -454,7 +466,7 @@ enum Audience {
 #[derive(Deserialize)]
 struct Claims {
     #[serde(default)]
-    telegram_binding: Option<String>,
+    telegram_binding: Option<bool>,
     iss: String,
     sub: String,
     aud: Audience,
@@ -477,13 +489,14 @@ pub fn verify_id_token(
     verify_id_token_with_binding(token, keys, expected, now).map(|(identity, _)| identity)
 }
 
-/// AIS's `telegram_binding` claim for a Telegram account and the sign-in's
-/// nonce (4x-ais `docs/runtime.md`). Only a party that already knows both can
-/// compute it, so the claim proves the link without disclosing the account.
+/// The `telegram_binding_hint` naming the Telegram account a chat login
+/// expects (4x-ais `docs/runtime.md`). AIS answers only whether the person's
+/// linked account is this one: one bit about an account the host already
+/// knows. The hint travels in the authorization URL next to the nonce.
 #[must_use]
-pub fn telegram_binding(nonce: &str, telegram_id: i64) -> String {
+pub fn telegram_binding_hint(nonce: &str, telegram_id: i64) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"ais-telegram-binding-v1\0");
+    digest.update(b"ais-telegram-binding-hint-v1\0");
     digest.update(nonce.as_bytes());
     digest.update(b"\0");
     digest.update(telegram_id.to_string().as_bytes());
@@ -495,7 +508,7 @@ fn verify_id_token_with_binding(
     keys: &JsonWebKeySet,
     expected: &Expectation<'_>,
     now: u64,
-) -> Result<(VerifiedSignIn, Option<String>), SignInError> {
+) -> Result<(VerifiedSignIn, bool), SignInError> {
     let mut parts = token.split('.');
     let (Some(header_part), Some(claims_part), Some(signature_part), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -567,7 +580,7 @@ fn verify_id_token_with_binding(
             pub_dress: claims.pub_dress,
             auth_time,
         },
-        claims.telegram_binding,
+        claims.telegram_binding == Some(true),
     ))
 }
 
@@ -1007,38 +1020,37 @@ mod tests {
     }
 
     #[test]
-    fn the_telegram_binding_matches_ais_and_rides_in_the_id_token() {
-        // The same vector as 4x-ais `telegram_binding`.
+    fn the_telegram_binding_is_one_bit_in_the_id_token() {
+        // The same vector as 4x-ais `telegram_binding_hint`.
         assert_eq!(
-            telegram_binding("nonce-1", 4242),
-            "KTSkEvqiZPu8zg12JF-SCr7qSFZRr7iwp4k9wyD3Ttg"
+            telegram_binding_hint("nonce-1", 4242),
+            "UDbC6i0zJM5f9ja2EjMjAQ-06Jde25hEOetHxM5Ua6c"
         );
         assert_ne!(
-            telegram_binding("nonce-1", 4243),
-            telegram_binding("nonce-1", 4242)
+            telegram_binding_hint("nonce-1", 4243),
+            telegram_binding_hint("nonce-1", 4242)
         );
-        assert_ne!(
-            telegram_binding("nonce-2", 4242),
-            telegram_binding("nonce-1", 4242)
+        let verify_binding = |token: &str| {
+            verify_id_token_with_binding(token, &key_set(&signing_key(), "k1"), &expectation(), NOW)
+                .unwrap()
+                .1
+        };
+        assert!(verify_binding(&with("telegram_binding", json!(true))));
+        assert!(!verify_binding(&with("telegram_binding", json!(false))));
+        assert!(!verify_binding(&sign(&signing_key(), header(), claims())));
+        // The previous digest form is not a match.
+        assert!(
+            verify_id_token_with_binding(
+                &with(
+                    "telegram_binding",
+                    json!("KTSkEvqiZPu8zg12JF-SCr7qSFZRr7iwp4k9wyD3Ttg")
+                ),
+                &key_set(&signing_key(), "k1"),
+                &expectation(),
+                NOW,
+            )
+            .is_err()
         );
-        let token = with("telegram_binding", json!(telegram_binding("the-nonce", 42)));
-        let (_, binding) = verify_id_token_with_binding(
-            &token,
-            &key_set(&signing_key(), "k1"),
-            &expectation(),
-            NOW,
-        )
-        .unwrap();
-        assert_eq!(binding, Some(telegram_binding("the-nonce", 42)));
-        let plain = sign(&signing_key(), header(), claims());
-        let (_, binding) = verify_id_token_with_binding(
-            &plain,
-            &key_set(&signing_key(), "k1"),
-            &expectation(),
-            NOW,
-        )
-        .unwrap();
-        assert_eq!(binding, None);
     }
 
     #[test]
