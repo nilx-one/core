@@ -316,7 +316,7 @@ impl SignInClient {
         transaction: &SignInTransaction,
         now: u64,
     ) -> Result<VerifiedSignIn, SignInError> {
-        self.complete_with_binding(code, transaction, now)
+        self.complete_with_binding(code, transaction, now, None)
             .await
             .map(|(identity, _)| identity)
     }
@@ -328,6 +328,7 @@ impl SignInClient {
         code: &str,
         transaction: &SignInTransaction,
         now: u64,
+        binding_hint: Option<&str>,
     ) -> Result<(VerifiedSignIn, bool), SignInError> {
         if code.is_empty() || code.len() > 512 {
             return Err(SignInError::CodeRejected);
@@ -343,6 +344,9 @@ impl SignInClient {
             ("redirect_uri", self.config.redirect_uri.as_str()),
             ("code_verifier", transaction.code_verifier.as_str()),
         ];
+        if let Some(hint) = binding_hint {
+            form.push(("telegram_binding_hint", hint));
+        }
         let mut request = self.http.post(token_url);
         match &self.config.client_secret {
             Some(secret) => {

@@ -468,7 +468,10 @@ impl PublicInfoRepository {
         db.commit().await?;
 
         let chat_id: i64 = row.try_get("chat_id")?;
-        let (identity, bound) = client.complete_with_binding(code, &pending, now).await?;
+        let hint = crate::aiaiaiai_sign_in::telegram_binding_hint(&pending.nonce, chat_id);
+        let (identity, bound) = client
+            .complete_with_binding(code, &pending, now, Some(&hint))
+            .await?;
         // AIS confirmed that this identity's linked Telegram account is the
         // sender named in the request; anything else asks for nothing.
         if !bound {

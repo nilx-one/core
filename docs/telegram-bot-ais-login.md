@@ -37,7 +37,8 @@ Telegram callback, the only redirect AIS accepts it on. It also sends
 `telegram_binding_hint`, a SHA-256 over the transaction's nonce and the
 `/login` sender (`aiaiaiai_sign_in::telegram_binding_hint`). AIS answers with
 one bit inside the ID token Core already verifies: `"telegram_binding": true`
-if and only if the person's linked Telegram account is that sender. AIS
+if the person's linked Telegram account is that sender and the PKCE code
+exchange supplies the same hint, recomputed from the stored sender. AIS
 discloses nothing else about the linked account, the host holds no AIS
 credential, and no second request is made. A missing or `false` binding stops
 the login. A match allows the host to ask for confirmation in the original
