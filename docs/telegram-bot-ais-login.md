@@ -111,6 +111,14 @@ Request JSON is the login-start shape, carrying the confirm press's sender and c
 
 Refusals are `LoginConfirmRefusal`; `login_confirmation_not_found` (404) covers an unfinished, expired or used browser step and a different sender alike. The response never carries a session token.
 
+## Delivery
+
+On a `master` push, Rust CI attests the static `nilxone-telegram-login-host`
+binary it verified (`actions/attest-build-provenance`). aiaiaiai-org/infra
+(**Deliver Telegram runtime**) takes Core's `master` head, verifies that
+attestation for `rust.yml`, the branch and the commit, and replaces the login
+host on edge-dev-1. Core holds no credential for Infra.
+
 ## Dependencies
 
 Core persists login transactions, confirmations and the chat session binding. `tools/telegram-login-host` serves start, callback and confirm with `TELEGRAM_BOT_TOKEN` and the product `DATABASE_URL`. AIS must allow `telegram_binding` for client `0x1` (aiaiaiai-org/4x-ais#28).
