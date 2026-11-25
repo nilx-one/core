@@ -38,6 +38,11 @@ impl Authority {
         })
     }
 
+    /// The Bot API token; also the key Telegram signs Mini App initData with.
+    pub(crate) fn bot_token(&self) -> &str {
+        &self.bot_token
+    }
+
     fn accepts(&self, header: &str, path: &str, body: &[u8], now: u64) -> bool {
         verify_request(&self.bot_token, header, path, body, now)
     }

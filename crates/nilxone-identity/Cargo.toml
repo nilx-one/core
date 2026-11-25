@@ -38,6 +38,8 @@ url = "2"
 # Builds the loopback-only issuer configuration that tests/market_e2e.rs uses
 # against a disposable Market. Never enabled by a deployed service.
 market-e2e = []
+# Exposes `telegram_init_data::sign_for_tests` to other crates' tests.
+test-support = []
 
 [dev-dependencies]
 tempfile = "3"

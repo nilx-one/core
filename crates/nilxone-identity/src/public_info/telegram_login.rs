@@ -218,14 +218,18 @@ impl PublicInfoRepository {
     /// transaction's nonce and the sender's account: no AIS credential of the
     /// host takes part. The result only authorizes asking the original sender
     /// for confirmation. It does not create or switch a product session.
+    ///
+    /// `telegram_bot_token` verifies the Telegram `initData` the AIS page
+    /// collected inside Telegram, when AIS has no Telegram link to confirm.
     pub async fn verify_telegram_login_callback(
         &self,
         client: &SignInClient,
         state: &str,
         code: &str,
+        telegram_bot_token: Option<&str>,
     ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
         let Some(callback) = self
-            .complete_telegram_login(client, state, code, unix_seconds()?)
+            .complete_telegram_login(client, state, code, telegram_bot_token, unix_seconds()?)
             .await?
         else {
             return Ok(None);
@@ -427,11 +431,16 @@ impl PublicInfoRepository {
 
     /// Claim the matching callback once, before contacting AIS. Any exchange
     /// failure requires a new /login message. No product session is opened.
+    ///
+    /// The sender is proven when AIS confirms `telegram_binding`, or when
+    /// the AIS page ran inside the sender's own Telegram: its `initData`,
+    /// verified with `telegram_bot_token`, names the `/login` sender.
     pub async fn complete_telegram_login(
         &self,
         client: &SignInClient,
         state: &str,
         code: &str,
+        telegram_bot_token: Option<&str>,
         now: u64,
     ) -> Result<Option<TelegramLoginCallback>, TelegramLoginError> {
         let redirect_uri = check_client(client)?;
@@ -477,12 +486,30 @@ impl PublicInfoRepository {
 
         let chat_id: i64 = row.try_get("chat_id")?;
         let hint = crate::aiaiaiai_sign_in::telegram_binding_hint(&pending.nonce, chat_id);
-        let (identity, bound) = client
+        let (identity, bound, init_data) = client
             .complete_with_binding(code, &pending, now, Some(&hint))
             .await?;
+        // Without an AIS link, the person signed in inside Telegram: the
+        // account Telegram signed the page for must be the /login sender. A
+        // link forwarded to someone else carries their account, not this one.
+        let telegram_signed_in = match (telegram_bot_token, init_data.as_deref()) {
+            (Some(bot_token), Some(init_data)) if !bound => {
+                match crate::telegram_init_data::verify(bot_token, init_data, now) {
+                    Ok(account) => i64::try_from(account).ok() == Some(chat_id),
+                    Err(rejection) => {
+                        tracing::warn!(
+                            reason = rejection.reason(),
+                            "Telegram login init data refused"
+                        );
+                        false
+                    }
+                }
+            }
+            _ => false,
+        };
         // AIS confirmed that this identity's linked Telegram account is the
-        // sender named in the request; anything else asks for nothing.
-        if !bound {
+        // sender, or the sender's own Telegram signed the sign-in page.
+        if !bound && !telegram_signed_in {
             tracing::warn!(
                 reason = "telegram_binding_not_confirmed",
                 "Telegram login callback refused"
@@ -559,7 +586,7 @@ mod tests {
         assert!(!query.contains_key("code_verifier"));
         assert!(
             repository
-                .complete_telegram_login(&client, &query["state"], "code", 400)
+                .complete_telegram_login(&client, &query["state"], "code", None, 400)
                 .await
                 .unwrap()
                 .is_none()
@@ -613,34 +640,34 @@ mod tests {
         let state = &query["state"];
         assert!(
             repository
-                .complete_telegram_login(&client, &"!".repeat(32), "code", 101)
+                .complete_telegram_login(&client, &"!".repeat(32), "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             repository
-                .complete_telegram_login(&foreign_issuer, state, "code", 101)
+                .complete_telegram_login(&foreign_issuer, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             repository
-                .complete_telegram_login(&foreign_redirect, state, "code", 101)
+                .complete_telegram_login(&foreign_redirect, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(matches!(
             repository
-                .complete_telegram_login(&client, state, "code", 101)
+                .complete_telegram_login(&client, state, "code", None, 101)
                 .await,
             Err(TelegramLoginError::SignIn(SignInError::Unavailable))
         ));
         assert!(
             repository
-                .complete_telegram_login(&client, state, "code", 101)
+                .complete_telegram_login(&client, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
