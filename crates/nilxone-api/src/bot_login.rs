@@ -81,11 +81,14 @@ refusals! {
 }
 
 /// POST, with the same authenticated bot-service credentials as login start.
-/// The original sender pressed confirm in the original private chat.
+/// The bot claims the verified callback of its /login message. It asks right
+/// after /login and repeats while the answer is `ConfirmationNotFound`: the
+/// callback itself proves the identity belongs to this Telegram sender, so
+/// the person presses nothing in the chat.
 pub const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
 
-/// Metadata from the verified confirm press: its sender and chat, and the
-/// `/login` message the confirmation belongs to. The fields and checks are
+/// The verified sender and chat of the `/login` command and that message,
+/// as sent at login start. The fields and checks are
 /// those of [`LoginStartRequest`]; it selects no identity either.
 pub type LoginConfirmRequest = LoginStartRequest;
 
@@ -106,12 +109,14 @@ pub struct LoginConfirmResponse {
 refusals! {
     /// Why a confirmation did not open a session. None of these is a login.
     /// `ConfirmationNotFound`: no verified callback waits for this sender,
-    /// chat and message; the browser step is unfinished, expired or used, or
-    /// another sender pressed.
+    /// chat and message; the browser step is unfinished, expired or used.
+    /// `LoginFailed`: the browser step reached the callback and failed, so
+    /// this /login cannot succeed any more; the bot stops asking.
     LoginConfirmRefusal {
         InvalidProviderEvidence => ("invalid_provider_evidence", 422),
         ServiceAuthenticationRequired => ("service_authentication_required", 401),
         ConfirmationNotFound => ("login_confirmation_not_found", 404),
+        LoginFailed => ("login_failed", 410),
         LoginServiceUnavailable => ("login_service_unavailable", 503),
     }
 }
