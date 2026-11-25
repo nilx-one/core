@@ -43,6 +43,12 @@ jobs:
     needs: correctness
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Only a master push uses these: it attests the login host it verified,
+    # so aiaiaiai-org/infra can deliver it without a credential here.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,6 +82,11 @@ jobs:
             exit 1
           fi
           grep -F 'TELEGRAM_BOT_TOKEN is required' telegram-login-host-check.log
+      - name: Attest the verified Telegram login host package
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: target/x86_64-unknown-linux-musl/release/nilxone-telegram-login-host
       - name: Preserve verified Telegram login host package
         uses: actions/upload-artifact@v4
         with:
