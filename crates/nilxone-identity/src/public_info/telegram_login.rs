@@ -42,8 +42,8 @@ pub enum TelegramLoginVerificationError {
 }
 
 /// A browser callback that proved an AIS identity for a pending Telegram
-/// request. The host must still verify the provider link and require the
-/// original sender's confirmation before authorizing a Core session.
+/// request. A session opens only when the bot claims it for the original
+/// /login message in the original private chat.
 pub struct TelegramLoginCallback {
     pub workload_subject: String,
     pub actor_id: u64,
@@ -53,12 +53,12 @@ pub struct TelegramLoginCallback {
 }
 
 /// Browser sign-in and Telegram binding matched in AIS. This result is
-/// eligible for confirmation by the original sender.
+/// eligible to be claimed by the bot for the original /login message.
 /// It is stored by `verify_telegram_login_callback` and redeemed once by
 /// `confirm_telegram_login`.
 pub struct TelegramLoginAwaitingConfirmation(TelegramLoginCallback);
 
-/// The original sender confirmed a verified callback in the original chat.
+/// The bot claimed a verified callback for the original /login message.
 pub struct TelegramChatSignedIn {
     /// The owner of the new chat session. It identifies the owner for reads;
     /// a write still requires `restore_telegram_chat_session` and an active
@@ -72,6 +72,25 @@ impl TelegramLoginAwaitingConfirmation {
     #[must_use]
     pub fn callback(&self) -> &TelegramLoginCallback {
         &self.0
+    }
+}
+
+/// The /login message a transaction belongs to.
+struct LoginMessage {
+    workload_subject: String,
+    actor_id: i64,
+    chat_id: i64,
+    message_id: i32,
+}
+
+impl LoginMessage {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            workload_subject: row.try_get("workload_subject")?,
+            actor_id: row.try_get("actor_id")?,
+            chat_id: row.try_get("chat_id")?,
+            message_id: row.try_get("message_id")?,
+        })
     }
 }
 
@@ -216,8 +235,9 @@ impl PublicInfoRepository {
     ///
     /// The proof is the ID token's `telegram_binding` claim, bound to this
     /// transaction's nonce and the sender's account: no AIS credential of the
-    /// host takes part. The result only authorizes asking the original sender
-    /// for confirmation. It does not create or switch a product session.
+    /// host takes part. The result waits for the bot to claim it; it does not
+    /// create or switch a product session. A refused callback is recorded
+    /// for the bot as a failure.
     ///
     /// `telegram_bot_token` verifies the Telegram `initData` the AIS page
     /// collected inside Telegram, when AIS has no Telegram link to confirm.
@@ -283,7 +303,10 @@ impl PublicInfoRepository {
         Ok(())
     }
 
-    /// The original sender pressed confirm in the original private chat.
+    /// The bot claims the verified callback of its /login message. It asks
+    /// right after /login and keeps asking until the browser step is done:
+    /// the callback already proved that the identity belongs to this
+    /// Telegram sender, so no separate press is needed.
     ///
     /// The host passes the bot workload it authenticated and the sender,
     /// chat and `/login` message from a verified Telegram update; nothing
@@ -484,11 +507,19 @@ impl PublicInfoRepository {
             .await?;
         db.commit().await?;
 
-        let chat_id: i64 = row.try_get("chat_id")?;
+        let login = LoginMessage::from_row(&row)?;
+        let chat_id = login.chat_id;
         let hint = crate::aiaiaiai_sign_in::telegram_binding_hint(&pending.nonce, chat_id);
-        let (identity, bound, init_data) = client
+        let (identity, bound, init_data) = match client
             .complete_with_binding(code, &pending, now, Some(&hint))
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.record_telegram_login_failure(&login, now_sql).await?;
+                return Err(error.into());
+            }
+        };
         // Without an AIS link, the person signed in inside Telegram: the
         // account Telegram signed the page for must be the /login sender. A
         // link forwarded to someone else carries their account, not this one.
@@ -514,16 +545,114 @@ impl PublicInfoRepository {
                 reason = "telegram_binding_not_confirmed",
                 "Telegram login callback refused"
             );
+            self.record_telegram_login_failure(&login, now_sql).await?;
             return Ok(None);
         }
         Ok(Some(TelegramLoginCallback {
-            workload_subject: row.try_get("workload_subject")?,
-            actor_id: u64::try_from(row.try_get::<i64, _>("actor_id")?)
+            actor_id: u64::try_from(login.actor_id)
                 .map_err(|_| TelegramLoginError::InvalidInput)?,
+            workload_subject: login.workload_subject,
             chat_id,
-            message_id: row.try_get("message_id")?,
+            message_id: login.message_id,
             identity,
         }))
+    }
+
+    /// AIS answered the callback with an error, so the person never signed
+    /// in. Claim the transaction like a callback would, so its state cannot
+    /// be used later, and record the failure for the bot. An unknown, used
+    /// or expired state changes nothing.
+    pub async fn refuse_telegram_login(
+        &self,
+        client: &SignInClient,
+        state: &str,
+        now: u64,
+    ) -> Result<(), TelegramLoginError> {
+        let redirect_uri = check_client(client)?;
+        if state.len() != 32 {
+            return Ok(());
+        }
+        let now_sql = i64::try_from(now).map_err(|_| TelegramLoginError::InvalidInput)?;
+        let state_digest = Sha256::digest(state.as_bytes());
+        let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row = sqlx::query(
+            "UPDATE telegram_login_transactions SET pending = NULL
+             WHERE state_digest = ? AND issuer = ? AND redirect_uri = ?
+                 AND expires_at > ? AND pending IS NOT NULL
+             RETURNING workload_subject, actor_id, chat_id, message_id",
+        )
+        .bind(&state_digest[..])
+        .bind(client.config().issuer())
+        .bind(redirect_uri)
+        .bind(now_sql)
+        .fetch_optional(&mut *db)
+        .await?;
+        db.commit().await?;
+        if let Some(row) = row {
+            self.record_telegram_login_failure(&LoginMessage::from_row(&row)?, now_sql)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Remember that the browser step of this /login failed, until the bot
+    /// reads it or it expires like a confirmation would.
+    async fn record_telegram_login_failure(
+        &self,
+        login: &LoginMessage,
+        now: i64,
+    ) -> Result<(), TelegramLoginError> {
+        let expires_at = now
+            .checked_add(CONFIRMATION_LIFETIME_SECONDS)
+            .ok_or(TelegramLoginError::InvalidInput)?;
+        let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query("DELETE FROM telegram_login_failures WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&mut *db)
+            .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO telegram_login_failures
+             (workload_subject, actor_id, chat_id, message_id, expires_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&login.workload_subject)
+        .bind(login.actor_id)
+        .bind(login.chat_id)
+        .bind(login.message_id)
+        .bind(expires_at)
+        .execute(&mut *db)
+        .await?;
+        db.commit().await?;
+        Ok(())
+    }
+
+    /// Whether the browser step of this /login reached the callback and
+    /// failed. The bot asks after `confirm_telegram_login` found nothing, to
+    /// tell a failure from a browser step that is still unfinished.
+    pub async fn telegram_login_failed(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        chat_id: i64,
+        message_id: i32,
+        now: u64,
+    ) -> Result<bool, PublicInfoError> {
+        let (Ok(actor_id), Ok(now)) = (i64::try_from(sender_id), i64::try_from(now)) else {
+            return Ok(false);
+        };
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM telegram_login_failures
+             WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?
+                 AND expires_at > ?",
+        )
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(chat_id)
+        .bind(message_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some())
     }
 }
 
@@ -659,6 +788,13 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(
+            !repository
+                .telegram_login_failed("bot", 42, 42, 7, 101)
+                .await
+                .unwrap(),
+            "foreign callbacks do not fail the login"
+        );
         assert!(matches!(
             repository
                 .complete_telegram_login(&client, state, "code", None, 101)
@@ -667,10 +803,86 @@ mod tests {
         ));
         assert!(
             repository
+                .telegram_login_failed("bot", 42, 42, 7, 101)
+                .await
+                .unwrap(),
+            "a failed exchange tells the bot at once"
+        );
+        assert!(
+            repository
                 .complete_telegram_login(&client, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_issuer_error_fails_only_its_own_login_and_uses_up_the_state() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let client = SignInClient::new(
+            SignInClientConfig::public(
+                "https://auth.aiaiaiai.org",
+                Some("http://127.0.0.1:0"),
+                "0x1",
+                "https://nilx.one/api/v1/telegram/login/callback",
+            )
+            .unwrap(),
+        );
+        let started = repository
+            .start_telegram_login(&client, "bot", &message(), 100)
+            .await
+            .unwrap()
+            .unwrap();
+        let url = url::Url::parse(&started.authorization_url).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        let state = &query["state"];
+
+        repository
+            .refuse_telegram_login(&client, &"a".repeat(32), 101)
+            .await
+            .unwrap();
+        assert!(
+            !repository
+                .telegram_login_failed("bot", 42, 42, 7, 101)
+                .await
+                .unwrap()
+        );
+        repository
+            .refuse_telegram_login(&client, state, 101)
+            .await
+            .unwrap();
+        for (workload, sender, chat, message, failed) in [
+            ("bot", 42, 42, 7, true),
+            ("bot", 42, 42, 8, false),
+            ("other", 42, 42, 7, false),
+            ("bot", 43, 43, 7, false),
+        ] {
+            assert_eq!(
+                repository
+                    .telegram_login_failed(workload, sender, chat, message, 102)
+                    .await
+                    .unwrap(),
+                failed,
+                "{workload} {sender} {message}"
+            );
+        }
+        // The state is spent: a later callback with it changes nothing.
+        assert!(
+            repository
+                .complete_telegram_login(&client, state, "code", None, 102)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The failure is kept as long as a confirmation would be.
+        assert!(
+            !repository
+                .telegram_login_failed("bot", 42, 42, 7, 101 + 300)
+                .await
+                .unwrap()
         );
     }
 

@@ -240,6 +240,15 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
             error = loggable_error_code(error),
             "Telegram login callback refused"
         );
+        // Tell the bot this /login failed, so the chat says so at once.
+        if let (Some(state), Some(now)) = (query.state.as_deref(), now_unix_seconds())
+            && let Err(error) = host
+                .repository
+                .refuse_telegram_login(&host.client, state, now)
+                .await
+        {
+            tracing::error!(%error, "recording a refused Telegram login failed");
+        }
         return callback_page(false);
     }
     let (Some(state), Some(code)) = (query.state, query.code) else {
@@ -271,7 +280,7 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
         .await
     {
         Ok(Some(_)) => {
-            tracing::info!("Telegram login callback verified; awaiting confirmation");
+            tracing::info!("Telegram login callback verified; awaiting the bot");
             callback_page(true)
         }
         // Core logged the reason.
@@ -303,7 +312,8 @@ async fn confirm_login(
         return confirm_refusal(LoginConfirmRefusal::LoginServiceUnavailable);
     };
     let limit_key = format!("confirm:{subject}:{}", request.provider_actor_id);
-    if let Err(retry) = host.attempts.consume(limit_key, now, 30, 60) {
+    // The bot asks about every 2.5 s while the browser step runs.
+    if let Err(retry) = host.attempts.consume(limit_key, now, 40, 60) {
         return rate_limited(
             confirm_refusal(LoginConfirmRefusal::LoginServiceUnavailable),
             retry,
@@ -322,7 +332,27 @@ async fn confirm_login(
         .await
     {
         Ok(Some(signed_in)) => signed_in,
-        Ok(None) => return confirm_refusal(LoginConfirmRefusal::ConfirmationNotFound),
+        Ok(None) => {
+            let failed = host
+                .repository
+                .telegram_login_failed(
+                    &subject,
+                    request.provider_actor_id,
+                    request.chat_id,
+                    request.message_id,
+                    now,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::error!(%error, "reading a Telegram login failure failed");
+                    false
+                });
+            return confirm_refusal(if failed {
+                LoginConfirmRefusal::LoginFailed
+            } else {
+                LoginConfirmRefusal::ConfirmationNotFound
+            });
+        }
         Err(error) => {
             tracing::error!(%error, "Telegram login confirmation failed");
             return confirm_refusal(LoginConfirmRefusal::LoginServiceUnavailable);
@@ -398,6 +428,76 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn an_issuer_error_tells_the_bot_its_login_failed() {
+        let host = host(offline_client(), Some(chat())).await;
+        let now = now_unix_seconds().unwrap();
+        let started = host
+            .repository
+            .start_telegram_login(
+                &host.client,
+                "test-bot",
+                &LoginStartRequest {
+                    version: 1,
+                    provider: "telegram".into(),
+                    provider_actor_id: 42,
+                    chat_id: 42,
+                    message_id: 7,
+                },
+                now,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let url = url::Url::parse(&started.authorization_url).unwrap();
+        let state = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let app = router(host.clone());
+        let public = public_router(host);
+        let code = |response: Response| async move {
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            (status, body["error"]["code"].as_str().unwrap().to_owned())
+        };
+        let waiting = app
+            .clone()
+            .oneshot(confirm_request(true, 42, 42, 7))
+            .await
+            .unwrap();
+        assert_eq!(
+            code(waiting).await,
+            (
+                StatusCode::NOT_FOUND,
+                "login_confirmation_not_found".to_owned()
+            )
+        );
+        let refused = public
+            .oneshot(
+                Request::get(format!("{CALLBACK_PATH}?error=access_denied&state={state}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let failed = app
+            .clone()
+            .oneshot(confirm_request(true, 42, 42, 7))
+            .await
+            .unwrap();
+        assert_eq!(
+            code(failed).await,
+            (StatusCode::GONE, "login_failed".to_owned())
+        );
+        let other_message = app.oneshot(confirm_request(true, 42, 42, 8)).await.unwrap();
+        assert_eq!(other_message.status(), StatusCode::NOT_FOUND);
     }
 
     fn confirm_request(trusted: bool, actor: u64, chat: i64, message_id: i32) -> Request<Body> {

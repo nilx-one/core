@@ -1,6 +1,6 @@
 # Telegram AIS login — Gateway wire v1
 
-Status: typed Core contract, durable OIDC transactions, sender confirmation and the chat product session; **no public route or production activation**.
+Status: typed Core contract, durable OIDC transactions, the bot's claim of a verified callback and the chat product session; **no public route or production activation**.
 
 The Core-owned product host is the relying party for Telegram bot commands. It authenticates the dedicated bot service, verifies that update metadata came from a genuine private Telegram message, rate-limits and deduplicates the provider/actor/chat/message tuple, and creates a durable, one-time sign-in transaction. A bot transport cannot bind an AIS identity to a Bond.
 
@@ -28,7 +28,7 @@ The host generates unique state, nonce, PKCE S256 verifier/challenge, an exact r
 
 ## Callback obligations
 
-The host (not the bot) exchanges the authorization code and verifies issuer, EdDSA signature, expected 0x1 audience, nonce and expiry. It attaches an existing Bond only through Core's authorized mapping, never through public address, username or chat ID. Before opening a product session, the host must verify that AIS provider evidence for the initiating Telegram actor matches the callback's exact issuer and 0x1 subject. It must obtain explicit confirmation from the original sender in the private chat. A valid OIDC state does not establish that the person opening the URL owns that Telegram account. After a failed code exchange the bot must prompt for a fresh /login message. Authorization code, id_token, cookie and product-session bearer values never appear in Telegram messages.
+The host (not the bot) exchanges the authorization code and verifies issuer, EdDSA signature, expected 0x1 audience, nonce and expiry. It attaches an existing Bond only through Core's authorized mapping, never through public address, username or chat ID. Before opening a product session, the host must verify that AIS provider evidence for the initiating Telegram actor matches the callback's exact issuer and 0x1 subject. A valid OIDC state does not establish that the person opening the URL owns that Telegram account; the provider match does, so the bot then claims the callback without asking the person to press anything. After a failed code exchange the bot must prompt for a fresh /login message. Authorization code, id_token, cookie and product-session bearer values never appear in Telegram messages.
 
 Single Active Client remains enforced. A linked provider does not silently activate Telegram or permit game writes. The Telegram text client is a separate Core-controlled product client from the Web Mini App, with its **own** product session. Switching between these clients requires the canonical confirmed handoff; no implicit sharing, cookie reuse, or activated session inference is permitted. E2E cases must cover expiry, replay, wrong sender, wrong browser account, callback tampering, revocation, conflict, restoration, sign-out and handoff.
 
@@ -41,8 +41,8 @@ if the person's linked Telegram account is that sender and the PKCE code
 exchange supplies the same hint, recomputed from the stored sender. AIS
 discloses nothing else about the linked account, the host holds no AIS
 credential, and no second request is made. A missing or `false` binding stops
-the login. A match allows the host to ask for confirmation in the original
-chat. The hint travels in the authorization URL, which goes only to the
+the login. A match lets the bot claim the callback for the original
+`/login` message. The hint travels in the authorization URL, which goes only to the
 sender's own chat (4x-ais `docs/runtime.md` states the guarantees).
 
 ## First sign-in without an AIS Telegram link
@@ -67,10 +67,12 @@ Forwarding the link does not help someone else: their Telegram signs their
 own account. Outside Telegram there is no `initData`, so only the AIS link
 can bind.
 
-The success page closes the Mini App: Telegram's SDK plus one inline script,
-admitted by its CSP hash. The player is back in the chat and confirms there.
+The success page plays the sign-in stages, taps Telegram's haptic engine and
+closes the Mini App through the Mini App bridge, with one inline script and
+style admitted by their CSP hashes. The player is back in the chat, where the
+bot has already claimed the login.
 
-## Sender confirmation and the chat session
+## The bot's claim and the chat session
 
 A verified, provider-matched callback is stored in
 `telegram_login_confirmations` for at most 300 seconds. It holds the AIS
@@ -81,7 +83,9 @@ message ID.
 `PublicInfoRepository::confirm_telegram_login(workload, sender, chat, message,
 now, session_expires_at)` is the only way from a callback to a product
 session. The host calls it with the workload it authenticated and the sender,
-chat and `/login` message from a verified Telegram confirm press. A different
+chat and `/login` message the bot sent at login start. The bot asks right
+after `/login`, about every 2.5 seconds while the browser step runs, so the
+chat shows the result without a press. A different
 sender, chat, workload or message, an expired or a used confirmation returns
 `None`. Otherwise Core deletes the confirmation, attaches the profile by
 `(issuer, subject)` and opens a session labelled `Telegram · Chat`:
@@ -103,13 +107,18 @@ sender, chat, workload or message, an expired or a used confirmation returns
 
 Route: POST /api/v1/telegram/login/confirm (`nilxone_api::bot_login::CONFIRM_PATH`), behind the same bot-service authentication as login start.
 
-Request JSON is the login-start shape, carrying the confirm press's sender and chat and the original `/login` message id. Response JSON:
+Request JSON is the login-start shape: the `/login` sender, chat and message id. Response JSON:
 
 ~~~json
 {"profile_id":"…","pub_dress":"0x0sky","active":false}
 ~~~
 
-Refusals are `LoginConfirmRefusal`; `login_confirmation_not_found` (404) covers an unfinished, expired or used browser step and a different sender alike. The response never carries a session token.
+Refusals are `LoginConfirmRefusal`:
+
+- `login_confirmation_not_found` (404): the browser step is unfinished, expired or used, or the sender differs. The bot keeps asking until the login expires.
+- `login_failed` (410): the browser step reached the callback and failed. AIS answered with an error, the code exchange failed, or the identity is not this sender's. `telegram_login_failures` records this for 300 seconds, so the bot says so at once and stops asking.
+
+The response never carries a session token.
 
 ## Delivery
 

@@ -4,8 +4,7 @@
 //! The page the Telegram Mini App lands on after AIS. On success it plays the
 //! sign-in stages in the 0x1 world of auth.aiaiaiai.org/0x1, taps the
 //! Telegram haptic engine and closes itself, back to the chat where the bot
-//! asks to confirm. It says nothing about the account: signing in happens
-//! only when the sender confirms in Telegram.
+//! has already claimed the login. It says nothing about the account.
 
 use std::sync::LazyLock;
 
@@ -84,7 +83,7 @@ fn success_body() -> String {
         .collect();
     format!(
         "<ol class=\"stages\" id=\"stages\" aria-label=\"Вхід в 0x1\">{stages}</ol>\
-         <div class=\"after\"><p>Повертаю в чат — підтверди вхід там.</p>\
+         <div class=\"after\"><p>Повертаю в чат.</p>\
          <button id=\"back\" type=\"button\">Повернутися в чат</button></div>"
     )
 }

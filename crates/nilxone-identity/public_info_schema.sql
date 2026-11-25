@@ -67,8 +67,8 @@ CREATE TABLE IF NOT EXISTS telegram_login_transactions (
 CREATE INDEX IF NOT EXISTS telegram_login_transactions_expiry
     ON telegram_login_transactions(expires_at);
 
--- A verified Telegram login callback waits here for the original sender's
--- confirmation in the original private chat. The key is the one-use login
+-- A verified Telegram login callback waits here until the bot claims it for
+-- the original /login message in the original private chat. The key is the one-use login
 -- message; a confirmation deletes its row, so it opens at most one session.
 -- The row holds only the AIS claims a product profile is attached by.
 CREATE TABLE IF NOT EXISTS telegram_login_confirmations (
@@ -85,6 +85,21 @@ CREATE TABLE IF NOT EXISTS telegram_login_confirmations (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS telegram_login_confirmations_expiry
     ON telegram_login_confirmations(expires_at);
+
+-- A /login whose browser step reached the callback and failed: AIS refused,
+-- the code exchange failed, or the identity is not this sender's. The bot
+-- reads it to say so in the chat instead of waiting for the login to expire.
+-- It holds no identity, only the login message it belongs to.
+CREATE TABLE IF NOT EXISTS telegram_login_failures (
+    workload_subject TEXT NOT NULL,
+    actor_id INTEGER NOT NULL CHECK (actor_id > 0),
+    chat_id INTEGER NOT NULL CHECK (chat_id = actor_id),
+    message_id INTEGER NOT NULL CHECK (message_id > 0),
+    expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+    PRIMARY KEY (workload_subject, actor_id, chat_id, message_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS telegram_login_failures_expiry
+    ON telegram_login_failures(expires_at);
 
 -- The product session a confirmed Telegram chat signed in to. The chat
 -- client never holds a session token: the bot workload and the verified
