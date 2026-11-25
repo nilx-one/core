@@ -203,6 +203,23 @@ async fn start(
 struct CallbackQuery {
     state: Option<String>,
     code: Option<String>,
+    /// An OAuth error response from AIS (RFC 6749 §4.1.2.1).
+    error: Option<String>,
+}
+
+/// An issuer error code fit for a log line: the registered OAuth grammar,
+/// so a crafted callback cannot write arbitrary text into the logs.
+fn loggable_error_code(code: &str) -> &str {
+    if (1..=64).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+        code
+    } else {
+        "unrecognized"
+    }
+}
+
+fn refused(reason: &'static str) -> Response {
+    tracing::warn!(reason, "Telegram login callback refused");
+    callback_page(false)
 }
 
 /// A minimal page: the browser step says nothing about the account, and
@@ -249,32 +266,46 @@ fn callback_page(verified: bool) -> Response {
 
 async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQuery>) -> Response {
     if host.chat.is_none() {
+        return refused("chat_sign_in_disabled");
+    }
+    // AIS refused the authorization request itself; the person never saw
+    // a sign-in page. Only the error code is logged, never state or code.
+    if let Some(error) = query.error.as_deref() {
+        tracing::warn!(
+            reason = "issuer_error",
+            error = loggable_error_code(error),
+            "Telegram login callback refused"
+        );
         return callback_page(false);
     }
     let (Some(state), Some(code)) = (query.state, query.code) else {
-        return callback_page(false);
+        return refused("missing_state_or_code");
     };
     // Core checks the state first; this only keeps a malformed request from
     // costing a code exchange.
     if state.len() != 32 || code.is_empty() || code.len() > 512 {
-        return callback_page(false);
+        return refused("malformed_callback");
     }
     let Some(now) = now_unix_seconds() else {
-        return callback_page(false);
+        return refused("clock_unavailable");
     };
     if host
         .attempts
         .consume("telegram-callback".to_owned(), now, 60, 60)
         .is_err()
     {
-        return callback_page(false);
+        return refused("rate_limited");
     }
     match host
         .repository
         .verify_telegram_login_callback(&host.client, &state, &code)
         .await
     {
-        Ok(Some(_)) => callback_page(true),
+        Ok(Some(_)) => {
+            tracing::info!("Telegram login callback verified; awaiting confirmation");
+            callback_page(true)
+        }
+        // Core logged the reason.
         Ok(None) => callback_page(false),
         Err(error) => {
             tracing::error!(%error, "Telegram login callback failed");
@@ -465,6 +496,12 @@ mod tests {
             CALLBACK_PATH.to_owned(),
             format!("{CALLBACK_PATH}?code=c"),
             format!("{CALLBACK_PATH}?state=short&code=c"),
+            // AIS refused the request before any sign-in page.
+            format!(
+                "{CALLBACK_PATH}?error=invalid_scope&state={}",
+                "s".repeat(32)
+            ),
+            format!("{CALLBACK_PATH}?error=access_denied"),
         ] {
             let response = app
                 .clone()
@@ -480,6 +517,21 @@ mod tests {
                     .starts_with("text/html")
             );
             assert!(!response.headers().contains_key(header::SET_COOKIE));
+        }
+    }
+
+    #[test]
+    fn only_oauth_shaped_error_codes_reach_the_log() {
+        assert_eq!(loggable_error_code("invalid_scope"), "invalid_scope");
+        assert_eq!(loggable_error_code("access_denied"), "access_denied");
+        for crafted in [
+            "",
+            "Invalid_Scope",
+            "invalid scope",
+            "x\nforged=1",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(loggable_error_code(crafted), "unrecognized", "{crafted:?}");
         }
     }
 
