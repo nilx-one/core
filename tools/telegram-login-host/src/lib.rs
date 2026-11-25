@@ -11,7 +11,10 @@
 //! same Single Active Client rules.
 
 mod authority;
+mod page;
+
 pub use authority::{Authority, ISSUER};
+use page::callback_page;
 
 use std::{
     sync::Arc,
@@ -23,7 +26,7 @@ use axum::{
     extract::{Query, State},
     http::{
         HeaderValue, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER},
+        header::{CACHE_CONTROL, RETRY_AFTER},
     },
     response::{IntoResponse as _, Response},
     routing::{get, post},
@@ -223,71 +226,6 @@ fn loggable_error_code(code: &str) -> &str {
 fn refused(reason: &'static str) -> Response {
     tracing::warn!(reason, "Telegram login callback refused");
     callback_page(false)
-}
-
-/// Closes the Telegram Mini App the AIS page ran in, so the player is back in
-/// the chat where the bot already asks to confirm. It speaks the Mini App
-/// bridge directly (iOS and Android webviews, Desktop, Web) instead of loading
-/// Telegram's SDK, which does not survive the cross-origin hops through AIS.
-/// Outside Telegram it does nothing; the button retries on a tap.
-const CLOSE_SCRIPT: &str = "(function(){var e='web_app_close';function c(){var p=window.TelegramWebviewProxy;if(p&&p.postEvent){p.postEvent(e,'{}');return}var x=window.external;if(x&&'notify' in x){x.notify(JSON.stringify({eventType:e,eventData:{}}));return}if(window.parent!==window){window.parent.postMessage(JSON.stringify({eventType:e,eventData:{}}),'https://web.telegram.org')}}var b=document.getElementById('back');if(b){b.addEventListener('click',c)}c();setTimeout(c,400)})();";
-/// The CSP hash of [`CLOSE_SCRIPT`]: no other inline script may run.
-const CLOSE_SCRIPT_HASH: &str = "'sha256-QA0JCofgdLcnXnlymOHSLt/n7YapEKaOR2Mrmw7Tg9s='";
-/// Follows the Telegram light or dark theme through the system setting.
-const PAGE_STYLE: &str = ":root{color-scheme:light dark;--bg:#fff;--fg:#111;--muted:#6b6b70;--accent:#2f7cf6}@media (prefers-color-scheme:dark){:root{--bg:#000;--fg:#f2f2f7;--muted:#9a9aa1}}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--fg);font:16px/1.45 -apple-system,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center}main{padding:24px 16px;max-width:22rem}h1{font-size:20px;font-weight:600;margin:0 0 8px}p{margin:0 0 20px;color:var(--muted)}button{appearance:none;border:0;border-radius:12px;background:var(--accent);color:#fff;font:inherit;font-weight:600;padding:12px 20px;width:100%}";
-/// The CSP hash of [`PAGE_STYLE`].
-const PAGE_STYLE_HASH: &str = "'sha256-0ejL9XzUZbfdLZTkgu9PqmwEwkwQqU2YbVO0t0pV5f4='";
-
-/// A minimal page: the browser step says nothing about the account, and
-/// signing in happens only when the sender confirms in Telegram.
-fn callback_page(verified: bool) -> Response {
-    let (status, heading, body, action) = if verified {
-        (
-            StatusCode::OK,
-            "Готово",
-            "Повертаю в чат — підтверди вхід там.",
-            format!(
-                "<button id=\"back\" type=\"button\">Повернутися в чат</button>\
-                 <script>{CLOSE_SCRIPT}</script>"
-            ),
-        )
-    } else {
-        (
-            StatusCode::BAD_REQUEST,
-            "Вхід не вдався · Sign-in failed",
-            "Надішли /login у чаті з ботом ще раз. Send /login in the bot chat again.",
-            String::new(),
-        )
-    };
-    let html = format!(
-        "<!doctype html><html lang=\"uk\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <meta name=\"referrer\" content=\"no-referrer\"><title>0x1</title>\
-         <style>{PAGE_STYLE}</style></head>\
-         <body><main><h1>{heading}</h1><p>{body}</p>{action}</main></body></html>"
-    );
-    let mut response = (status, html).into_response();
-    let headers = response.headers_mut();
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    headers.insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
-    );
-    // Telegram Web shows a Mini App in a frame of web.telegram.org; no other
-    // site may frame the page.
-    let csp = format!(
-        "default-src 'none'; script-src {CLOSE_SCRIPT_HASH}; style-src {PAGE_STYLE_HASH}; \
-         frame-ancestors https://web.telegram.org; base-uri 'none'; form-action 'none'"
-    );
-    if let Ok(value) = HeaderValue::from_str(&csp) {
-        headers.insert("content-security-policy", value);
-    }
-    response
 }
 
 async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQuery>) -> Response {
@@ -658,41 +596,6 @@ mod tests {
             send(43, 1).await.unwrap().status(),
             StatusCode::OK,
             "a different actor keeps its own budget"
-        );
-    }
-
-    #[test]
-    fn the_close_script_is_the_only_inline_script_the_csp_admits() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
-        use sha2::{Digest as _, Sha256};
-        let hash = |text: &str| format!("'sha256-{}'", STANDARD.encode(Sha256::digest(text)));
-        assert_eq!(CLOSE_SCRIPT_HASH, hash(CLOSE_SCRIPT));
-        assert_eq!(PAGE_STYLE_HASH, hash(PAGE_STYLE));
-    }
-
-    #[tokio::test]
-    async fn a_verified_sign_in_closes_the_telegram_page() {
-        let page = callback_page(true);
-        assert_eq!(page.status(), StatusCode::OK);
-        let csp = page.headers()["content-security-policy"]
-            .to_str()
-            .unwrap()
-            .to_owned();
-        assert!(
-            csp.contains(&format!("script-src {CLOSE_SCRIPT_HASH};")),
-            "{csp}"
-        );
-        assert!(!csp.contains("https://telegram.org"), "{csp}");
-        let body = to_bytes(page.into_body(), 4096).await.unwrap();
-        let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains(CLOSE_SCRIPT));
-        assert!(body.contains("web_app_close") && !body.contains("telegram-web-app.js"));
-        let failed = callback_page(false);
-        let body = to_bytes(failed.into_body(), 4096).await.unwrap();
-        assert!(
-            !String::from_utf8(body.to_vec())
-                .unwrap()
-                .contains("<script")
         );
     }
 }

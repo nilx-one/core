@@ -1,0 +1,166 @@
+/* © 2026 aiaiaiai · aiaiaiai.org
+ * The 0x1 world of auth.aiaiaiai.org/0x1 (an evening river city behind
+ * glass), so the hop from AIS to this page is seamless. Kept in step with
+ * 4x-ais static/auth.css by hand: this page loads nothing from other sites. */
+:root {
+  --w-sky-top: #6f7fc4;
+  --w-sky-mid: #c9a3c8;
+  --w-sky-low: #f6c58f;
+  --w-sun: #ffe2a6;
+  --w-river: #5d6fb0;
+  --w-city: #3a3a5c;
+  --w-glass: rgba(42, 46, 72, 0.52);
+  --w-glass-line: rgba(255, 236, 200, 0.55);
+  --w-ink: #fbf7f0;
+  --w-muted: #e2dce8;
+  --w-gold-a: #ffe3a3;
+  --w-gold-b: #f2b558;
+  --w-gold-ink: #2a2116;
+  --w-glow: #8fd3ff;
+  --w-error: #ffc2cf;
+  --pitch: 4.5rem;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--w-sky-top) 0%, var(--w-sky-mid) 42%, var(--w-sky-low) 68%, var(--w-river) 100%);
+  color: var(--w-ink);
+  font: 16px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.world-scene { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+.world-sun {
+  position: absolute; left: 50%; bottom: 30%;
+  width: 46vmax; height: 46vmax; transform: translate(-50%, 50%); border-radius: 50%;
+  background: radial-gradient(circle, var(--w-sun) 0%, rgba(255, 210, 140, 0.45) 22%, rgba(255, 190, 140, 0) 60%);
+}
+.world-cloud {
+  position: absolute; height: 3.2rem; border-radius: 999px;
+  background: rgba(255, 230, 220, 0.35); filter: blur(10px);
+}
+.world-cloud--a { top: 12%; left: 4%; width: 38vw; }
+.world-cloud--b { top: 22%; right: -6%; width: 30vw; }
+.world-skyline { position: absolute; left: 0; right: 0; bottom: 22%; width: 100%; height: 34vh; }
+.world-hills { fill: #4d5a7c; opacity: 0.75; }
+.world-city { fill: var(--w-city); opacity: 0.82; }
+.world-bridge { fill: none; stroke: var(--w-city); stroke-width: 5; opacity: 0.75; }
+.world-river {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 23%;
+  background:
+    repeating-linear-gradient(180deg, rgba(255, 220, 160, 0.22) 0 2px, transparent 2px 11px),
+    linear-gradient(180deg, #8d8fc0 0%, var(--w-river) 55%, #3d4778 100%);
+}
+.world-blossom {
+  position: absolute; top: -4rem; width: 22rem; height: 16rem; opacity: 0.92;
+  background:
+    radial-gradient(circle at 18% 38%, #fff6f2 0 0.55rem, transparent 0.6rem),
+    radial-gradient(circle at 24% 30%, #ffe4ea 0 0.45rem, transparent 0.5rem),
+    radial-gradient(circle at 28% 42%, #fff 0 0.5rem, transparent 0.55rem),
+    radial-gradient(circle at 44% 22%, #ffeef0 0 0.5rem, transparent 0.55rem),
+    radial-gradient(circle at 60% 52%, #ffe6ea 0 0.5rem, transparent 0.55rem),
+    radial-gradient(ellipse 3.4rem 1.4rem at 30% 58%, #7e9a46 98%, transparent),
+    radial-gradient(ellipse 3rem 1.2rem at 56% 36%, #8fae52 98%, transparent),
+    radial-gradient(ellipse 2.8rem 1.1rem at 72% 62%, #6c8a3c 98%, transparent);
+}
+.world-blossom--left { left: -5rem; }
+/* The Avaia keeping watch, as on the AIS page. */
+.world-avaia {
+  position: absolute; top: 1.5rem; left: 1.5rem; width: 3.25rem; height: 3.25rem; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff, #dfe3ea 55%, #aab1bf);
+  box-shadow: 0 0 0 3px rgba(255, 214, 140, 0.7), 0 0 26px rgba(255, 200, 120, 0.6);
+}
+.world-avaia::before {
+  content: ''; position: absolute; inset: 22% 10% 22% 16%; border-radius: 45%; background: #12162a;
+}
+.world-avaia span {
+  position: absolute; top: 42%; width: 0.5rem; height: 0.28rem;
+  border: 2px solid var(--w-glow); border-bottom: 0; border-radius: 1rem 1rem 0 0;
+  box-shadow: 0 -2px 8px var(--w-glow);
+}
+.world-avaia span:first-child { left: 34%; }
+.world-avaia span:last-child { left: 58%; }
+.world-blossom--right { right: -7rem; transform: scaleX(-1) rotate(10deg); }
+
+main {
+  position: relative; z-index: 1; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px 16px; text-align: center;
+}
+.panel {
+  width: min(100%, 24rem); padding: 1.5rem 1.25rem; border-radius: 1.75rem;
+  background: var(--w-glass); border: 1px solid var(--w-glass-line);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  box-shadow: 0 18px 40px rgba(30, 24, 60, 0.35);
+}
+h1 { margin: 0 0 0.5rem; font-size: 1.5rem; font-weight: 700; }
+p { margin: 0; color: var(--w-muted); }
+
+/* Stages: glass pills that light up one by one. The list keeps the shown
+ * ones centred, so each new stage lifts the earlier ones a little. */
+.stages {
+  list-style: none; margin: 0; padding: 0; width: min(100%, 22rem);
+  display: grid; gap: 0.5rem;
+  transform: translateY(calc((4 - var(--shown, 4)) * var(--pitch) / 2));
+  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.stage {
+  display: flex; align-items: center; gap: 0.85rem; height: 4rem; padding: 0 1rem;
+  border-radius: 1.25rem; text-align: left;
+  background: var(--w-glass); border: 1px solid rgba(255, 236, 200, 0.35);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  box-shadow: 0 10px 26px rgba(30, 24, 60, 0.28);
+  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.25s, box-shadow 0.25s;
+}
+.num { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--w-muted); opacity: 0.8; }
+.label { flex: 1; font-weight: 600; }
+.mark { position: relative; width: 1.6rem; height: 1.6rem; flex: none; border-radius: 50%; }
+.stage.done .mark, :root:not(.playing) .mark {
+  background: linear-gradient(180deg, var(--w-gold-a), var(--w-gold-b));
+  box-shadow: 0 0 14px rgba(255, 210, 130, 0.6);
+}
+.stage.done .mark::after, :root:not(.playing) .mark::after {
+  content: ''; position: absolute; left: 0.55rem; top: 0.33rem; width: 0.38rem; height: 0.72rem;
+  border: solid var(--w-gold-ink); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
+}
+.stage--final .label { color: var(--w-gold-a); }
+.stage--final.done, :root:not(.playing) .stage--final {
+  border-color: var(--w-glass-line);
+  box-shadow: 0 0 0 1px rgba(255, 220, 150, 0.35), 0 0 28px rgba(143, 211, 255, 0.45);
+}
+
+:root.playing .stage { opacity: 0; transform: translateY(0.75rem) scale(0.97); }
+:root.playing .stage.shown { opacity: 1; transform: none; }
+:root.playing .stage.shown:not(.done) .mark {
+  border: 2.5px solid rgba(255, 236, 200, 0.3); border-top-color: var(--w-gold-a);
+  animation: spin 0.6s linear infinite;
+}
+:root.playing .stage.done .mark { animation: pop 0.22s ease-out; }
+:root.playing .stage.shown:not(:last-child).done { opacity: 0.82; }
+
+.after {
+  margin-top: 1.25rem; width: min(100%, 22rem); padding: 0.85rem 1rem 1rem; border-radius: 1.5rem;
+  background: var(--w-glass); border: 1px solid rgba(255, 236, 200, 0.35);
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  transition: opacity 0.3s ease 0.15s;
+}
+:root.playing:not(.finished) .after { opacity: 0; }
+button {
+  appearance: none; border: 0; width: 100%; margin-top: 0.85rem; padding: 0.9rem 1rem;
+  border-radius: 999px; font: inherit; font-weight: 700; color: var(--w-gold-ink);
+  background: linear-gradient(180deg, var(--w-gold-a), var(--w-gold-b));
+  box-shadow: 0 8px 24px rgba(242, 181, 88, 0.45);
+}
+.error h1 { color: var(--w-error); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pop { 0% { transform: scale(0.6); } 70% { transform: scale(1.12); } 100% { transform: none; } }
+@media (max-width: 40rem) {
+  .world-blossom { width: 14rem; height: 11rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stages, .stage, .after { transition: none; }
+}
