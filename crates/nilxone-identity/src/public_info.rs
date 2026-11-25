@@ -130,6 +130,7 @@ impl PublicInfoRepository {
             .execute(&pool)
             .await?;
         add_session_activity(&pool).await?;
+        add_telegram_login_browser(&pool).await?;
         sqlx::raw_sql(include_str!("../public_info_activation.sql"))
             .execute(&pool)
             .await?;
@@ -402,6 +403,26 @@ async fn open_session_in(
         activation::advance_epoch(transaction, &owner.issuer, &owner.subject).await?;
     }
     Ok(active)
+}
+
+/// Adds the browser binding of the Telegram login page to a store created
+/// before it. Open transactions keep working: they have no browser binding.
+async fn add_telegram_login_browser(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let present = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('telegram_login_transactions') \
+         WHERE name = 'browser_digest')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !present {
+        sqlx::query(
+            "ALTER TABLE telegram_login_transactions ADD COLUMN browser_digest BLOB \
+             CHECK (browser_digest IS NULL OR length(browser_digest) = 32)",
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Brings a store created before sessions were active or inactive up to the

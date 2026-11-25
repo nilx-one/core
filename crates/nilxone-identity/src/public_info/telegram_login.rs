@@ -5,6 +5,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use subtle::ConstantTimeEq as _;
+
 use nilxone_api::bot_login::{LoginStartRequest, LoginStartResponse};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row;
@@ -57,6 +60,14 @@ pub struct TelegramLoginCallback {
 /// It is stored by `verify_telegram_login_callback` and redeemed once by
 /// `confirm_telegram_login`.
 pub struct TelegramLoginAwaitingConfirmation(TelegramLoginCallback);
+
+/// The sender's own browser, proven by Telegram's signed initData, may sign in
+/// to AIS for this `/login`. The host keeps `browser_token` in an HttpOnly
+/// cookie of that browser; Core stores only its digest.
+pub struct TelegramLoginBrowser {
+    pub authorization_url: String,
+    pub browser_token: String,
+}
 
 /// The original sender confirmed a verified callback in the original chat.
 pub struct TelegramChatSignedIn {
@@ -211,6 +222,63 @@ impl PublicInfoRepository {
         }))
     }
 
+    /// The original sender opened the login page inside Telegram, and the host
+    /// verified Telegram's signed initData for `sender_id`. Binds the open
+    /// `/login` transaction to this browser and returns where it signs in.
+    ///
+    /// The callback then accepts the sign-in only from this browser, so an
+    /// authorization link handed to somebody else cannot complete the
+    /// sender's login. Opening the page again rebinds to the newest browser.
+    /// None: no open transaction for this workload, sender and message.
+    pub async fn bind_telegram_login_browser(
+        &self,
+        client: &SignInClient,
+        workload_subject: &str,
+        sender_id: u64,
+        message_id: i32,
+        now: u64,
+    ) -> Result<Option<TelegramLoginBrowser>, TelegramLoginError> {
+        let redirect_uri = check_client(client)?;
+        let actor_id = i64::try_from(sender_id).map_err(|_| TelegramLoginError::InvalidInput)?;
+        if workload_subject.is_empty() || actor_id <= 0 || message_id <= 0 {
+            return Err(TelegramLoginError::InvalidInput);
+        }
+        let now = i64::try_from(now).map_err(|_| TelegramLoginError::InvalidInput)?;
+        let mut token = [0u8; 32];
+        getrandom::fill(&mut token).map_err(|_| TelegramLoginError::InvalidInput)?;
+        let browser_token = URL_SAFE_NO_PAD.encode(token);
+        let digest = Sha256::digest(browser_token.as_bytes());
+
+        let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let pending: Option<String> = sqlx::query_scalar(
+            "UPDATE telegram_login_transactions SET browser_digest = ?
+             WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?
+                 AND issuer = ? AND redirect_uri = ? AND expires_at > ? AND pending IS NOT NULL
+             RETURNING pending",
+        )
+        .bind(&digest[..])
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(actor_id)
+        .bind(message_id)
+        .bind(client.config().issuer())
+        .bind(redirect_uri)
+        .bind(now)
+        .fetch_optional(&mut *db)
+        .await?;
+        db.commit().await?;
+        let Some(pending) = pending else {
+            return Ok(None);
+        };
+        let pending: SignInTransaction = serde_json::from_str(&pending)?;
+        let mut url = client.telegram_authorization_url(&pending, actor_id);
+        url.set_path("/0x1");
+        Ok(Some(TelegramLoginBrowser {
+            authorization_url: url.into(),
+            browser_token,
+        }))
+    }
+
     /// Exchange the callback and verify that AIS links the authenticated
     /// identity to the Telegram sender recorded at login start.
     ///
@@ -223,9 +291,10 @@ impl PublicInfoRepository {
         client: &SignInClient,
         state: &str,
         code: &str,
+        browser_token: Option<&str>,
     ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
         let Some(callback) = self
-            .complete_telegram_login(client, state, code, unix_seconds()?)
+            .complete_telegram_login(client, state, code, browser_token, unix_seconds()?)
             .await?
         else {
             return Ok(None);
@@ -427,11 +496,17 @@ impl PublicInfoRepository {
 
     /// Claim the matching callback once, before contacting AIS. Any exchange
     /// failure requires a new /login message. No product session is opened.
+    ///
+    /// The sender is proven either by AIS (`telegram_binding`) or by the
+    /// browser bound with [`Self::bind_telegram_login_browser`]. A bound
+    /// transaction is refused, unclaimed, when `browser_token` is absent or
+    /// another browser's.
     pub async fn complete_telegram_login(
         &self,
         client: &SignInClient,
         state: &str,
         code: &str,
+        browser_token: Option<&str>,
         now: u64,
     ) -> Result<Option<TelegramLoginCallback>, TelegramLoginError> {
         let redirect_uri = check_client(client)?;
@@ -446,7 +521,7 @@ impl PublicInfoRepository {
         let state_digest = Sha256::digest(state.as_bytes());
         let mut db = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
-            "SELECT workload_subject, actor_id, chat_id, message_id, pending
+            "SELECT workload_subject, actor_id, chat_id, message_id, pending, browser_digest
              FROM telegram_login_transactions
              WHERE state_digest = ? AND issuer = ? AND redirect_uri = ?
                  AND expires_at > ? AND pending IS NOT NULL",
@@ -467,6 +542,23 @@ impl PublicInfoRepository {
             );
             return Ok(None);
         };
+        let browser_digest: Option<Vec<u8>> = row.try_get("browser_digest")?;
+        let browser_bound = match (&browser_digest, browser_token) {
+            (Some(stored), Some(token)) => {
+                bool::from(Sha256::digest(token.as_bytes()).as_slice().ct_eq(stored))
+            }
+            _ => false,
+        };
+        if browser_digest.is_some() && !browser_bound {
+            // Another browser came back with the sender's authorization: never
+            // spend the sender's transaction on it.
+            db.rollback().await?;
+            tracing::warn!(
+                reason = "browser_not_bound",
+                "Telegram login callback refused"
+            );
+            return Ok(None);
+        }
         let pending: String = row.try_get("pending")?;
         let pending: SignInTransaction = serde_json::from_str(&pending)?;
         sqlx::query("UPDATE telegram_login_transactions SET pending = NULL WHERE state_digest = ?")
@@ -481,8 +573,8 @@ impl PublicInfoRepository {
             .complete_with_binding(code, &pending, now, Some(&hint))
             .await?;
         // AIS confirmed that this identity's linked Telegram account is the
-        // sender named in the request; anything else asks for nothing.
-        if !bound {
+        // sender, or the sender's own Telegram-verified browser signed in.
+        if !bound && !browser_bound {
             tracing::warn!(
                 reason = "telegram_binding_not_confirmed",
                 "Telegram login callback refused"
@@ -559,7 +651,7 @@ mod tests {
         assert!(!query.contains_key("code_verifier"));
         assert!(
             repository
-                .complete_telegram_login(&client, &query["state"], "code", 400)
+                .complete_telegram_login(&client, &query["state"], "code", None, 400)
                 .await
                 .unwrap()
                 .is_none()
@@ -613,34 +705,34 @@ mod tests {
         let state = &query["state"];
         assert!(
             repository
-                .complete_telegram_login(&client, &"!".repeat(32), "code", 101)
+                .complete_telegram_login(&client, &"!".repeat(32), "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             repository
-                .complete_telegram_login(&foreign_issuer, state, "code", 101)
+                .complete_telegram_login(&foreign_issuer, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             repository
-                .complete_telegram_login(&foreign_redirect, state, "code", 101)
+                .complete_telegram_login(&foreign_redirect, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(matches!(
             repository
-                .complete_telegram_login(&client, state, "code", 101)
+                .complete_telegram_login(&client, state, "code", None, 101)
                 .await,
             Err(TelegramLoginError::SignIn(SignInError::Unavailable))
         ));
         assert!(
             repository
-                .complete_telegram_login(&client, state, "code", 101)
+                .complete_telegram_login(&client, state, "code", None, 101)
                 .await
                 .unwrap()
                 .is_none()
@@ -870,5 +962,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bindings, 0);
+    }
+
+    #[tokio::test]
+    async fn only_the_telegram_verified_browser_may_finish_a_bound_login() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let client = SignInClient::new(
+            SignInClientConfig::public(
+                "https://auth.aiaiaiai.org",
+                Some("http://127.0.0.1:0"),
+                "0x1",
+                "https://nilx.one/api/v1/telegram/login/callback",
+            )
+            .unwrap(),
+        );
+        repository
+            .start_telegram_login(&client, "bot", &message(), 100)
+            .await
+            .unwrap()
+            .unwrap();
+        // Only the open transaction of this workload, sender and message.
+        for (workload, sender, message_id) in [("other", 42, 7), ("bot", 43, 7), ("bot", 42, 8)] {
+            assert!(
+                repository
+                    .bind_telegram_login_browser(&client, workload, sender, message_id, 101)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            repository
+                .bind_telegram_login_browser(&client, "bot", 42, 7, 400)
+                .await
+                .unwrap()
+                .is_none(),
+            "an expired login cannot be bound"
+        );
+        let bound = repository
+            .bind_telegram_login_browser(&client, "bot", 42, 7, 101)
+            .await
+            .unwrap()
+            .unwrap();
+        let url = url::Url::parse(&bound.authorization_url).unwrap();
+        assert_eq!(url.path(), "/0x1");
+        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+        let state = query["state"].to_string();
+        assert_eq!(query["scope"], "openid pub_dress telegram_binding");
+
+        // Without the cookie, or with another browser's, the callback is
+        // refused before the code is spent.
+        for token in [None, Some("another-browser")] {
+            assert!(
+                repository
+                    .complete_telegram_login(&client, &state, "code", token, 102)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let pending: Option<String> =
+            sqlx::query_scalar("SELECT pending FROM telegram_login_transactions")
+                .fetch_one(&repository.pool)
+                .await
+                .unwrap();
+        assert!(
+            pending.is_some(),
+            "a refused browser leaves the login usable"
+        );
+
+        // The bound browser reaches the code exchange (offline issuer here).
+        assert!(matches!(
+            repository
+                .complete_telegram_login(&client, &state, "code", Some(&bound.browser_token), 102)
+                .await,
+            Err(TelegramLoginError::SignIn(SignInError::Unavailable))
+        ));
     }
 }

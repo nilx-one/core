@@ -80,6 +80,12 @@ refusals! {
     }
 }
 
+/// The login page the bot opens as a Telegram Mini App button, with
+/// `?m=<the /login message id>`. Inside Telegram it proves the sender with
+/// signed `initData`, then sends the same browser on to AIS. Not the game's
+/// Mini App: after sign-in it closes and the player is back in the chat.
+pub const APP_PATH: &str = "/api/v1/telegram/login/app";
+
 /// POST, with the same authenticated bot-service credentials as login start.
 /// The original sender pressed confirm in the original private chat.
 pub const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";

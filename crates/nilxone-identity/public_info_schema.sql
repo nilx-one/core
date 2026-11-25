@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS telegram_login_transactions (
     redirect_uri TEXT NOT NULL,
     expires_at INTEGER NOT NULL CHECK (expires_at > 0),
     pending TEXT,
+    -- SHA-256 of the cookie of the browser that proved, with Telegram's
+    -- signed initData, to belong to the sender. The callback must come back
+    -- from that same browser.
+    browser_digest BLOB CHECK (browser_digest IS NULL OR length(browser_digest) = 32),
     PRIMARY KEY (workload_subject, actor_id, chat_id, message_id)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS telegram_login_transactions_expiry

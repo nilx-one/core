@@ -45,6 +45,33 @@ the login. A match allows the host to ask for confirmation in the original
 chat. The hint travels in the authorization URL, which goes only to the
 sender's own chat (4x-ais `docs/runtime.md` states the guarantees).
 
+## Telegram login page (first sign-in without an AIS Telegram link)
+
+AIS confirms `telegram_binding` only for a Telegram account recorded in its
+`telegram_links`. That table is filled when 0x1 reports a verified link, so a
+first chat sign-in usually has no such link. The login page proves the sender
+without one, using a credential the host already holds:
+
+1. After `/login`, the bot shows a Telegram Mini App button for
+   `GET /api/v1/telegram/login/app?m=<login message id>`
+   (`nilxone_api::bot_login::APP_PATH`). This is the login page, not the game
+   Mini App.
+2. Inside Telegram the page posts `Telegram.WebApp.initData` to the same path.
+   The host verifies Telegram's signature with `TELEGRAM_BOT_TOKEN`, checks
+   that it is fresh (5 minutes) and that it is not a bot. It reads the sender
+   from it.
+3. `bind_telegram_login_browser` binds the open transaction of that workload,
+   sender and message to this browser: Core stores the SHA-256 of a random
+   token. The host sets the token as an HttpOnly, Secure, `SameSite=Lax`
+   `__Host-` cookie, and the page goes on to AIS in the same browser.
+4. On the callback, a bound transaction requires that cookie. Without it, or
+   with another browser's, the callback is refused before the code is spent.
+   An authorization link handed to somebody else therefore cannot finish the
+   sender's login. The sender is proven when AIS says `telegram_binding: true`
+   or the bound browser returns.
+5. The success page clears the cookie and closes the Mini App. The player is
+   back in the chat and confirms there. Only the original sender can confirm.
+
 ## Sender confirmation and the chat session
 
 A verified, provider-matched callback is stored in

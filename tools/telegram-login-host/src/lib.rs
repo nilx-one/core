@@ -11,6 +11,8 @@
 //! same Single Active Client rules.
 
 mod authority;
+mod init_data;
+mod login_page;
 pub use authority::{Authority, ISSUER};
 
 use std::{
@@ -22,14 +24,14 @@ use axum::{
     Extension, Json, Router,
     extract::{Query, State},
     http::{
-        HeaderValue, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER},
+        HeaderMap, HeaderValue, StatusCode,
+        header::{CACHE_CONTROL, RETRY_AFTER},
     },
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
 use nilxone_api::bot_login::{
-    CONFIRM_PATH, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
+    APP_PATH, CONFIRM_PATH, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
     LoginStartRefusal, LoginStartRequest, START_PATH,
 };
 use nilxone_identity::{
@@ -59,6 +61,8 @@ pub struct ChatSignIn {
 struct LoginHost {
     repository: PublicInfoRepository,
     client: SignInClient,
+    /// The bot's token: it also verifies the login page's Telegram initData.
+    authority: Authority,
     chat: Option<Arc<ChatSignIn>>,
     /// Per-process only; each replica has its own budget.
     attempts: AttemptLimiter,
@@ -75,6 +79,7 @@ pub fn authenticated_router(
     let host = LoginHost {
         repository,
         client,
+        authority: authority.clone(),
         chat: chat.map(Arc::new),
         attempts: AttemptLimiter::default(),
     };
@@ -104,6 +109,9 @@ fn router(host: LoginHost) -> Router {
 fn public_router(host: LoginHost) -> Router {
     Router::new()
         .route(CALLBACK_PATH, get(callback))
+        .route(APP_PATH, get(login_page::page).post(login_page::bind))
+        .route(login_page::APP_SCRIPT_PATH, get(login_page::app_script))
+        .route(login_page::CLOSE_SCRIPT_PATH, get(login_page::close_script))
         .with_state(host)
 }
 
@@ -223,48 +231,34 @@ fn refused(reason: &'static str) -> Response {
 }
 
 /// A minimal page: the browser step says nothing about the account, and
-/// signing in happens only when the sender confirms in Telegram.
+/// signing in happens only when the sender confirms in Telegram. On success
+/// the login page closes itself and the player is back in the chat.
 fn callback_page(verified: bool) -> Response {
-    let (status, heading, body) = if verified {
-        (
+    if verified {
+        let mut response = login_page::html(
             StatusCode::OK,
-            "Повернись у Telegram · Return to Telegram",
-            "Натисни «Підтвердити» в чаті з ботом протягом 5 хвилин. \
-             Press “Confirm” in the bot chat within 5 minutes.",
-        )
+            "Готово · Done",
+            "Повертаюсь у чат. Натисни «Підтвердити вхід» протягом 5 хвилин. \
+             Back to the chat: press “Confirm sign-in” within 5 minutes.",
+            Some(login_page::CLOSE_SCRIPT_PATH),
+        );
+        login_page::clear_cookie(&mut response);
+        response
     } else {
-        (
+        login_page::html(
             StatusCode::BAD_REQUEST,
             "Вхід не вдався · Sign-in failed",
             "Надішли /login у чаті з ботом ще раз. Send /login in the bot chat again.",
+            None,
         )
-    };
-    let html = format!(
-        "<!doctype html><html lang=\"uk\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <meta name=\"referrer\" content=\"no-referrer\"><title>0x1</title></head>\
-         <body><main><h1>{heading}</h1><p>{body}</p></main></body></html>"
-    );
-    let mut response = (status, html).into_response();
-    let headers = response.headers_mut();
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    headers.insert(
-        "x-content-type-options",
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        "content-security-policy",
-        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
-    );
-    response
+    }
 }
 
-async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQuery>) -> Response {
+async fn callback(
+    State(host): State<LoginHost>,
+    headers: HeaderMap,
+    Query(query): Query<CallbackQuery>,
+) -> Response {
     if host.chat.is_none() {
         return refused("chat_sign_in_disabled");
     }
@@ -298,7 +292,12 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
     }
     match host
         .repository
-        .verify_telegram_login_callback(&host.client, &state, &code)
+        .verify_telegram_login_callback(
+            &host.client,
+            &state,
+            &code,
+            login_page::browser_token(&headers).as_deref(),
+        )
         .await
     {
         Ok(Some(_)) => {
@@ -406,6 +405,7 @@ mod tests {
                 .await
                 .unwrap(),
             client,
+            authority: Authority::from_bot_token("123456:test-bot-token").unwrap(),
             chat: chat.map(Arc::new),
             attempts: AttemptLimiter::default(),
         }
@@ -627,5 +627,126 @@ mod tests {
             StatusCode::OK,
             "a different actor keeps its own budget"
         );
+    }
+
+    #[tokio::test]
+    async fn the_login_page_binds_only_the_senders_telegram_browser() {
+        let login = host(offline_client(), Some(chat())).await;
+        let repository = login.repository.clone();
+        let app = public_router(login);
+        repository
+            .start_telegram_login(
+                &offline_client(),
+                "telegram-bot:123456",
+                &LoginStartRequest {
+                    version: 1,
+                    provider: "telegram".into(),
+                    provider_actor_id: 42,
+                    chat_id: 42,
+                    message_id: 7,
+                },
+                now_unix_seconds().unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The page and its script carry a CSP that admits only Telegram's SDK.
+        let page = app
+            .clone()
+            .oneshot(
+                Request::get(format!("{APP_PATH}?m=7"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let csp = page.headers()["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("script-src 'self' https://telegram.org"));
+        assert!(csp.contains("connect-src 'self'"));
+
+        let now = now_unix_seconds().unwrap().to_string();
+        let bind = |user: &str, message_id: i32, token: &str| {
+            let init_data = crate::init_data::tests::signed(
+                token,
+                &[("auth_date", now.as_str()), ("user", user)],
+            );
+            Request::post(APP_PATH)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({"init_data": init_data, "message_id": message_id})
+                        .to_string(),
+                ))
+                .unwrap()
+        };
+        let bot = "123456:test-bot-token";
+        for (request, status) in [
+            // Signed for another bot, or another sender, or another message.
+            (
+                bind(r#"{"id":42}"#, 7, "123456:other-bot"),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (bind(r#"{"id":43}"#, 7, bot), StatusCode::NOT_FOUND),
+            (bind(r#"{"id":42}"#, 8, bot), StatusCode::NOT_FOUND),
+        ] {
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status);
+            assert!(!response.headers().contains_key(header::SET_COOKIE));
+        }
+
+        let bound = app
+            .clone()
+            .oneshot(bind(r#"{"id":42}"#, 7, bot))
+            .await
+            .unwrap();
+        assert_eq!(bound.status(), StatusCode::OK);
+        let cookie = bound.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(cookie.starts_with("__Host-0x1_telegram_login="));
+        assert!(
+            cookie.contains("HttpOnly")
+                && cookie.contains("Secure")
+                && cookie.contains("SameSite=Lax")
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(bound.into_body(), 4096).await.unwrap()).unwrap();
+        let url = url::Url::parse(body["authorization_url"].as_str().unwrap()).unwrap();
+        assert_eq!(url.host_str(), Some("auth.aiaiaiai.org"));
+        assert_eq!(url.path(), "/0x1");
+        let state = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+
+        // The authorization returning to another browser is refused, and the
+        // sender's login stays open for the bound browser.
+        let foreign = app
+            .clone()
+            .oneshot(
+                Request::get(format!("{CALLBACK_PATH}?state={state}&code=c"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), StatusCode::BAD_REQUEST);
+        let token = cookie.split(';').next().unwrap().to_owned();
+        let own = app
+            .oneshot(
+                Request::get(format!("{CALLBACK_PATH}?state={state}&code=c"))
+                    .header(header::COOKIE, token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // The bound browser reaches the code exchange; the test issuer is
+        // offline, so it ends as a failed sign-in rather than a refusal.
+        assert_eq!(own.status(), StatusCode::BAD_REQUEST);
     }
 }
