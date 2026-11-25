@@ -436,6 +436,10 @@ impl PublicInfoRepository {
     ) -> Result<Option<TelegramLoginCallback>, TelegramLoginError> {
         let redirect_uri = check_client(client)?;
         if state.len() != 32 || code.is_empty() || code.len() > 512 {
+            tracing::warn!(
+                reason = "malformed_callback",
+                "Telegram login callback refused"
+            );
             return Ok(None);
         }
         let now_sql = i64::try_from(now).map_err(|_| TelegramLoginError::InvalidInput)?;
@@ -457,6 +461,10 @@ impl PublicInfoRepository {
             // A late callback must not leave its verifier behind either.
             erase_expired_pending(&mut db, now_sql).await?;
             db.commit().await?;
+            tracing::warn!(
+                reason = "unknown_expired_or_used_state",
+                "Telegram login callback refused"
+            );
             return Ok(None);
         };
         let pending: String = row.try_get("pending")?;
@@ -475,6 +483,10 @@ impl PublicInfoRepository {
         // AIS confirmed that this identity's linked Telegram account is the
         // sender named in the request; anything else asks for nothing.
         if !bound {
+            tracing::warn!(
+                reason = "telegram_binding_not_confirmed",
+                "Telegram login callback refused"
+            );
             return Ok(None);
         }
         Ok(Some(TelegramLoginCallback {
