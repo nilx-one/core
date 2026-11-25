@@ -45,6 +45,31 @@ the login. A match allows the host to ask for confirmation in the original
 chat. The hint travels in the authorization URL, which goes only to the
 sender's own chat (4x-ais `docs/runtime.md` states the guarantees).
 
+## First sign-in without an AIS Telegram link
+
+AIS confirms `telegram_binding` only for a Telegram account recorded in its
+`telegram_links`. 0x1 fills that table by reporting verified links, so a first
+chat sign-in usually finds no link. The sign-in page stays
+`auth.aiaiaiai.org/0x1`; the bot opens it as a Telegram Mini App button.
+Inside Telegram that page copies `Telegram.WebApp.initData` into its form.
+AIS passes the value through unverified as `telegram_init_data` in the token
+response (4x-ais `docs/runtime.md`).
+
+`complete_telegram_login` verifies it with the bot token
+(`nilxone_identity::telegram_init_data`):
+- Telegram's HMAC under `WebAppData`;
+- at most 10 minutes old;
+- no duplicated fields and no bot user;
+- the account must be the `/login` sender.
+
+The sender then counts as proven exactly as with `telegram_binding: true`.
+Forwarding the link does not help someone else: their Telegram signs their
+own account. Outside Telegram there is no `initData`, so only the AIS link
+can bind.
+
+The success page closes the Mini App: Telegram's SDK plus one inline script,
+admitted by its CSP hash. The player is back in the chat and confirms there.
+
 ## Sender confirmation and the chat session
 
 A verified, provider-matched callback is stored in

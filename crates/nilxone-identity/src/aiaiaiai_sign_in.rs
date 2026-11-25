@@ -318,7 +318,7 @@ impl SignInClient {
     ) -> Result<VerifiedSignIn, SignInError> {
         self.complete_with_binding(code, transaction, now, None)
             .await
-            .map(|(identity, _)| identity)
+            .map(|(identity, _, _)| identity)
     }
 
     /// [`Self::complete`], also returning whether the verified ID token
@@ -329,7 +329,7 @@ impl SignInClient {
         transaction: &SignInTransaction,
         now: u64,
         binding_hint: Option<&str>,
-    ) -> Result<(VerifiedSignIn, bool), SignInError> {
+    ) -> Result<(VerifiedSignIn, bool, Option<String>), SignInError> {
         if code.is_empty() || code.len() > 512 {
             return Err(SignInError::CodeRejected);
         }
@@ -375,7 +375,7 @@ impl SignInClient {
             .await
             .map_err(|_| SignInError::InvalidToken("token_response"))?;
         let keys = self.signing_keys().await?;
-        verify_id_token_with_binding(
+        let (identity, bound) = verify_id_token_with_binding(
             &tokens.id_token,
             &keys,
             &Expectation {
@@ -384,7 +384,8 @@ impl SignInClient {
                 nonce: &transaction.nonce,
             },
             now,
-        )
+        )?;
+        Ok((identity, bound, tokens.telegram_init_data))
     }
 
     async fn signing_keys(&self) -> Result<JsonWebKeySet, SignInError> {
@@ -428,6 +429,10 @@ pub fn code_challenge(verifier: &str) -> String {
 #[derive(Deserialize)]
 struct TokenResponse {
     id_token: String,
+    /// Telegram's initData from a Telegram chat login page, passed through
+    /// unverified by AIS (4x-ais `docs/runtime.md`). The client verifies it.
+    #[serde(default)]
+    telegram_init_data: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

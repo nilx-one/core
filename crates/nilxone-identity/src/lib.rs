@@ -17,6 +17,7 @@ pub mod provider_link;
 pub mod provider_secret;
 pub mod public_info;
 pub mod rate_limit;
+pub mod telegram_init_data;
 pub mod repository {
     include!("repository.rs");
     include!("repository_admin_roles.rs");

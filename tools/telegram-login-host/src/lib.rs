@@ -59,6 +59,8 @@ pub struct ChatSignIn {
 struct LoginHost {
     repository: PublicInfoRepository,
     client: SignInClient,
+    /// The bot's token: it also verifies the Telegram initData of the AIS page.
+    authority: Authority,
     chat: Option<Arc<ChatSignIn>>,
     /// Per-process only; each replica has its own budget.
     attempts: AttemptLimiter,
@@ -75,6 +77,7 @@ pub fn authenticated_router(
     let host = LoginHost {
         repository,
         client,
+        authority: authority.clone(),
         chat: chat.map(Arc::new),
         attempts: AttemptLimiter::default(),
     };
@@ -222,28 +225,39 @@ fn refused(reason: &'static str) -> Response {
     callback_page(false)
 }
 
+/// Closes the Telegram Mini App the AIS page ran in, so the player is back in
+/// the chat. Outside Telegram it does nothing.
+const CLOSE_SCRIPT: &str = "window.Telegram&&window.Telegram.WebApp&&setTimeout(function(){window.Telegram.WebApp.close()},1500);";
+/// The CSP hash of [`CLOSE_SCRIPT`]: no other inline script may run.
+const CLOSE_SCRIPT_HASH: &str = "'sha256-8Auu9Q44frAmXmYpTpbwu7j7+gNbeOgTWTPlSSaThe4='";
+
 /// A minimal page: the browser step says nothing about the account, and
 /// signing in happens only when the sender confirms in Telegram.
 fn callback_page(verified: bool) -> Response {
-    let (status, heading, body) = if verified {
+    let (status, heading, body, script) = if verified {
         (
             StatusCode::OK,
-            "Повернись у Telegram · Return to Telegram",
-            "Натисни «Підтвердити» в чаті з ботом протягом 5 хвилин. \
-             Press “Confirm” in the bot chat within 5 minutes.",
+            "Готово · Done",
+            "Повертаюсь у чат. Натисни «Підтвердити вхід» протягом 5 хвилин. \
+             Back to the chat: press “Confirm sign-in” within 5 minutes.",
+            format!(
+                "<script src=\"https://telegram.org/js/telegram-web-app.js\"></script>\
+                 <script>{CLOSE_SCRIPT}</script>"
+            ),
         )
     } else {
         (
             StatusCode::BAD_REQUEST,
             "Вхід не вдався · Sign-in failed",
             "Надішли /login у чаті з ботом ще раз. Send /login in the bot chat again.",
+            String::new(),
         )
     };
     let html = format!(
         "<!doctype html><html lang=\"uk\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta name=\"referrer\" content=\"no-referrer\"><title>0x1</title></head>\
-         <body><main><h1>{heading}</h1><p>{body}</p></main></body></html>"
+         <body><main><h1>{heading}</h1><p>{body}</p></main>{script}</body></html>"
     );
     let mut response = (status, html).into_response();
     let headers = response.headers_mut();
@@ -257,10 +271,13 @@ fn callback_page(verified: bool) -> Response {
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        "content-security-policy",
-        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
+    let csp = format!(
+        "default-src 'none'; script-src https://telegram.org {CLOSE_SCRIPT_HASH}; \
+         frame-ancestors 'none'; base-uri 'none'"
     );
+    if let Ok(value) = HeaderValue::from_str(&csp) {
+        headers.insert("content-security-policy", value);
+    }
     response
 }
 
@@ -298,7 +315,12 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
     }
     match host
         .repository
-        .verify_telegram_login_callback(&host.client, &state, &code)
+        .verify_telegram_login_callback(
+            &host.client,
+            &state,
+            &code,
+            Some(host.authority.bot_token()),
+        )
         .await
     {
         Ok(Some(_)) => {
@@ -406,6 +428,7 @@ mod tests {
                 .await
                 .unwrap(),
             client,
+            authority: Authority::from_bot_token("123456:test-bot-token").unwrap(),
             chat: chat.map(Arc::new),
             attempts: AttemptLimiter::default(),
         }
@@ -626,6 +649,38 @@ mod tests {
             send(43, 1).await.unwrap().status(),
             StatusCode::OK,
             "a different actor keeps its own budget"
+        );
+    }
+
+    #[test]
+    fn the_close_script_is_the_only_inline_script_the_csp_admits() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use sha2::{Digest as _, Sha256};
+        let hash = STANDARD.encode(Sha256::digest(CLOSE_SCRIPT.as_bytes()));
+        assert_eq!(CLOSE_SCRIPT_HASH, format!("'sha256-{hash}'"));
+    }
+
+    #[tokio::test]
+    async fn a_verified_sign_in_closes_the_telegram_page() {
+        let page = callback_page(true);
+        assert_eq!(page.status(), StatusCode::OK);
+        let csp = page.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            csp.contains("script-src https://telegram.org 'sha256-"),
+            "{csp}"
+        );
+        let body = to_bytes(page.into_body(), 4096).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(CLOSE_SCRIPT));
+        let failed = callback_page(false);
+        let body = to_bytes(failed.into_body(), 4096).await.unwrap();
+        assert!(
+            !String::from_utf8(body.to_vec())
+                .unwrap()
+                .contains("<script")
         );
     }
 }
