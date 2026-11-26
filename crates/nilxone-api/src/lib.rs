@@ -60,6 +60,7 @@ macro_rules! refusals {
 
 pub mod activation;
 pub mod bot_login;
+pub mod bot_notifications;
 pub mod error;
 pub mod finds;
 pub mod market;

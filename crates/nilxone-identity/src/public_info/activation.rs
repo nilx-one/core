@@ -614,6 +614,24 @@ async fn request(
     .fetch_one(&mut *connection)
     .await?;
     let created = decode(&row)?;
+    // The chat cannot poll for a request: the bot hears it from the queue
+    // and shows approve and decline.
+    if !created.approver_keeps_state {
+        super::bot_notifications::enqueue_in(
+            connection,
+            &session.issuer,
+            &session.subject,
+            &super::NewBotNotification {
+                kind: nilxone_api::bot_notifications::NotificationKind::ActivationRequested,
+                rarity: None,
+                label: Some(session.client_label.clone()),
+                request_id: Some(created.id.clone()),
+                dedupe: created.id.clone(),
+            },
+            now,
+        )
+        .await?;
+    }
     let shown = (ActivationRole::Requester, &created);
     state_with(connection, &session, now, Some(shown)).await
 }
