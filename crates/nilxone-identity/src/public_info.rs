@@ -93,6 +93,17 @@ impl AuthenticatedProfile {
     }
 }
 
+pub struct ChatBondState {
+    pub seeds: u64,
+    pub avaia: Option<ChatBondAvaia>,
+}
+
+pub struct ChatBondAvaia {
+    pub pub_dress: String,
+    pub configured: bool,
+    pub location_e7: Option<(i32, i32)>,
+}
+
 pub struct PublicInfoSignedIn {
     pub owner: AuthenticatedProfile,
     pub return_path: String,
@@ -142,6 +153,59 @@ impl PublicInfoRepository {
             .execute(&pool)
             .await?;
         Ok(Self { pool })
+    }
+
+    /// Read the current Bond's configured Avaia and server wallet under the
+    /// same live product-session binding. Never resolve by a display address.
+    pub async fn read_chat_bond_state(
+        &self,
+        owner: &AuthenticatedProfile,
+        now: u64,
+    ) -> Result<Option<ChatBondState>, PublicInfoError> {
+        let (Some(session), Ok(now)) = (&owner.session, i64::try_from(now)) else {
+            return Ok(None);
+        };
+        let row = sqlx::query(
+            "SELECT COALESCE(w.balance, 0) AS seeds,
+                    a.avaia_pub_dress, a.configuration_state,
+                    l.latitude_e7, l.longitude_e7
+             FROM product_sessions s
+             JOIN legacy_bond_bindings b ON b.profile_id = s.profile_id
+             JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+             JOIN identities i ON i.pub_dress = k.legacy_pub_dress AND i.identity_kind = 'human'
+             LEFT JOIN bond_seeds w ON w.owner_pub_dress = i.pub_dress
+             LEFT JOIN avaia_configuration a ON a.owner_pub_dress = i.pub_dress
+             LEFT JOIN avaia_locations l ON l.owner_pub_dress = a.owner_pub_dress
+             WHERE s.token_hash = ? AND s.expires_at > ?
+               AND s.profile_id = ? AND s.issuer = ? AND s.subject = ?",
+        )
+        .bind(session)
+        .bind(now)
+        .bind(&owner.profile.profile_id)
+        .bind(&owner.issuer)
+        .bind(&owner.subject)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let seeds = u64::try_from(row.try_get::<i64, _>("seeds")?)
+                .map_err(|_| sqlx::Error::Protocol("negative seeds balance".into()))?;
+            let avaia = row
+                .try_get::<Option<String>, _>("avaia_pub_dress")?
+                .map(|pub_dress| {
+                    let configured =
+                        row.try_get::<String, _>("configuration_state")? == "configured";
+                    let latitude = row.try_get::<Option<i32>, _>("latitude_e7")?;
+                    let longitude = row.try_get::<Option<i32>, _>("longitude_e7")?;
+                    Ok::<_, sqlx::Error>(ChatBondAvaia {
+                        pub_dress,
+                        configured,
+                        location_e7: latitude.zip(longitude),
+                    })
+                })
+                .transpose()?;
+            Ok(ChatBondState { seeds, avaia })
+        })
+        .transpose()
     }
 
     /// Discovery only. Possessing this public id grants no write access.
