@@ -70,7 +70,10 @@ can bind.
 The success page plays the sign-in stages, taps Telegram's haptic engine and
 closes the Mini App through the Mini App bridge, with one inline script and
 style admitted by their CSP hashes. The player is back in the chat, where the
-bot has already claimed the login.
+bot has already claimed the login. The stages say that an account and its
+Bond are created only on a first sign-in, when no 0x1 profile exists yet for
+the AIS identity (`telegram_login_returns`); a returning sign-in plays the
+sign-in stages instead and creates nothing.
 
 ## The bot's claim and the chat session
 
