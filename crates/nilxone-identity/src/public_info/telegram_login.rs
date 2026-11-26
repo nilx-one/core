@@ -15,7 +15,7 @@ use nilxone_api::activation::ClientState;
 
 use super::{
     AuthenticatedProfile, PublicInfoError, PublicInfoRepository,
-    activation::{ActivationError, request_without_data},
+    activation::{ActivationError, request_for_stateless_client},
 };
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
@@ -432,11 +432,12 @@ impl PublicInfoRepository {
         )
         .await?;
         // The password signed the chat in; another client is active, so the
-        // chat asks it at once. The chat keeps no device state, so agreeing
-        // is the switch. A refusal (the hourly limit) leaves the chat signed
-        // in and inactive, as before.
+        // chat asks it at once. The chat keeps no device state: once the
+        // active client agrees and uploads, the back-end parks the data and
+        // switches. A refusal (the hourly limit) leaves the chat signed in
+        // and inactive, as before.
         if !active {
-            match request_without_data(&mut db, &token_hash, now_sql).await {
+            match request_for_stateless_client(&mut db, &token_hash, now_sql).await {
                 Ok(_) => {}
                 Err(ActivationError::Refused(refusal)) => {
                     tracing::warn!(
@@ -1337,20 +1338,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_signed_in_beside_an_active_client_becomes_active_once_it_agrees() {
+    async fn a_chat_signed_in_beside_an_active_client_takes_over_once_its_data_is_parked() {
+        use nilxone_api::activation::{UploadPartQuery, sync_digest};
+
         let state = "a".repeat(32);
         let (repository, web) = chat_beside_the_mini_app(&state).await;
         let asked = repository.activation_state(&web, 102).await.unwrap();
         assert_eq!(asked.state, ClientState::ApprovalRequested);
         let request = asked.request.unwrap();
         assert_eq!(request.to_label, TELEGRAM_CHAT_CLIENT_LABEL);
-        // Agreeing is the switch: the chat keeps no device state to sync.
-        let answered = repository
+        // Agreeing alone switches nothing: the active client's data comes
+        // first, as in any handoff.
+        let agreed = repository
             .approve_activation(&web, &request.id, 103)
             .await
             .unwrap();
-        assert_eq!(answered.state, ClientState::ActiveElsewhere);
-        assert!(!answered.active);
+        assert_eq!(agreed.state, ClientState::UploadRequired);
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 103)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::AwaitingApproval {
+                active_client_label: "Telegram · Mini App".into()
+            })
+        );
+        let data = br#"{"format":"nilx-one.activation-payload","version":1,"records":[]}"#;
+        let part = UploadPartQuery {
+            offset: 0,
+            total_bytes: data.len() as u64,
+        };
+        // The whole upload is parked for the owner and the chat is active.
+        let uploaded = repository
+            .upload_activation_sync_part(&web, &request.id, part, data, 104)
+            .await
+            .unwrap();
+        assert_eq!(uploaded.state, ClientState::ActiveElsewhere);
+        assert!(!uploaded.active);
         assert_eq!(
             chat_sessions(&repository).await,
             [
@@ -1358,17 +1382,34 @@ mod tests {
                 (TELEGRAM_CHAT_CLIENT_LABEL.to_owned(), true),
             ]
         );
+        let parked: (i64, String) =
+            sqlx::query_as("SELECT total, digest FROM product_parked_payloads")
+                .fetch_one(&repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(parked, (data.len() as i64, sync_digest(data)));
+        let parts: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT data FROM product_parked_payload_parts")
+                .fetch_all(&repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(parts, [data.to_vec()]);
+        let in_transit: i64 = sqlx::query_scalar("SELECT count(*) FROM product_activation_sync")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(in_transit, 0, "the handoff's own copy is gone");
         assert_eq!(
             repository
-                .telegram_login_progress(&state, 104)
+                .telegram_login_progress(&state, 105)
                 .await
                 .unwrap(),
             Some(TelegramLoginProgress::SignedIn)
         );
-        // A second tap changes nothing.
+        // The same last part again only answers what happened.
         assert_eq!(
             repository
-                .approve_activation(&web, &request.id, 105)
+                .upload_activation_sync_part(&web, &request.id, part, data, 106)
                 .await
                 .unwrap()
                 .state,

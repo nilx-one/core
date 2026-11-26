@@ -22,7 +22,7 @@ use super::PublicInfoRepository;
 const HOUR_SECONDS: i64 = 60 * 60;
 const REQUEST_COLUMNS: &str = "id, requester_token_hash, approver_token_hash, requester_label, \
                                approver_label, epoch, status, created_at, deadline, sync_total, \
-                               sync_uploaded, sync_delivered, carries_data";
+                               sync_uploaded, sync_delivered, requester_keeps_state";
 
 /// Why an activation step did nothing.
 #[derive(Debug, thiserror::Error)]
@@ -65,9 +65,9 @@ struct Request {
     sync_total: Option<i64>,
     sync_uploaded: i64,
     sync_delivered: i64,
-    /// False for an asking client that keeps no device state: its approval
-    /// switches at once, with no sync.
-    carries_data: bool,
+    /// False for an asking client that keeps no device state: the whole
+    /// upload is parked for the owner and the switch follows at once.
+    requester_keeps_state: bool,
 }
 
 impl Request {
@@ -268,8 +268,9 @@ fn signed(value: u64) -> Result<i64, sqlx::Error> {
 
 /// An inactive session that keeps no device state, such as the Telegram
 /// chat, asks to become the active client inside the caller's transaction.
-/// The active client's approval switches at once; nothing is synced.
-pub(super) async fn request_without_data(
+/// The active client agrees and uploads as usual; the back-end parks the
+/// whole upload for the owner and switches, since nobody would fetch it.
+pub(super) async fn request_for_stateless_client(
     connection: &mut SqliteConnection,
     token_hash: &str,
     now: i64,
@@ -281,7 +282,7 @@ async fn request(
     connection: &mut SqliteConnection,
     token_hash: &str,
     now: i64,
-    carries_data: bool,
+    requester_keeps_state: bool,
 ) -> Step<ActivationState> {
     let session = live_session(connection, token_hash, now).await?;
     if session.active {
@@ -327,7 +328,7 @@ async fn request(
     let row = sqlx::query(&format!(
         "INSERT INTO product_activation_requests \
          (id, issuer, subject, requester_token_hash, approver_token_hash, requester_label, \
-          approver_label, epoch, status, created_at, deadline, carries_data) \
+          approver_label, epoch, status, created_at, deadline, requester_keeps_state) \
          VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) \
          RETURNING {REQUEST_COLUMNS}"
     ))
@@ -340,7 +341,7 @@ async fn request(
     .bind(session.epoch)
     .bind(now)
     .bind(deadline(now, RESPOND_SECONDS))
-    .bind(carries_data)
+    .bind(requester_keeps_state)
     .fetch_one(&mut *connection)
     .await?;
     let created = decode(&row)?;
@@ -391,16 +392,6 @@ async fn approve(
     match request.status {
         // A second tap or a replayed call changes nothing and is not an error.
         ActivationStatus::Approved | ActivationStatus::Syncing | ActivationStatus::Completed => {}
-        // Nothing to hand over: agreeing is the switch.
-        ActivationStatus::Pending if !request.carries_data => {
-            switch_active_client(connection, &session, &request, now).await?;
-            close(connection, &request.id, ActivationStatus::Completed, now).await?;
-            request.status = ActivationStatus::Completed;
-            // This session is inactive now; read it again rather than assume.
-            let session = live_session(connection, token_hash, now).await?;
-            let shown = (ActivationRole::Approver, &request);
-            return state_with(connection, &session, now, Some(shown)).await;
-        }
         ActivationStatus::Pending => {
             request.status = ActivationStatus::Approved;
             request.deadline = deadline(now, UPLOAD_SECONDS);
@@ -463,6 +454,12 @@ async fn upload(
         now,
     )
     .await?;
+    // The last part again, after it parked the data and switched: the
+    // answer was lost, not the step. Nothing changes.
+    if request.status == ActivationStatus::Completed && !request.requester_keeps_state {
+        let shown = (ActivationRole::Approver, &request);
+        return state_with(connection, &session, now, Some(shown)).await;
+    }
     let uploading = request.status == ActivationStatus::Approved;
     if !uploading && request.status != ActivationStatus::Syncing {
         return Err(ActivationRefusal::StepRefused.into());
@@ -510,15 +507,65 @@ async fn upload(
         .bind(request.deadline)
         .bind(total)
         .bind(request.sync_uploaded)
-        .bind(digest)
+        .bind(&digest)
         .bind(&request.id)
         .execute(&mut *connection)
         .await?;
+        // Nobody will fetch for a client without device state: the whole
+        // upload is parked for the owner and the switch happens now, in
+        // this transaction. This session is inactive afterwards.
+        if let (false, Some(digest)) = (request.requester_keeps_state, digest) {
+            park(connection, &session, &request.id, total, &digest, now).await?;
+            switch_active_client(connection, &session, &request, now).await?;
+            close(connection, &request.id, ActivationStatus::Completed, now).await?;
+            request.status = ActivationStatus::Completed;
+            let session = live_session(connection, token_hash, now).await?;
+            let shown = (ActivationRole::Approver, &request);
+            return state_with(connection, &session, now, Some(shown)).await;
+        }
     } else {
         return Err(ActivationRefusal::SyncOutOfOrder.into());
     }
     let shown = (ActivationRole::Approver, &request);
     state_with(connection, &session, now, Some(shown)).await
+}
+
+/// Replaces the owner's parked data with the request's whole upload. The
+/// request's own parts are deleted when it closes.
+async fn park(
+    connection: &mut SqliteConnection,
+    session: &Session,
+    request_id: &str,
+    total: i64,
+    digest: &str,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM product_parked_payloads WHERE issuer = ? AND subject = ?")
+        .bind(&session.issuer)
+        .bind(&session.subject)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query(
+        "INSERT INTO product_parked_payloads (issuer, subject, total, digest, parked_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&session.issuer)
+    .bind(&session.subject)
+    .bind(total)
+    .bind(digest)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query(
+        "INSERT INTO product_parked_payload_parts (issuer, subject, part_offset, data) \
+         SELECT ?, ?, part_offset, data FROM product_activation_sync WHERE request_id = ?",
+    )
+    .bind(&session.issuer)
+    .bind(&session.subject)
+    .bind(request_id)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
 }
 
 async fn download(
@@ -936,7 +983,7 @@ fn decode(row: &SqliteRow) -> Result<Request, sqlx::Error> {
         sync_total: row.try_get("sync_total")?,
         sync_uploaded: row.try_get("sync_uploaded")?,
         sync_delivered: row.try_get("sync_delivered")?,
-        carries_data: row.try_get("carries_data")?,
+        requester_keeps_state: row.try_get("requester_keeps_state")?,
     })
 }
 

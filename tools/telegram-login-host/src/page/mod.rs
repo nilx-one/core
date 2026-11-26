@@ -40,11 +40,11 @@ const RETURNING_STAGES: [&str; 4] = [
 ];
 
 /// The stages of a sign-in while another client is active: the password
-/// signed the chat in, and that client has to agree before the chat takes
-/// over. The chat keeps no device state, so nothing is synced.
+/// signed the chat in, that client has to agree, and its data is parked on
+/// the back-end before the chat takes over.
 const APPROVAL_STAGES: [&str; 4] = [
     "Запит підтвердження",
-    "Передаємо активність",
+    "Синхронізуємо дані",
     "Відкриваємо сесію",
     "Вхід виконано",
 ];

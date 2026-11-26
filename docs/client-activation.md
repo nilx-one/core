@@ -57,9 +57,16 @@ An inactive session asks with `request_activation`. The request binds the asking
 
 ### A client without device state
 
-A client that keeps no device state, such as the Telegram chat, asks with a request that carries no data (`carries_data = 0`). The active client approves it as usual, and that approval is the switch: one transaction compares the epoch and switches, and the request is `completed`. There is no upload, no fetch and no digest. The active client's own state stays on its device and is not carried over, as decided by the owner on 2026-11-26. Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away.
+A client that keeps no device state, such as the Telegram chat, asks with `requester_keeps_state = 0`. The active client approves and uploads as in any handoff. The part that makes the upload whole parks it for the owner instead of waiting for a fetch: in one transaction the back-end replaces the owner's parked data (`product_parked_payloads`, `product_parked_payload_parts`) with this upload, compares the epoch and switches, and the request is `completed`. Nobody fetches, and the request's own parts are deleted as with every final status. The same last part again only answers that state.
 
-The chat asks by itself when it signs in while another client is active (`docs/telegram-bot-ais-login.md`).
+Owner decisions of 2026-11-26:
+
+- The parked data stays as long as it is needed: until activity moves to a client that keeps its state on its device, and that client has applied it. There is no expiry.
+- Fresh data always overwrites a device's local copy, atomically, once the switch can no longer be undone.
+
+Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away. The chat asks by itself when it signs in while another client is active (`docs/telegram-bot-ais-login.md`).
+
+Not yet in this contract: a device client taking activity from the chat and fetching the parked data, and parking on sign-out of the active client.
 
 ## The sync
 
@@ -78,7 +85,7 @@ What an interruption means depends on the side, as decided:
 
 ### What the data is
 
-Core does not read the bytes. It stores them only while the request is open, deletes them with every final status, and never returns them to anyone but the asking session. The store opens with `secure_delete` on, so freed pages are overwritten.
+Core does not read the bytes. It stores them only while the request is open (or, for a client without device state, parks them as described above), deletes the request's copy with every final status, and never returns them to anyone but the asking session. The store opens with `secure_delete` on, so freed pages are overwritten.
 
 The contents are bounded by this contract, as the minimal option the specification allows:
 

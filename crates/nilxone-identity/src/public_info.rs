@@ -406,19 +406,19 @@ async fn open_session_in(
     Ok(active)
 }
 
-/// Brings a store created before data-less activation requests up to the
-/// current shape: every earlier request carried data.
+/// Brings a store created before requests from clients without device
+/// state up to the current shape: every earlier requester kept its state.
 async fn add_request_data_kind(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let present = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('product_activation_requests') \
-         WHERE name = 'carries_data')",
+         WHERE name = 'requester_keeps_state')",
     )
     .fetch_one(pool)
     .await?;
     if !present {
         sqlx::query(
-            "ALTER TABLE product_activation_requests ADD COLUMN carries_data INTEGER NOT NULL \
-             DEFAULT 1 CHECK (carries_data IN (0, 1))",
+            "ALTER TABLE product_activation_requests ADD COLUMN requester_keeps_state INTEGER \
+             NOT NULL DEFAULT 1 CHECK (requester_keeps_state IN (0, 1))",
         )
         .execute(pool)
         .await?;

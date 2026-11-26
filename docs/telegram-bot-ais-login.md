@@ -117,11 +117,11 @@ sender, chat, workload or message, an expired or a used confirmation returns
   Mini App or a browser is active, the chat signs in inactive and becomes
   active through the canonical confirmed handoff.
 - When another client is active, the chat signs in inactive and, in the same
-  transaction, asks that client with a request that carries no data
-  (`docs/client-activation.md`, a client without device state). The password
-  signed the person in; the active client's approval moves activity to the
-  chat at once. A refusal, or a request that runs out, leaves the chat
-  signed in and inactive.
+  transaction, asks that client (`docs/client-activation.md`, a client
+  without device state). The password signed the person in; the active
+  client agrees and uploads its data, the back-end parks it for the owner and
+  the chat becomes active. A refusal, or a request that runs out, leaves the
+  chat signed in and inactive.
 - A new confirmation in the same chat replaces that chat's previous session
   in the same transaction, so signing in again on the active chat keeps it
   active.
