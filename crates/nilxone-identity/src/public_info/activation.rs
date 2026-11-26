@@ -22,7 +22,7 @@ use super::PublicInfoRepository;
 const HOUR_SECONDS: i64 = 60 * 60;
 const REQUEST_COLUMNS: &str = "id, requester_token_hash, approver_token_hash, requester_label, \
                                approver_label, epoch, status, created_at, deadline, sync_total, \
-                               sync_uploaded, sync_delivered";
+                               sync_uploaded, sync_delivered, carries_data";
 
 /// Why an activation step did nothing.
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +65,9 @@ struct Request {
     sync_total: Option<i64>,
     sync_uploaded: i64,
     sync_delivered: i64,
+    /// False for an asking client that keeps no device state: its approval
+    /// switches at once, with no sync.
+    carries_data: bool,
 }
 
 impl Request {
@@ -124,7 +127,7 @@ impl PublicInfoRepository {
         now: u64,
     ) -> Result<ActivationState, ActivationError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let result = request(&mut transaction, token_hash, clock(now)?).await;
+        let result = request(&mut transaction, token_hash, clock(now)?, true).await;
         settle(transaction, result).await
     }
 
@@ -263,10 +266,22 @@ fn signed(value: u64) -> Result<i64, sqlx::Error> {
     i64::try_from(value).map_err(|_| sqlx::Error::Protocol("activation value out of range".into()))
 }
 
+/// An inactive session that keeps no device state, such as the Telegram
+/// chat, asks to become the active client inside the caller's transaction.
+/// The active client's approval switches at once; nothing is synced.
+pub(super) async fn request_without_data(
+    connection: &mut SqliteConnection,
+    token_hash: &str,
+    now: i64,
+) -> Step<ActivationState> {
+    request(connection, token_hash, now, false).await
+}
+
 async fn request(
     connection: &mut SqliteConnection,
     token_hash: &str,
     now: i64,
+    carries_data: bool,
 ) -> Step<ActivationState> {
     let session = live_session(connection, token_hash, now).await?;
     if session.active {
@@ -312,8 +327,8 @@ async fn request(
     let row = sqlx::query(&format!(
         "INSERT INTO product_activation_requests \
          (id, issuer, subject, requester_token_hash, approver_token_hash, requester_label, \
-          approver_label, epoch, status, created_at, deadline) \
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) \
+          approver_label, epoch, status, created_at, deadline, carries_data) \
+         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) \
          RETURNING {REQUEST_COLUMNS}"
     ))
     .bind(&session.issuer)
@@ -325,6 +340,7 @@ async fn request(
     .bind(session.epoch)
     .bind(now)
     .bind(deadline(now, RESPOND_SECONDS))
+    .bind(carries_data)
     .fetch_one(&mut *connection)
     .await?;
     let created = decode(&row)?;
@@ -375,6 +391,16 @@ async fn approve(
     match request.status {
         // A second tap or a replayed call changes nothing and is not an error.
         ActivationStatus::Approved | ActivationStatus::Syncing | ActivationStatus::Completed => {}
+        // Nothing to hand over: agreeing is the switch.
+        ActivationStatus::Pending if !request.carries_data => {
+            switch_active_client(connection, &session, &request, now).await?;
+            close(connection, &request.id, ActivationStatus::Completed, now).await?;
+            request.status = ActivationStatus::Completed;
+            // This session is inactive now; read it again rather than assume.
+            let session = live_session(connection, token_hash, now).await?;
+            let shown = (ActivationRole::Approver, &request);
+            return state_with(connection, &session, now, Some(shown)).await;
+        }
         ActivationStatus::Pending => {
             request.status = ActivationStatus::Approved;
             request.deadline = deadline(now, UPLOAD_SECONDS);
@@ -910,6 +936,7 @@ fn decode(row: &SqliteRow) -> Result<Request, sqlx::Error> {
         sync_total: row.try_get("sync_total")?,
         sync_uploaded: row.try_get("sync_uploaded")?,
         sync_delivered: row.try_get("sync_delivered")?,
+        carries_data: row.try_get("carries_data")?,
     })
 }
 

@@ -55,6 +55,12 @@ An inactive session asks with `request_activation`. The request binds the asking
 - There is no background sweep. Every read and every step first applies what is due on the request: a lapsed deadline, a session that is gone, an epoch that moved on.
 - A second approve, decline, cancel or complete answers what the first one did.
 
+### A client without device state
+
+A client that keeps no device state, such as the Telegram chat, asks with a request that carries no data (`carries_data = 0`). The active client approves it as usual, and that approval is the switch: one transaction compares the epoch and switches, and the request is `completed`. There is no upload, no fetch and no digest. The active client's own state stays on its device and is not carried over, as decided by the owner on 2026-11-26. Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away.
+
+The chat asks by itself when it signs in while another client is active (`docs/telegram-bot-ais-login.md`).
+
 ## The sync
 
 The active client's data travels through the service in parts.

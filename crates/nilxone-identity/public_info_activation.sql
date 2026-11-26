@@ -24,6 +24,9 @@ WHERE active = 1;
 -- `sync_uploaded` how much of it has arrived, `sync_delivered` how much the
 -- asking client has been handed in its current pass, and `sync_digest` the
 -- SHA-256 of the whole, set when the upload is whole.
+--
+-- `carries_data` is 0 for an asking client that keeps no device state, such
+-- as the Telegram chat: its approval switches at once, with no sync.
 CREATE TABLE IF NOT EXISTS product_activation_requests (
     id TEXT PRIMARY KEY NOT NULL COLLATE BINARY CHECK (length(id) = 32),
     issuer TEXT NOT NULL COLLATE BINARY,
@@ -44,6 +47,7 @@ CREATE TABLE IF NOT EXISTS product_activation_requests (
     sync_uploaded INTEGER NOT NULL DEFAULT 0 CHECK (sync_uploaded >= 0),
     sync_delivered INTEGER NOT NULL DEFAULT 0 CHECK (sync_delivered >= 0),
     sync_digest TEXT COLLATE BINARY CHECK (length(sync_digest) = 64),
+    carries_data INTEGER NOT NULL DEFAULT 1 CHECK (carries_data IN (0, 1)),
     FOREIGN KEY (issuer, subject) REFERENCES public_profiles (issuer, subject) ON DELETE CASCADE
 ) STRICT;
 

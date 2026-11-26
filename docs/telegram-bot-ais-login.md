@@ -75,6 +75,25 @@ Bond are created only on a first sign-in, when no 0x1 profile exists yet for
 the AIS identity (`telegram_login_returns`); a returning sign-in plays the
 sign-in stages instead and creates nothing.
 
+### Progress for the page
+
+Route: GET /api/v1/telegram/login/progress?state=… (public, like the callback).
+
+The callback page asks how its sign-in stands, with the state it was given;
+the state was spent at the callback and only reads here. The answer names no
+account and carries no session value:
+
+~~~json
+{"stage":"awaiting_approval","active_client":"Mac · Safari"}
+~~~
+
+`stage` is `waiting` (the bot has not claimed yet), `awaiting_approval`,
+`signed_in`, `declined` (refused, ran out or replaced) or `failed`. An
+unknown state is `login_not_found` (404). The page plays the sign-in stages
+on `signed_in`; on `awaiting_approval` it shows «Запит підтвердження» and the
+client that has to agree; on `declined` that stage shows 🚫. The page's CSP
+admits `connect-src 'self'` for this one route.
+
 ## The bot's claim and the chat session
 
 A verified, provider-matched callback is stored in
@@ -97,6 +116,12 @@ sender, chat, workload or message, an expired or a used confirmation returns
   product database. The chat is active only when no other client is; when the
   Mini App or a browser is active, the chat signs in inactive and becomes
   active through the canonical confirmed handoff.
+- When another client is active, the chat signs in inactive and, in the same
+  transaction, asks that client with a request that carries no data
+  (`docs/client-activation.md`, a client without device state). The password
+  signed the person in; the active client's approval moves activity to the
+  chat at once. A refusal, or a request that runs out, leaves the chat
+  signed in and inactive.
 - A new confirmation in the same chat replaces that chat's previous session
   in the same transaction, so signing in again on the active chat keeps it
   active.

@@ -37,13 +37,20 @@ use nilxone_api::bot_login::{
 };
 use nilxone_identity::{
     aiaiaiai_sign_in::SignInClient,
-    public_info::{LegacyBondMigrationRepository, PublicInfoRepository, TelegramLoginError},
+    public_info::{
+        LegacyBondMigrationRepository, PublicInfoRepository, TelegramLoginError,
+        TelegramLoginProgress,
+    },
     rate_limit::AttemptLimiter,
 };
 use serde::{Deserialize, Serialize};
 
 /// The AIS redirect for chat sign-in, registered for client `0x1`.
 pub const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
+
+/// Where the callback page asks how its sign-in stands, with the state it
+/// was given. Public like the callback; it reads and grants nothing.
+pub const PROGRESS_PATH: &str = "/api/v1/telegram/login/progress";
 
 /// Trusted middleware supplies the verified bot workload subject after checking
 /// its login-start permission. Never deserialize this value from the wire.
@@ -110,6 +117,7 @@ fn router(host: LoginHost) -> Router {
 fn public_router(host: LoginHost) -> Router {
     Router::new()
         .route(CALLBACK_PATH, get(callback))
+        .route(PROGRESS_PATH, get(progress))
         .with_state(host)
 }
 
@@ -304,6 +312,85 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
             callback_page(Outcome::Failed)
         }
     }
+}
+
+#[derive(Deserialize)]
+struct ProgressQuery {
+    state: Option<String>,
+}
+
+/// The page's view of its sign-in: one stage word, and while the chat waits
+/// for the active client, that client's label. No account, no session.
+#[derive(Serialize)]
+struct ProgressView {
+    stage: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_client: Option<String>,
+}
+
+async fn progress(State(host): State<LoginHost>, Query(query): Query<ProgressQuery>) -> Response {
+    let not_found = || {
+        no_store_error(
+            StatusCode::NOT_FOUND,
+            "login_not_found",
+            "No such Telegram login.",
+        )
+    };
+    if host.chat.is_none() {
+        return not_found();
+    }
+    let Some(state) = query.state.filter(|state| state.len() == 32) else {
+        return not_found();
+    };
+    let Some(now) = now_unix_seconds() else {
+        return no_store_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "login_service_unavailable",
+            "Telegram login progress is unavailable.",
+        );
+    };
+    // A page asks about once a second; this bounds a guessing caller.
+    if let Err(retry) = host
+        .attempts
+        .consume("telegram-progress".to_owned(), now, 600, 60)
+    {
+        return rate_limited(
+            no_store_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "login_rate_limited",
+                "Too many requests.",
+            ),
+            retry,
+        );
+    }
+    let progress = match host.repository.telegram_login_progress(&state, now).await {
+        Ok(Some(progress)) => progress,
+        Ok(None) => return not_found(),
+        Err(error) => {
+            tracing::error!(%error, "reading Telegram login progress failed");
+            return no_store_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login_service_unavailable",
+                "Telegram login progress is unavailable.",
+            );
+        }
+    };
+    let (stage, active_client) = match progress {
+        TelegramLoginProgress::Waiting => ("waiting", None),
+        TelegramLoginProgress::AwaitingApproval {
+            active_client_label,
+        } => ("awaiting_approval", Some(active_client_label)),
+        TelegramLoginProgress::SignedIn => ("signed_in", None),
+        TelegramLoginProgress::Declined => ("declined", None),
+        TelegramLoginProgress::Failed => ("failed", None),
+    };
+    no_store_json(
+        StatusCode::OK,
+        ProgressView {
+            stage,
+            active_client,
+        },
+    )
 }
 
 async fn confirm_login(
@@ -571,6 +658,79 @@ mod tests {
             error_code(unconfirmed).await,
             "login_confirmation_not_found"
         );
+    }
+
+    #[tokio::test]
+    async fn the_page_reads_its_progress_by_state_and_learns_nothing_else() {
+        let host = host(offline_client(), Some(chat())).await;
+        let now = now_unix_seconds().unwrap();
+        let started = host
+            .repository
+            .start_telegram_login(
+                &host.client,
+                "test-bot",
+                &LoginStartRequest {
+                    version: 1,
+                    provider: "telegram".into(),
+                    provider_actor_id: 42,
+                    chat_id: 42,
+                    message_id: 7,
+                },
+                now,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let state = url::Url::parse(&started.authorization_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        let public = public_router(host.clone());
+        let read = |uri: String| {
+            let public = public.clone();
+            async move {
+                let response = public
+                    .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+                let body = to_bytes(response.into_body(), 4096).await.unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                )
+            }
+        };
+        assert_eq!(
+            read(format!("{PROGRESS_PATH}?state={state}")).await,
+            (StatusCode::OK, serde_json::json!({"stage": "waiting"}))
+        );
+        public
+            .clone()
+            .oneshot(
+                Request::get(format!("{CALLBACK_PATH}?error=access_denied&state={state}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read(format!("{PROGRESS_PATH}?state={state}")).await,
+            (StatusCode::OK, serde_json::json!({"stage": "failed"}))
+        );
+        for uri in [
+            PROGRESS_PATH.to_owned(),
+            format!("{PROGRESS_PATH}?state=short"),
+            format!("{PROGRESS_PATH}?state={}", "s".repeat(32)),
+        ] {
+            let (status, body) = read(uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(body["error"]["code"], "login_not_found");
+        }
     }
 
     #[tokio::test]

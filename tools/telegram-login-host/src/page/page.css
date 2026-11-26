@@ -156,6 +156,19 @@ button {
   box-shadow: 0 8px 24px rgba(242, 181, 88, 0.45);
 }
 .error h1 { color: var(--w-error); }
+[hidden] { display: none !important; }
+
+/* The active client refused: the request's stage shows 🚫 instead of a
+ * check, and nothing after it plays. */
+:root.playing .stage.refused { opacity: 1; transform: none; border-color: rgba(255, 194, 207, 0.6); }
+.stage.refused .label { color: var(--w-error); }
+:root.playing .stage.shown.refused:not(.done) .mark, .stage.refused .mark {
+  border: 0; animation: none; background: none; box-shadow: none;
+}
+.stage.refused .mark::after {
+  content: '🚫'; position: static; display: block; border: 0; transform: none;
+  width: auto; height: auto; font-size: 1.3rem; line-height: 1.6rem; text-align: center;
+}
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pop { 0% { transform: scale(0.6); } 70% { transform: scale(1.12); } 100% { transform: none; } }

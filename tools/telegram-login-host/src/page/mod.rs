@@ -39,6 +39,16 @@ const RETURNING_STAGES: [&str; 4] = [
     "Вхід виконано",
 ];
 
+/// The stages of a sign-in while another client is active: the password
+/// signed the chat in, and that client has to agree before the chat takes
+/// over. The chat keeps no device state, so nothing is synced.
+const APPROVAL_STAGES: [&str; 4] = [
+    "Запит підтвердження",
+    "Передаємо активність",
+    "Відкриваємо сесію",
+    "Вхід виконано",
+];
+
 /// What the callback page tells the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -77,14 +87,14 @@ fn csp_hash(text: &str) -> String {
 /// App in a frame of web.telegram.org, and no other site may frame it.
 static POLICY: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "default-src 'none'; script-src {}; style-src {}; \
+        "default-src 'none'; script-src {}; style-src {}; connect-src 'self'; \
          frame-ancestors https://web.telegram.org; base-uri 'none'; form-action 'none'",
         csp_hash(SCRIPT),
         csp_hash(STYLE)
     )
 });
 
-fn success_body(labels: &[&str]) -> String {
+fn stage_list(id: &str, aria: &str, labels: &[&str], hidden: bool) -> String {
     let count = labels.len();
     let stages: String = labels
         .iter()
@@ -102,10 +112,18 @@ fn success_body(labels: &[&str]) -> String {
             )
         })
         .collect();
+    let hidden = if hidden { " hidden" } else { "" };
+    format!("<ol class=\"stages\" id=\"{id}\" aria-label=\"{aria}\"{hidden}>{stages}</ol>")
+}
+
+/// The result stages, and the approval stages the page switches to when the
+/// chat waits for the active client. The page asks the host which applies.
+fn success_body(labels: &[&str]) -> String {
     format!(
-        "<ol class=\"stages\" id=\"stages\" aria-label=\"Вхід в 0x1\">{stages}</ol>\
-         <div class=\"after\"><p>Повертаю в чат.</p>\
-         <button id=\"back\" type=\"button\">Повернутися в чат</button></div>"
+        "{}{}<div class=\"after\"><p id=\"note\" aria-live=\"polite\">Повертаю в чат.</p>\
+         <button id=\"back\" type=\"button\">Повернутися в чат</button></div>",
+        stage_list("stages", "Вхід в 0x1", labels, false),
+        stage_list("approval", "Підтвердження входу", &APPROVAL_STAGES, true),
     )
 }
 
@@ -191,6 +209,17 @@ mod tests {
             assert!(!body.contains(stage), "{stage}");
         }
         assert!(body.contains("web_app_close"));
+    }
+
+    #[tokio::test]
+    async fn a_success_page_carries_the_approval_stages_hidden_and_may_ask_its_host() {
+        let (_, csp, body) = render(Outcome::Returning).await;
+        assert!(body.contains("id=\"approval\" aria-label=\"Підтвердження входу\" hidden>"));
+        for stage in APPROVAL_STAGES {
+            assert!(body.contains(stage), "{stage}");
+        }
+        assert!(csp.contains("connect-src 'self';"), "{csp}");
+        assert!(body.contains(crate::PROGRESS_PATH));
     }
 
     #[tokio::test]
