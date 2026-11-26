@@ -38,6 +38,10 @@ use nilxone_api::{
         ChatActivationQuery, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
         LoginStartRefusal, LoginStartRequest, START_PATH,
     },
+    bot_notifications::{
+        ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
+        NotificationPullRequest, PULL_PATH as NOTIFICATIONS_PULL_PATH,
+    },
 };
 use nilxone_identity::{
     aiaiaiai_sign_in::SignInClient,
@@ -114,6 +118,8 @@ fn router(host: LoginHost) -> Router {
             .route(CONFIRM_PATH, post(confirm_login))
             .route(CHAT_ACTIVATION_PATH, post(chat_activation))
             .route(CHAT_ACTIVATION_ANSWER_PATH, post(chat_activation_answer))
+            .route(NOTIFICATIONS_PULL_PATH, post(pull_notifications))
+            .route(NOTIFICATIONS_ACK_PATH, post(acknowledge_notifications))
     } else {
         router
     };
@@ -502,6 +508,87 @@ async fn chat_activation_answer(
     )
 }
 
+/// The bot behind the signature, with the clock and its own budget.
+fn notification_caller(
+    host: &LoginHost,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+) -> Result<(String, u64), Box<Response>> {
+    let Some(Extension(AuthorizedLoginBot(subject))) = principal else {
+        return Err(Box::new(refusal(
+            LoginStartRefusal::ServiceAuthenticationRequired,
+        )));
+    };
+    let Some(now) = now_unix_seconds() else {
+        return Err(Box::new(refusal(
+            LoginStartRefusal::LoginServiceUnavailable,
+        )));
+    };
+    // The bot asks about once a second.
+    if let Err(retry) = host
+        .attempts
+        .consume(format!("notifications:{subject}"), now, 240, 60)
+    {
+        return Err(Box::new(rate_limited(
+            refusal(LoginStartRefusal::LoginRateLimited),
+            retry,
+        )));
+    }
+    Ok((subject, now))
+}
+
+async fn pull_notifications(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(request): Json<NotificationPullRequest>,
+) -> Response {
+    let (subject, now) = match notification_caller(&host, principal) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    if !request.is_valid() {
+        return refusal(LoginStartRefusal::InvalidProviderEvidence);
+    }
+    match host
+        .repository
+        .pull_bot_notifications(&subject, request.limit, now)
+        .await
+    {
+        Ok(notifications) => no_store_json(StatusCode::OK, NotificationPull { notifications }),
+        Err(error) => {
+            tracing::error!(%error, "pulling bot notifications failed");
+            refusal(LoginStartRefusal::LoginServiceUnavailable)
+        }
+    }
+}
+
+async fn acknowledge_notifications(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(ack): Json<NotificationAck>,
+) -> Response {
+    let (subject, _) = match notification_caller(&host, principal) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    if !ack.is_valid() {
+        return refusal(LoginStartRefusal::InvalidProviderEvidence);
+    }
+    match host
+        .repository
+        .acknowledge_bot_notifications(&subject, &ack.ids)
+        .await
+    {
+        Ok(acknowledged) => no_store_json(
+            StatusCode::OK,
+            serde_json::json!({ "acknowledged": acknowledged }),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "acknowledging bot notifications failed");
+            refusal(LoginStartRefusal::LoginServiceUnavailable)
+        }
+    }
+}
+
 async fn confirm_login(
     State(host): State<LoginHost>,
     principal: Option<Extension<AuthorizedLoginBot>>,
@@ -797,6 +884,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_bot_pulls_and_acknowledges_only_behind_its_signature() {
+        let app = router(host(offline_client(), Some(chat())).await);
+        let pull = serde_json::json!({"version": 1, "limit": 10});
+        let untrusted = app
+            .clone()
+            .oneshot(bot_request(false, NOTIFICATIONS_PULL_PATH, pull.clone()))
+            .await
+            .unwrap();
+        assert_eq!(untrusted.status(), StatusCode::UNAUTHORIZED);
+        let pulled = app
+            .clone()
+            .oneshot(bot_request(true, NOTIFICATIONS_PULL_PATH, pull))
+            .await
+            .unwrap();
+        assert_eq!(pulled.status(), StatusCode::OK);
+        let body = to_bytes(pulled.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"notifications": []})
+        );
+        let too_many = app
+            .clone()
+            .oneshot(bot_request(
+                true,
+                NOTIFICATIONS_PULL_PATH,
+                serde_json::json!({"version": 1, "limit": 51}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(too_many.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let acked = app
+            .oneshot(bot_request(
+                true,
+                NOTIFICATIONS_ACK_PATH,
+                serde_json::json!({"version": 1, "ids": [1, 2]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(acked.status(), StatusCode::OK);
+        let body = to_bytes(acked.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"acknowledged": 0})
+        );
     }
 
     async fn error_code(response: Response) -> String {

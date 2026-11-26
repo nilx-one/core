@@ -19,6 +19,7 @@ use crate::{
 };
 
 mod activation;
+mod bot_notifications;
 mod legacy_migration;
 mod telegram_login;
 pub use telegram_login::{
@@ -28,6 +29,7 @@ pub use telegram_login::{
 };
 
 pub use activation::ActivationError;
+pub use bot_notifications::{NOTIFICATION_TTL_SECONDS, NewBotNotification};
 pub use legacy_migration::{
     BoundLegacyBond, LegacyBondMigrationRepository, LegacyMigrationAttached, LegacyMigrationError,
     LegacyMigrationProofRecorded, LegacyMigrationStarted, ProvisionError, ProvisionedBond,
@@ -135,6 +137,9 @@ impl PublicInfoRepository {
             .execute(&pool)
             .await?;
         add_request_data_kind(&pool).await?;
+        sqlx::raw_sql(include_str!("../public_info_notifications.sql"))
+            .execute(&pool)
+            .await?;
         Ok(Self { pool })
     }
 

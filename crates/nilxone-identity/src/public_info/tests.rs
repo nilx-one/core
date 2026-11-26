@@ -109,6 +109,7 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
     assert_eq!(
         tables,
         [
+            "bot_notifications",
             "product_activation_requests",
             "product_activation_sync",
             "product_parked_payload_parts",
@@ -117,6 +118,7 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
             "product_parking_parts",
             "product_sessions",
             "public_profiles",
+            "sqlite_sequence",
             "telegram_chat_sessions",
             "telegram_login_claims",
             "telegram_login_confirmations",
