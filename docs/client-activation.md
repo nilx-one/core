@@ -57,14 +57,18 @@ An inactive session asks with `request_activation`. The request binds the asking
 
 ### A client without device state
 
-A client that keeps no device state, such as the Telegram chat, asks with `requester_keeps_state = 0`. The active client approves and uploads as in any handoff. The part that makes the upload whole parks it for the owner instead of waiting for a fetch: in one transaction the back-end replaces the owner's parked data (`product_parked_payloads`, `product_parked_payload_parts`) with this upload, compares the epoch and switches, and the request is `completed`. Nobody fetches, and the request's own parts are deleted as with every final status. The same last part again only answers that state.
+A client that keeps no device state asks with `requester_keeps_state = 0`. This is reserved for the shared Telegram session: since the owner decision of 2026-11-26 no production path opens such a request, and the chat signs in inactive instead. The active client approves and uploads as in any handoff. The part that makes the upload whole parks it for the owner instead of waiting for a fetch: in one transaction the back-end replaces the owner's parked data (`product_parked_payloads`, `product_parked_payload_parts`) with this upload, compares the epoch and switches, and the request is `completed`. Nobody fetches, and the request's own parts are deleted as with every final status. The same last part again only answers that state.
+
+**Upgrade.** Opening the store cancels every open request with `requester_keeps_state = 0`, in one transaction and through the same cleanup as any final status: it becomes `cancelled` and its uploaded parts are deleted. A request the previous runtime opened moments before the upgrade can therefore no longer be approved or uploaded into a switch. Completed requests, parked data, the active client and requests the chat answers as the approver are left as they are.
+
+**A chat that is already active.** A chat that took activity through the earlier path stays the active client; nothing transfers activity silently. It gives activity back the canonical way: a device asks and the chat approves (`docs/bot-notifications.md`), or the chat's session ends.
 
 Owner decisions of 2026-11-26:
 
 - The parked data stays as long as it is needed: until activity moves to a client that keeps its state on its device, and that client has applied it. There is no expiry.
 - Fresh data always overwrites a device's local copy, atomically, once the switch can no longer be undone.
 
-Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away. The chat asks by itself when it signs in while another client is active (`docs/telegram-bot-ais-login.md`).
+Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away. The chat does not ask by itself when it signs in while another client is active: the Telegram chat and the Mini App are to share one session (`docs/telegram-bot-ais-login.md`).
 
 ### When the chat is the active client
 

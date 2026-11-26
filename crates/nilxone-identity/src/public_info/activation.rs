@@ -68,6 +68,7 @@ struct Request {
     sync_delivered: i64,
     /// False for an asking client that keeps no device state: the whole
     /// upload is parked for the owner and the switch follows at once.
+    /// Reserved for the shared Telegram session; no production path sets it.
     requester_keeps_state: bool,
     /// False when the client that was active keeps no device state: its
     /// data is parked already, so its approval is the switch.
@@ -532,10 +533,13 @@ fn signed(value: u64) -> Result<i64, sqlx::Error> {
     i64::try_from(value).map_err(|_| sqlx::Error::Protocol("activation value out of range".into()))
 }
 
-/// An inactive session that keeps no device state, such as the Telegram
-/// chat, asks to become the active client inside the caller's transaction.
-/// The active client agrees and uploads as usual; the back-end parks the
-/// whole upload for the owner and switches, since nobody would fetch it.
+/// An inactive session that keeps no device state asks to become the active
+/// client inside the caller's transaction. The active client agrees and
+/// uploads as usual; the back-end parks the whole upload for the owner and
+/// switches, since nobody would fetch it. Reserved for the shared Telegram
+/// session: no production path opens such a request yet (owner decision of
+/// 2026-11-26), so only tests drive it.
+#[cfg(test)]
 pub(super) async fn request_for_stateless_client(
     connection: &mut SqliteConnection,
     token_hash: &str,
@@ -1123,6 +1127,28 @@ async fn advance(
         request.status = outcome;
     }
     Ok(request)
+}
+
+/// Cancels every open request from a client without device state, made
+/// before the Telegram chat stopped asking (owner decision of 2026-11-26).
+/// Each goes through [`close`]: its status becomes `cancelled` and its
+/// uploaded parts are deleted. Completed requests, parked data, the active
+/// client and requests the chat answers as the approver stay as they are.
+/// Answers how many were cancelled.
+pub(super) async fn cancel_stateless_requests(
+    connection: &mut SqliteConnection,
+    now: i64,
+) -> Result<u64, sqlx::Error> {
+    let open: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM product_activation_requests \
+         WHERE requester_keeps_state = 0 AND status IN ('pending', 'approved', 'syncing')",
+    )
+    .fetch_all(&mut *connection)
+    .await?;
+    for id in &open {
+        close(connection, id, ActivationStatus::Cancelled, now).await?;
+    }
+    Ok(open.len() as u64)
 }
 
 /// Ends an open request with a final status and deletes its uploaded data.
