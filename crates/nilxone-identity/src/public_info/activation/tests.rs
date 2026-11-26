@@ -1569,6 +1569,26 @@ async fn the_active_client_parks_before_it_signs_out_and_the_next_one_applies_it
         0,
         "the staging copy is gone once it is whole"
     );
+    let last = UploadPartQuery {
+        offset: SYNC_PART_BYTES,
+        total_bytes: data.len() as u64,
+    };
+    let tail = &data[SYNC_PART_BYTES as usize..];
+    let replay = repository
+        .park_part(&telegram, last, tail, NOW + 2)
+        .await
+        .unwrap();
+    assert_eq!(replay.parked, Some(view.clone()));
+    let mut changed = tail.to_vec();
+    changed[0] ^= 1;
+    assert_eq!(
+        refused(
+            repository
+                .park_part(&telegram, last, &changed, NOW + 2)
+                .await
+        ),
+        ActivationRefusal::SyncOutOfOrder
+    );
     // It signs out; the browser is not active and cannot fetch.
     repository.close_session(&telegram, NOW + 2).await.unwrap();
     assert_eq!(

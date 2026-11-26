@@ -256,7 +256,7 @@ impl PublicInfoRepository {
         offset: u64,
         now: u64,
     ) -> Result<Vec<u8>, ActivationError> {
-        let mut connection = self.pool.acquire().await?;
+        let mut connection = self.pool.begin().await?;
         let session = parking_session(&mut connection, token_hash, clock(now)?).await?;
         let parked = parked_of(&mut connection, &session)
             .await?
@@ -274,6 +274,7 @@ impl PublicInfoRepository {
         .fetch_optional(&mut *connection)
         .await?
         .ok_or_else(|| sqlx::Error::Protocol("a parked part is missing".into()))?;
+        connection.commit().await?;
         Ok(data)
     }
 
@@ -372,6 +373,26 @@ async fn park_step(
                 .execute(&mut *connection)
                 .await?;
             0
+        }
+        // The last PUT can be retried after its transaction removed staging.
+        None if offset + signed(data.len() as u64)? == total => {
+            let already_parked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM product_parked_payloads p
+                 JOIN product_parked_payload_parts b USING (issuer, subject)
+                 WHERE p.issuer = ? AND p.subject = ? AND p.total = ?
+                   AND b.part_offset = ? AND b.data = ?)",
+            )
+            .bind(&session.issuer)
+            .bind(&session.subject)
+            .bind(total)
+            .bind(offset)
+            .bind(data)
+            .fetch_one(&mut *connection)
+            .await?;
+            if already_parked {
+                return state_with(connection, &session, now, None).await;
+            }
+            return Err(ActivationRefusal::SyncOutOfOrder.into());
         }
         Some((declared, uploaded)) if declared == total => uploaded,
         _ => return Err(ActivationRefusal::SyncOutOfOrder.into()),

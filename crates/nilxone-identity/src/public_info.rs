@@ -409,23 +409,34 @@ async fn open_session_in(
 /// Brings a store created before requests from or to clients without
 /// device state up to the current shape: every earlier client kept its state.
 async fn add_request_data_kind(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut migration = pool.begin_with("BEGIN IMMEDIATE").await?;
     for column in ["requester_keeps_state", "approver_keeps_state"] {
         let present = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('product_activation_requests') \
              WHERE name = ?)",
         )
         .bind(column)
-        .fetch_one(pool)
+        .fetch_one(&mut *migration)
         .await?;
         if !present {
             sqlx::query(&format!(
                 "ALTER TABLE product_activation_requests ADD COLUMN {column} INTEGER \
                  NOT NULL DEFAULT 1 CHECK ({column} IN (0, 1))"
             ))
-            .execute(pool)
+            .execute(&mut *migration)
             .await?;
+            if column == "approver_keeps_state" {
+                sqlx::query(
+                    "UPDATE product_activation_requests SET approver_keeps_state = 0
+                     WHERE status = 'pending' AND approver_token_hash IN
+                         (SELECT token_hash FROM telegram_chat_sessions)",
+                )
+                .execute(&mut *migration)
+                .await?;
+            }
         }
     }
+    migration.commit().await?;
     Ok(())
 }
 
