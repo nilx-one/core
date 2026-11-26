@@ -57,7 +57,7 @@ An inactive session asks with `request_activation`. The request binds the asking
 
 ### A client without device state
 
-A client that keeps no device state, such as the Telegram chat, asks with `requester_keeps_state = 0`. The active client approves and uploads as in any handoff. The part that makes the upload whole parks it for the owner instead of waiting for a fetch: in one transaction the back-end replaces the owner's parked data (`product_parked_payloads`, `product_parked_payload_parts`) with this upload, compares the epoch and switches, and the request is `completed`. Nobody fetches, and the request's own parts are deleted as with every final status. The same last part again only answers that state.
+A client that keeps no device state asks with `requester_keeps_state = 0`. This is reserved for the shared Telegram session: since the owner decision of 2026-11-26 no production path opens such a request, and the chat signs in inactive instead. The active client approves and uploads as in any handoff. The part that makes the upload whole parks it for the owner instead of waiting for a fetch: in one transaction the back-end replaces the owner's parked data (`product_parked_payloads`, `product_parked_payload_parts`) with this upload, compares the epoch and switches, and the request is `completed`. Nobody fetches, and the request's own parts are deleted as with every final status. The same last part again only answers that state.
 
 Owner decisions of 2026-11-26:
 

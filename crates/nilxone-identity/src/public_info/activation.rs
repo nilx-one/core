@@ -68,6 +68,7 @@ struct Request {
     sync_delivered: i64,
     /// False for an asking client that keeps no device state: the whole
     /// upload is parked for the owner and the switch follows at once.
+    /// Reserved for the shared Telegram session; no production path sets it.
     requester_keeps_state: bool,
     /// False when the client that was active keeps no device state: its
     /// data is parked already, so its approval is the switch.
@@ -532,10 +533,12 @@ fn signed(value: u64) -> Result<i64, sqlx::Error> {
     i64::try_from(value).map_err(|_| sqlx::Error::Protocol("activation value out of range".into()))
 }
 
-/// An inactive session that keeps no device state, such as the Telegram
-/// chat, asks to become the active client inside the caller's transaction.
-/// The active client agrees and uploads as usual; the back-end parks the
-/// whole upload for the owner and switches, since nobody would fetch it.
+/// An inactive session that keeps no device state asks to become the active
+/// client inside the caller's transaction. The active client agrees and
+/// uploads as usual; the back-end parks the whole upload for the owner and
+/// switches, since nobody would fetch it. Reserved for the shared Telegram
+/// session: no production path opens such a request yet (owner decision of
+/// 2026-11-26), so only tests drive it.
 #[cfg(test)]
 pub(super) async fn request_for_stateless_client(
     connection: &mut SqliteConnection,

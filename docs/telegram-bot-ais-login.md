@@ -105,7 +105,9 @@ account and carries no session value:
 ~~~
 
 `stage` is `waiting` (the bot has not claimed yet), `awaiting_approval`,
-`signed_in`, `declined` (refused, ran out or replaced) or `failed`. An
+`signed_in` (every other state of the live chat session this `/login`
+opened), `declined` (that session is gone: replaced or signed out) or
+`failed`. An
 unknown state is `login_not_found` (404). The page plays the sign-in stages
 on `signed_in`; on `awaiting_approval` it shows «Запит підтвердження» and the
 client that has to agree; on `declined` that stage shows 🚫. The page's CSP
@@ -131,13 +133,14 @@ sender, chat, workload or message, an expired or a used confirmation returns
 
 - Single Active Client holds across all of the owner's clients in the same
   product database. The chat is active only when no other client is; when the
-  Mini App or a browser is active, the chat signs in inactive and becomes
-  active through the canonical confirmed handoff.
+  Mini App or a browser is active, the chat signs in inactive and stays so
+  until the shared Telegram session exists.
 - The chat never asks to take activity by itself. Owner decision of
   2026-11-26: the Telegram chat and the Mini App share one session, so a chat
   asking the Mini App of the same Telegram account would hand activity to
   itself. Until that shared session exists, the chat signs in inactive beside
-  another active client, and the page reports it signed in. A device that
+  another active client, and the page reports it signed in: every state of a
+  live chat session but its own open request is `signed_in`. A device that
   asks while the chat is active is approved in the chat
   (`docs/bot-notifications.md`).
 - A new confirmation in the same chat replaces that chat's previous session
