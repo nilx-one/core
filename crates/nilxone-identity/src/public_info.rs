@@ -137,6 +137,7 @@ impl PublicInfoRepository {
             .execute(&pool)
             .await?;
         add_request_data_kind(&pool).await?;
+        cancel_stateless_requests(&pool).await?;
         sqlx::raw_sql(include_str!("../public_info_notifications.sql"))
             .execute(&pool)
             .await?;
@@ -409,6 +410,27 @@ async fn open_session_in(
         activation::advance_epoch(transaction, &owner.issuer, &owner.subject).await?;
     }
     Ok(active)
+}
+
+/// A request the Telegram chat opened before it stopped asking (owner
+/// decision of 2026-11-26) must not hand activity to the chat after the
+/// upgrade: opening the store cancels every such open request, atomically.
+async fn cancel_stateless_requests(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        });
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let cancelled = activation::cancel_stateless_requests(&mut transaction, now).await?;
+    transaction.commit().await?;
+    if cancelled > 0 {
+        tracing::warn!(
+            cancelled,
+            "cancelled open requests from clients without device state"
+        );
+    }
+    Ok(())
 }
 
 /// Brings a store created before requests from or to clients without

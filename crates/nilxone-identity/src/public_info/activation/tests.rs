@@ -1712,3 +1712,132 @@ async fn a_device_takes_activity_back_from_the_chat_and_applies_what_was_parked(
         .unwrap();
     assert_eq!(parked_rows(&repository).await, (0, 0));
 }
+
+/// Signs `name` in for `subject` as its Telegram chat (`actor`).
+async fn chat_of(repository: &PublicInfoRepository, subject: &str, name: &str, actor: i64) -> bool {
+    let active = sign_in(repository, subject, name, "Telegram · Chat", NOW, DAY).await;
+    sqlx::query(
+        "INSERT INTO telegram_chat_sessions (workload_subject, actor_id, token_hash) \
+         VALUES ('bot', ?, ?)",
+    )
+    .bind(actor)
+    .bind(token(name))
+    .execute(&repository.pool)
+    .await
+    .unwrap();
+    active
+}
+
+async fn ask_as_stateless(repository: &PublicInfoRepository, name: &str, now: u64) -> String {
+    let mut connection = repository.pool.acquire().await.unwrap();
+    let asked = super::request_for_stateless_client(&mut connection, &token(name), now as i64)
+        .await
+        .unwrap();
+    asked.request.unwrap().id
+}
+
+#[tokio::test]
+async fn an_upgrade_cancels_open_requests_from_the_chat_and_keeps_everything_else() {
+    let directory = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}",
+        directory.path().join("upgrade.sqlite").display()
+    );
+    let before = PublicInfoRepository::connect(&url).await.unwrap();
+    // Left as the old runtime could leave them, moments before the upgrade:
+    // A: the chat asked, nobody answered yet.
+    assert!(sign_in(&before, "a", "a-web", BROWSER, NOW, DAY).await);
+    assert!(!chat_of(&before, "a", "a-chat", 41).await);
+    let pending = ask_as_stateless(&before, "a-chat", NOW).await;
+    // B: the chat asked, the browser agreed and uploaded one part of two.
+    assert!(sign_in(&before, "b", "b-web", BROWSER, NOW, DAY).await);
+    assert!(!chat_of(&before, "b", "b-chat", 42).await);
+    let approved = ask_as_stateless(&before, "b-chat", NOW).await;
+    before
+        .approve_activation(&token("b-web"), &approved, NOW + 1)
+        .await
+        .unwrap();
+    let data = payload(SYNC_PART_BYTES + 10);
+    let first = UploadPartQuery {
+        offset: 0,
+        total_bytes: data.len() as u64,
+    };
+    before
+        .upload_activation_sync_part(
+            &token("b-web"),
+            &approved,
+            first,
+            &data[..SYNC_PART_BYTES as usize],
+            NOW + 2,
+        )
+        .await
+        .unwrap();
+    // C: the chat is active and a browser asks it: the chat is the approver.
+    assert!(chat_of(&before, "c", "c-chat", 43).await);
+    assert!(!sign_in(&before, "c", "c-web", BROWSER, NOW, DAY).await);
+    let to_chat = ask(&before, &token("c-web"), NOW + 1).await;
+    // D: an earlier chat takeover that completed, with its data parked.
+    assert!(sign_in(&before, "d", "d-web", BROWSER, NOW, DAY).await);
+    assert!(!chat_of(&before, "d", "d-chat", 44).await);
+    let done = ask_as_stateless(&before, "d-chat", NOW).await;
+    before
+        .approve_activation(&token("d-web"), &done, NOW + 1)
+        .await
+        .unwrap();
+    upload(&before, &token("d-web"), &done, &payload(100), NOW + 2).await;
+    drop(before);
+
+    let after = PublicInfoRepository::connect(&url).await.unwrap();
+    assert_eq!(status_of(&after, &pending).await, "cancelled");
+    assert_eq!(status_of(&after, &approved).await, "cancelled");
+    assert_eq!(status_of(&after, &to_chat).await, "pending");
+    assert_eq!(status_of(&after, &done).await, "completed");
+    assert_eq!(
+        count(&after, "SELECT count(*) FROM product_activation_sync").await,
+        0,
+        "the half upload is deleted"
+    );
+    assert_eq!(
+        count(&after, "SELECT count(*) FROM product_parked_payloads").await,
+        1,
+        "parked data stays"
+    );
+    // Nothing the old runtime started can hand activity to a chat now.
+    assert_eq!(
+        refused(
+            after
+                .approve_activation(&token("a-web"), &pending, NOW + 3)
+                .await
+        ),
+        ActivationRefusal::StepRefused
+    );
+    let last = UploadPartQuery {
+        offset: SYNC_PART_BYTES,
+        total_bytes: data.len() as u64,
+    };
+    assert_eq!(
+        refused(
+            after
+                .upload_activation_sync_part(
+                    &token("b-web"),
+                    &approved,
+                    last,
+                    &data[SYNC_PART_BYTES as usize..],
+                    NOW + 3,
+                )
+                .await
+        ),
+        ActivationRefusal::StepRefused
+    );
+    let mut active = active_clients(&after).await;
+    active.sort();
+    assert_eq!(
+        active,
+        [
+            token("a-web"),
+            token("b-web"),
+            token("c-chat"),
+            token("d-chat")
+        ]
+    );
+}
