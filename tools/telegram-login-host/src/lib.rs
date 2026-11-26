@@ -34,9 +34,9 @@ use axum::{
 use nilxone_api::{
     activation::ActivationRefusal,
     bot_login::{
-        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CONFIRM_PATH, ChatActivationAnswer,
-        ChatActivationQuery, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
-        LoginStartRefusal, LoginStartRequest, START_PATH,
+        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_PROFILE_PATH, CONFIRM_PATH,
+        ChatActivationAnswer, ChatActivationQuery, LoginConfirmRefusal, LoginConfirmRequest,
+        LoginConfirmResponse, LoginStartRefusal, LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -116,6 +116,7 @@ fn router(host: LoginHost) -> Router {
     let router = if confirm {
         router
             .route(CONFIRM_PATH, post(confirm_login))
+            .route(CHAT_PROFILE_PATH, post(chat_profile))
             .route(CHAT_ACTIVATION_PATH, post(chat_activation))
             .route(CHAT_ACTIVATION_ANSWER_PATH, post(chat_activation_answer))
             .route(NOTIFICATIONS_PULL_PATH, post(pull_notifications))
@@ -433,9 +434,9 @@ fn chat_activation_answer_of(
     }
 }
 
-/// The checks every chat activation route shares: the authenticated bot,
+/// The checks protected chat routes share: the authenticated bot,
 /// a well-formed sender and chat, and the sender's own budget.
-fn chat_activation_caller(
+fn verified_chat_caller(
     host: &LoginHost,
     principal: Option<Extension<AuthorizedLoginBot>>,
     chat: &ChatActivationQuery,
@@ -460,7 +461,7 @@ fn chat_activation_caller(
             LoginStartRefusal::LoginServiceUnavailable,
         )));
     };
-    let limit_key = format!("activation:{subject}:{}", chat.provider_actor_id);
+    let limit_key = format!("chat:{subject}:{}", chat.provider_actor_id);
     if let Err(retry) = host.attempts.consume(limit_key, now, 60, 60) {
         return Err(Box::new(rate_limited(
             refusal(LoginStartRefusal::LoginRateLimited),
@@ -470,12 +471,52 @@ fn chat_activation_caller(
     Ok((subject, now))
 }
 
+async fn chat_profile(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(query): Json<ChatActivationQuery>,
+) -> Response {
+    let (subject, now) = match verified_chat_caller(&host, principal, &query) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    match host
+        .repository
+        .restore_telegram_chat_session(&subject, query.provider_actor_id, now)
+        .await
+    {
+        Ok(Some(owner)) => {
+            let profile = owner.public_profile();
+            no_store_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "pub_dress": profile.pub_dress,
+                    "experience": profile.experience,
+                }),
+            )
+        }
+        Ok(None) => no_store_error(
+            StatusCode::UNAUTHORIZED,
+            ActivationRefusal::AuthenticationRequired.code(),
+            "Sign in from this chat.",
+        ),
+        Err(error) => {
+            tracing::error!(%error, "reading Telegram Bond profile failed");
+            no_store_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "profile_unavailable",
+                "The Bond profile is unavailable.",
+            )
+        }
+    }
+}
+
 async fn chat_activation(
     State(host): State<LoginHost>,
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(query): Json<ChatActivationQuery>,
 ) -> Response {
-    let (subject, now) = match chat_activation_caller(&host, principal, &query) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &query) {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -491,7 +532,7 @@ async fn chat_activation_answer(
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(answer): Json<ChatActivationAnswer>,
 ) -> Response {
-    let (subject, now) = match chat_activation_caller(&host, principal, &answer.chat()) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &answer.chat()) {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -840,6 +881,7 @@ mod tests {
             "request_id": "a".repeat(32), "approve": true
         });
         for (path, body) in [
+            (CHAT_PROFILE_PATH, sender.clone()),
             (CHAT_ACTIVATION_PATH, sender.clone()),
             (CHAT_ACTIVATION_ANSWER_PATH, answer.clone()),
         ] {

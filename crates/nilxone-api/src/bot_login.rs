@@ -87,6 +87,9 @@ refusals! {
 /// the person presses nothing in the chat.
 pub const CONFIRM_PATH: &str = "/api/v1/telegram/login/confirm";
 
+/// Read the Bond profile of the chat's current product session.
+pub const CHAT_PROFILE_PATH: &str = "/api/v1/telegram/profile";
+
 /// The verified sender and chat of the `/login` command and that message,
 /// as sent at login start. The fields and checks are
 /// those of [`LoginStartRequest`]; it selects no identity either.
