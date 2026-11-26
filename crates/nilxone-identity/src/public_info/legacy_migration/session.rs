@@ -282,6 +282,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wallet_history_is_bounded_ordered_and_session_owned() {
+        use nilxone_api::bot_login::ChatSeedsEntryKind;
+
+        let (store, _dir) = store().await;
+        let a = profile(&store, "subject-a", &token('a')).await;
+        let b = profile(&store, "subject-b", &token('b')).await;
+        attach(&store, "0x1owner", &a).await;
+        attach(&store, "0x1other", &b).await;
+        exec(
+            &store,
+            "INSERT INTO bond_seeds VALUES ('0x1owner', 51)",
+            &[],
+        )
+        .await;
+        exec(
+            &store,
+            "INSERT INTO bond_seed_credits VALUES ('0x1owner', 'starter', 'once', 60, 10),
+                                                 ('0x1other', 'starter', 'once', 99, 20)",
+            &[],
+        )
+        .await;
+        exec(
+            &store,
+            "INSERT INTO craft_receipts VALUES ('fixture-craft', '0x1owner', 'fixture', 9, 20)",
+            &[],
+        )
+        .await;
+        let owner = store
+            .repository
+            .restore_session(&token('a'), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        let wallet = store
+            .repository
+            .read_chat_wallet(&owner, NOW)
+            .await
+            .unwrap();
+        assert_eq!(wallet.seeds, Some(51));
+        assert_eq!(
+            wallet
+                .recent
+                .iter()
+                .map(|entry| (entry.kind, entry.delta))
+                .collect::<Vec<_>>(),
+            [
+                (ChatSeedsEntryKind::Craft, -9),
+                (ChatSeedsEntryKind::Starter, 60)
+            ]
+        );
+        let expired = store
+            .repository
+            .read_chat_wallet(&owner, NOW + 600)
+            .await
+            .unwrap();
+        assert!(expired.seeds.is_none());
+        assert!(expired.recent.is_empty());
+
+        for n in 0..12 {
+            sqlx::query("INSERT INTO craft_receipts VALUES (?, '0x1owner', 'fixture', 1, ?)")
+                .bind(format!("fixture-{n}"))
+                .bind(30 + n)
+                .execute(&store.repository.pool)
+                .await
+                .unwrap();
+        }
+        let wallet = store
+            .repository
+            .read_chat_wallet(&owner, NOW)
+            .await
+            .unwrap();
+        assert_eq!(wallet.recent.len(), 10);
+        assert_eq!(wallet.recent[0].at_ms, 41);
+        assert_eq!(wallet.recent[9].at_ms, 32);
+    }
+
+    #[tokio::test]
     async fn an_unbound_profile_with_a_matching_name_is_not_a_bond() {
         let (store, _dir) = store().await;
         profile(&store, "subject-a", &token('a')).await;
