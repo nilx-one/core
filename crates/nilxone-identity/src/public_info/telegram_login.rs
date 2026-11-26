@@ -14,8 +14,7 @@ use crate::aiaiaiai_sign_in::{SignInClient, SignInError, SignInTransaction, Veri
 use nilxone_api::activation::ClientState;
 
 use super::{
-    AuthenticatedProfile, PublicInfoError, PublicInfoRepository,
-    activation::{ActivationError, request_for_stateless_client},
+    AuthenticatedProfile, PublicInfoError, PublicInfoRepository, activation::ActivationError,
 };
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
@@ -431,23 +430,12 @@ impl PublicInfoRepository {
             expires_sql,
         )
         .await?;
-        // The password signed the chat in; another client is active, so the
-        // chat asks it at once. The chat keeps no device state: once the
-        // active client agrees and uploads, the back-end parks the data and
-        // switches. A refusal (the hourly limit) leaves the chat signed in
-        // and inactive, as before.
-        if !active {
-            match request_for_stateless_client(&mut db, &token_hash, now_sql).await {
-                Ok(_) => {}
-                Err(ActivationError::Refused(refusal)) => {
-                    tracing::warn!(
-                        refusal = refusal.code(),
-                        "Telegram chat could not ask the active client"
-                    );
-                }
-                Err(ActivationError::Storage(error)) => return Err(error.into()),
-            }
-        }
+        // The password signs the chat in; it never asks to take activity by
+        // itself. The Telegram chat and the Mini App are to share one session
+        // (owner decision of 2026-11-26), so a chat that asked the Mini App
+        // of the same Telegram account would hand activity to itself. Until
+        // that shared session exists, the chat signs in inactive beside
+        // another active client, as before.
         sqlx::query(
             "INSERT INTO telegram_chat_sessions (workload_subject, actor_id, token_hash)
              VALUES (?, ?, ?)
@@ -532,9 +520,10 @@ impl PublicInfoRepository {
             Err(ActivationError::Storage(error)) => return Err(error.into()),
         };
         Ok(Some(match state.state {
-            ClientState::AuthenticatedActive | ClientState::ApprovalRequested => {
-                TelegramLoginProgress::SignedIn
-            }
+            // Signed in; inactive beside another client is signed in too.
+            ClientState::AuthenticatedActive
+            | ClientState::ApprovalRequested
+            | ClientState::ActiveElsewhere => TelegramLoginProgress::SignedIn,
             ClientState::ActivationPending
             | ClientState::ActivationApproved
             | ClientState::ActivationSyncing => TelegramLoginProgress::AwaitingApproval {
@@ -1380,6 +1369,30 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!chat.active, "the password alone never takes activity away");
+        // The chat asks nobody by itself: it is signed in, inactive.
+        assert_eq!(
+            repository
+                .telegram_login_progress(state, 101)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::SignedIn)
+        );
+        let requests: i64 = sqlx::query_scalar("SELECT count(*) FROM product_activation_requests")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(requests, 0);
+        // A chat that does ask is shown waiting for that client.
+        let chat_token: String =
+            sqlx::query_scalar("SELECT token_hash FROM telegram_chat_sessions")
+                .fetch_one(&repository.pool)
+                .await
+                .unwrap();
+        let mut connection = repository.pool.acquire().await.unwrap();
+        super::super::activation::request_for_stateless_client(&mut connection, &chat_token, 101)
+            .await
+            .unwrap();
+        drop(connection);
         assert_eq!(
             repository
                 .telegram_login_progress(state, 101)

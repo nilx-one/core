@@ -536,6 +536,7 @@ fn signed(value: u64) -> Result<i64, sqlx::Error> {
 /// chat, asks to become the active client inside the caller's transaction.
 /// The active client agrees and uploads as usual; the back-end parks the
 /// whole upload for the owner and switches, since nobody would fetch it.
+#[cfg(test)]
 pub(super) async fn request_for_stateless_client(
     connection: &mut SqliteConnection,
     token_hash: &str,

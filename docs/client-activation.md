@@ -64,7 +64,7 @@ Owner decisions of 2026-11-26:
 - The parked data stays as long as it is needed: until activity moves to a client that keeps its state on its device, and that client has applied it. There is no expiry.
 - Fresh data always overwrites a device's local copy, atomically, once the switch can no longer be undone.
 
-Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away. The chat asks by itself when it signs in while another client is active (`docs/telegram-bot-ais-login.md`).
+Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away. The chat does not ask by itself when it signs in while another client is active: the Telegram chat and the Mini App are to share one session (`docs/telegram-bot-ais-login.md`).
 
 ### When the chat is the active client
 
