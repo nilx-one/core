@@ -195,6 +195,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_state_reads_only_the_live_bound_owners_avaia_and_wallet() {
+        let (store, dir) = store().await;
+        let token_a = token('a');
+        let bound = profile(&store, "subject-a", &token_a).await;
+        attach(&store, "0x1owner", &bound).await;
+        exec(
+            &store,
+            "INSERT INTO bond_seeds (owner_pub_dress, balance) VALUES ('0x1owner', 51)",
+            &[],
+        )
+        .await;
+        let owner = store
+            .repository
+            .restore_session(&token_a, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = store
+            .repository
+            .read_chat_bond_state(&owner, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.seeds, 51);
+        assert!(snapshot.avaia.is_none());
+        let legacy = IdentityRepository::connect(&format!(
+            "sqlite://{}",
+            dir.path().join("session.sqlite").display()
+        ))
+        .await
+        .unwrap();
+        let address = "0x1owner".parse().unwrap();
+        let avaia = crate::AvaiaPubDress::derive_default(&address);
+        legacy
+            .configure_owned_avaia(&address, &avaia, NOW)
+            .await
+            .unwrap();
+        legacy
+            .write_avaia_location(
+                &address,
+                crate::AvaiaLocation {
+                    coordinate: crate::GeoCoordinate::new(305200000, 504500000).unwrap(),
+                    updated_at: crate::DecimalU64::new(NOW),
+                    travel_revision: 0,
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = store
+            .repository
+            .read_chat_bond_state(&owner, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        let avatar = snapshot.avaia.unwrap();
+        assert_eq!(avatar.pub_dress, avaia.to_string());
+        assert!(avatar.configured);
+        assert_eq!(avatar.location_e7, Some((504500000, 305200000)));
+
+        assert!(
+            store
+                .repository
+                .read_chat_bond_state(&owner, NOW + 600)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let token_b = token('b');
+        profile(&store, "subject-b", &token_b).await;
+        let unrelated = store
+            .repository
+            .restore_session(&token_b, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .repository
+                .read_chat_bond_state(&unrelated, NOW)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn an_unbound_profile_with_a_matching_name_is_not_a_bond() {
         let (store, _dir) = store().await;
         profile(&store, "subject-a", &token('a')).await;

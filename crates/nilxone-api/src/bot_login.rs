@@ -164,6 +164,65 @@ impl ChatActivationQuery {
     }
 }
 
+/// Section requested from the signed chat profile endpoint.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatProfileSection {
+    #[default]
+    Bond,
+    Avaia,
+    Wallet,
+}
+
+/// Existing clients may omit the section to read the Bond projection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatProfileQuery {
+    pub version: u8,
+    pub provider: String,
+    pub provider_actor_id: u64,
+    pub chat_id: i64,
+    #[serde(default)]
+    pub section: ChatProfileSection,
+}
+
+impl ChatProfileQuery {
+    #[must_use]
+    pub fn chat(self) -> ChatActivationQuery {
+        ChatActivationQuery {
+            version: self.version,
+            provider: self.provider,
+            provider_actor_id: self.provider_actor_id,
+            chat_id: self.chat_id,
+        }
+    }
+}
+
+/// The configured Avaia and last stored position of the session's own Bond.
+#[derive(Debug, Serialize)]
+pub struct ChatAvaiaProfile {
+    pub avaia: Option<ChatAvaia>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatAvaia {
+    pub pub_dress: String,
+    pub configured: bool,
+    pub location: Option<ChatAvaiaLocation>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChatAvaiaLocation {
+    pub latitude_e7: i32,
+    pub longitude_e7: i32,
+}
+
+/// The service ledger balance. An unbound profile has no wallet projection.
+#[derive(Debug, Serialize)]
+pub struct ChatWalletProfile {
+    pub seeds: Option<u64>,
+}
+
 /// The chat's answer to an activation request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

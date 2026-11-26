@@ -35,8 +35,10 @@ use nilxone_api::{
     activation::ActivationRefusal,
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_PROFILE_PATH, CONFIRM_PATH,
-        ChatActivationAnswer, ChatActivationQuery, LoginConfirmRefusal, LoginConfirmRequest,
-        LoginConfirmResponse, LoginStartRefusal, LoginStartRequest, START_PATH,
+        ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation, ChatAvaiaProfile,
+        ChatProfileQuery, ChatProfileSection, ChatWalletProfile, LoginConfirmRefusal,
+        LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal, LoginStartRequest,
+        START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -474,8 +476,10 @@ fn verified_chat_caller(
 async fn chat_profile(
     State(host): State<LoginHost>,
     principal: Option<Extension<AuthorizedLoginBot>>,
-    Json(query): Json<ChatActivationQuery>,
+    Json(query): Json<ChatProfileQuery>,
 ) -> Response {
+    let section = query.section;
+    let query = query.chat();
     let (subject, now) = match verified_chat_caller(&host, principal, &query) {
         Ok(caller) => caller,
         Err(response) => return *response,
@@ -485,7 +489,7 @@ async fn chat_profile(
         .restore_telegram_chat_session(&subject, query.provider_actor_id, now)
         .await
     {
-        Ok(Some(owner)) => {
+        Ok(Some(owner)) if section == ChatProfileSection::Bond => {
             let profile = owner.public_profile();
             no_store_json(
                 StatusCode::OK,
@@ -495,6 +499,37 @@ async fn chat_profile(
                 }),
             )
         }
+        Ok(Some(owner)) => match host.repository.read_chat_bond_state(&owner, now).await {
+            Ok(state) if section == ChatProfileSection::Wallet => no_store_json(
+                StatusCode::OK,
+                ChatWalletProfile {
+                    seeds: state.map(|state| state.seeds),
+                },
+            ),
+            Ok(state) => no_store_json(
+                StatusCode::OK,
+                ChatAvaiaProfile {
+                    avaia: state.and_then(|state| state.avaia).map(|avaia| ChatAvaia {
+                        pub_dress: avaia.pub_dress,
+                        configured: avaia.configured,
+                        location: avaia.location_e7.map(|(latitude_e7, longitude_e7)| {
+                            ChatAvaiaLocation {
+                                latitude_e7,
+                                longitude_e7,
+                            }
+                        }),
+                    }),
+                },
+            ),
+            Err(error) => {
+                tracing::error!(%error, "reading Telegram Bond state failed");
+                no_store_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "profile_unavailable",
+                    "The Bond state is unavailable.",
+                )
+            }
+        },
         Ok(None) => no_store_error(
             StatusCode::UNAUTHORIZED,
             ActivationRefusal::AuthenticationRequired.code(),
