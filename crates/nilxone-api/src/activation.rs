@@ -35,6 +35,18 @@ pub const SYNC_PATH: &str = "/api/v1/session/activation/requests/{id}/sync";
 /// becomes the active client.
 pub const COMPLETE_PATH: &str = "/api/v1/session/activation/requests/{id}/complete";
 
+/// The data the back-end parked for the owner while the active client kept
+/// no device state, or that the active client parked before it signed out.
+/// `GET` with [`DownloadPartQuery`]: the active client that keeps its state
+/// on its device fetches one part as raw bytes. `PUT` with
+/// [`UploadPartQuery`] and raw bytes: the active client parks its data in
+/// parts, before it signs out; the part that makes it whole replaces what
+/// was parked.
+pub const PARKED_PATH: &str = "/api/v1/session/parked";
+/// `POST` [`CompleteRequest`]: the active client applied the parked data
+/// with this digest; the back-end deletes it.
+pub const PARKED_ACK_PATH: &str = "/api/v1/session/parked/ack";
+
 /// A request id is 16 random bytes in lowercase hex.
 pub const REQUEST_ID_LEN: usize = 32;
 /// How long the active client has to answer a request.
@@ -517,6 +529,20 @@ pub struct ActivationState {
     pub active_client_label: Option<String>,
     /// The request that concerns this client, if any.
     pub request: Option<ActivationRequestView>,
+    /// Parked data this client must fetch, apply over its own and
+    /// acknowledge. Only for the active client that keeps its state on its
+    /// device; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked: Option<ParkedView>,
+}
+
+/// Parked data waiting for the active client.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ParkedView {
+    /// Its size; fetch it in parts of [`sync_part_len`].
+    pub total_bytes: u64,
+    /// [`sync_digest`] of the whole, to acknowledge with.
+    pub digest: String,
 }
 
 /// The query of `PUT` [`SYNC_PATH`]. The body is the part's raw bytes.
@@ -594,6 +620,7 @@ refusals! {
         SyncOutOfOrder => ("sync_out_of_order", 409),
         InvalidSyncDigest => ("invalid_sync_digest", 422),
         SyncIncomplete => ("sync_incomplete", 409),
+        ParkedNotFound => ("parked_data_not_found", 404),
     }
 }
 
@@ -602,7 +629,7 @@ refusals! {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivationReading {
     /// The caller's state.
-    State(ActivationState),
+    State(Box<ActivationState>),
     /// The service refused; nothing changed. Read the state again.
     Refused {
         /// Why.
@@ -638,7 +665,7 @@ pub fn read_activation(ok: bool, body: &str) -> ActivationReading {
                 .as_ref()
                 .is_none_or(ActivationRequestView::progress_is_consistent);
         if consistent {
-            ActivationReading::State(state)
+            ActivationReading::State(Box::new(state))
         } else {
             ActivationReading::Unavailable
         }

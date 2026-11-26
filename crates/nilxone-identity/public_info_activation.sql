@@ -28,6 +28,8 @@ WHERE active = 1;
 -- `requester_keeps_state` is 0 for an asking client that keeps no device
 -- state, such as the Telegram chat. Its request parks the whole upload for
 -- the owner (`product_parked_payloads`) and switches at once; nobody fetches.
+-- `approver_keeps_state` is 0 when the client that was active keeps no
+-- device state: its data is already parked, so its approval is the switch.
 CREATE TABLE IF NOT EXISTS product_activation_requests (
     id TEXT PRIMARY KEY NOT NULL COLLATE BINARY CHECK (length(id) = 32),
     issuer TEXT NOT NULL COLLATE BINARY,
@@ -49,6 +51,7 @@ CREATE TABLE IF NOT EXISTS product_activation_requests (
     sync_delivered INTEGER NOT NULL DEFAULT 0 CHECK (sync_delivered >= 0),
     sync_digest TEXT COLLATE BINARY CHECK (length(sync_digest) = 64),
     requester_keeps_state INTEGER NOT NULL DEFAULT 1 CHECK (requester_keeps_state IN (0, 1)),
+    approver_keeps_state INTEGER NOT NULL DEFAULT 1 CHECK (approver_keeps_state IN (0, 1)),
     FOREIGN KEY (issuer, subject) REFERENCES public_profiles (issuer, subject) ON DELETE CASCADE
 ) STRICT;
 
@@ -97,4 +100,23 @@ CREATE TABLE IF NOT EXISTS product_parked_payload_parts (
     PRIMARY KEY (issuer, subject, part_offset),
     FOREIGN KEY (issuer, subject) REFERENCES product_parked_payloads (issuer, subject)
         ON DELETE CASCADE
+) STRICT;
+
+-- The active client's data on its way to being parked before it signs out,
+-- in the parts it arrived in. The part that makes it whole replaces the
+-- owner's parked data and these rows are deleted. Ending the session drops
+-- them.
+CREATE TABLE IF NOT EXISTS product_parking (
+    token_hash TEXT PRIMARY KEY NOT NULL COLLATE BINARY
+        REFERENCES product_sessions (token_hash) ON DELETE CASCADE,
+    total INTEGER NOT NULL CHECK (total >= 0),
+    uploaded INTEGER NOT NULL DEFAULT 0 CHECK (uploaded >= 0)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS product_parking_parts (
+    token_hash TEXT NOT NULL COLLATE BINARY
+        REFERENCES product_parking (token_hash) ON DELETE CASCADE,
+    part_offset INTEGER NOT NULL CHECK (part_offset >= 0),
+    data BLOB NOT NULL,
+    PRIMARY KEY (token_hash, part_offset)
 ) STRICT;

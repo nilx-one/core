@@ -66,7 +66,24 @@ Owner decisions of 2026-11-26:
 
 Every other rule here holds, including the hourly limit and that a password sign-in alone never takes activity away. The chat asks by itself when it signs in while another client is active (`docs/telegram-bot-ais-login.md`).
 
-Not yet in this contract: a device client taking activity from the chat and fetching the parked data, and parking on sign-out of the active client.
+### When the chat is the active client
+
+A device that asks while the chat is active makes a request with `approver_keeps_state = 0`. The chat answers through the bot (`docs/telegram-bot-ais-login.md`, chat activation). Its data is parked already, so its approval is the switch: one transaction compares the epoch, switches and completes the request. Nothing is uploaded or fetched for the request itself.
+
+### Parked data
+
+The owner has at most one parked copy. Only the active session of a client that keeps its state on its device sees it: its `ActivationState` carries `parked` (`total_bytes`, `digest`). That client:
+
+1. fetches it in parts with `download_parked_part` (`GET /api/v1/session/parked?offset=`), as often as it needs to;
+2. applies it over its own copy, atomically: the switch has already happened, so nothing can undo it any more;
+3. acknowledges with `acknowledge_parked` (`POST /api/v1/session/parked/ack`, `{"digest": …}`). A matching digest deletes the parked data; a wrong one is `sync_incomplete` and deletes nothing. Again, or with nothing parked, it only answers the state.
+
+Until it acknowledges, the parked data stays, so a client that crashed while applying fetches it again.
+
+### Parking on sign-out
+
+Before it signs out, the active client that keeps its state on its device parks its data with `park_part` (`PUT /api/v1/session/parked?offset=&total_bytes=`), in the parts of a handoff. A first part starts over; the part that makes it whole replaces the owner's parked data; the same part again is a retry. Then it signs out. The next client to become active finds the data parked and applies it. A client that signs out without parking parks nothing; its data stays on its device.
+
 
 ## The sync
 
@@ -146,6 +163,9 @@ The host serves these paths (`nilxone_api::activation`) and applies its own sess
 | `PUT …/requests/{id}/sync?offset=&total_bytes=`, raw bytes | active | `upload_activation_sync_part` |
 | `GET …/requests/{id}/sync?offset=`, answers raw bytes | asking | `download_activation_sync_part` |
 | `POST …/requests/{id}/complete`, `{"digest": …}` | asking | `complete_activation` |
+| `GET /api/v1/session/parked?offset=`, answers raw bytes | active, keeps state | `download_parked_part` |
+| `PUT /api/v1/session/parked?offset=&total_bytes=`, raw bytes | active, keeps state | `park_part` |
+| `POST /api/v1/session/parked/ack`, `{"digest": …}` | active, keeps state | `acknowledge_parked` |
 
 A refusal is `ActivationError::Refused`; the host answers its `code()` and `http_status()` in the common error body.
 
@@ -161,6 +181,7 @@ A refusal is `ActivationError::Refused`; the host answers its `code()` and `http
 | `sync_out_of_order` | 409 | The part is not the next one, is of the wrong size, or the size changed. Read the state and continue from its counts. |
 | `invalid_sync_digest` | 422 | The digest is not 64 lowercase hex characters. |
 | `sync_incomplete` | 409 | The digest is not that of the uploaded data. Fetch again from the first part. |
+| `parked_data_not_found` | 404 | Nothing is parked for the owner. |
 
 ## Policy numbers
 

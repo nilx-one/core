@@ -31,14 +31,18 @@ use axum::{
     response::{IntoResponse as _, Response},
     routing::{get, post},
 };
-use nilxone_api::bot_login::{
-    CONFIRM_PATH, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
-    LoginStartRefusal, LoginStartRequest, START_PATH,
+use nilxone_api::{
+    activation::ActivationRefusal,
+    bot_login::{
+        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CONFIRM_PATH, ChatActivationAnswer,
+        ChatActivationQuery, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
+        LoginStartRefusal, LoginStartRequest, START_PATH,
+    },
 };
 use nilxone_identity::{
     aiaiaiai_sign_in::SignInClient,
     public_info::{
-        LegacyBondMigrationRepository, PublicInfoRepository, TelegramLoginError,
+        ActivationError, LegacyBondMigrationRepository, PublicInfoRepository, TelegramLoginError,
         TelegramLoginProgress,
     },
     rate_limit::AttemptLimiter,
@@ -106,7 +110,10 @@ fn router(host: LoginHost) -> Router {
     let confirm = host.chat.is_some();
     let router = Router::new().route(START_PATH, post(start));
     let router = if confirm {
-        router.route(CONFIRM_PATH, post(confirm_login))
+        router
+            .route(CONFIRM_PATH, post(confirm_login))
+            .route(CHAT_ACTIVATION_PATH, post(chat_activation))
+            .route(CHAT_ACTIVATION_ANSWER_PATH, post(chat_activation_answer))
     } else {
         router
     };
@@ -393,6 +400,108 @@ async fn progress(State(host): State<LoginHost>, Query(query): Query<ProgressQue
     )
 }
 
+fn activation_refusal(refusal: ActivationRefusal) -> Response {
+    no_store_error(
+        StatusCode::from_u16(refusal.http_status()).expect("Core HTTP status"),
+        refusal.code(),
+        "The chat's activation step was refused.",
+    )
+}
+
+/// The bot's view of the chat's activation, or why there is none.
+fn chat_activation_answer_of(
+    answer: Result<Option<nilxone_api::activation::ActivationState>, ActivationError>,
+) -> Response {
+    match answer {
+        Ok(Some(state)) => no_store_json(StatusCode::OK, state),
+        Ok(None) => activation_refusal(ActivationRefusal::AuthenticationRequired),
+        Err(ActivationError::Refused(refusal)) => activation_refusal(refusal),
+        Err(ActivationError::Storage(error)) => {
+            tracing::error!(%error, "Telegram chat activation failed");
+            no_store_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "login_service_unavailable",
+                "The chat's activation is unavailable.",
+            )
+        }
+    }
+}
+
+/// The checks every chat activation route shares: the authenticated bot,
+/// a well-formed sender and chat, and the sender's own budget.
+fn chat_activation_caller(
+    host: &LoginHost,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    chat: &ChatActivationQuery,
+) -> Result<(String, u64), Box<Response>> {
+    let Some(Extension(AuthorizedLoginBot(subject))) = principal else {
+        return Err(Box::new(refusal(
+            LoginStartRefusal::ServiceAuthenticationRequired,
+        )));
+    };
+    if host.chat.is_none() {
+        return Err(Box::new(refusal(
+            LoginStartRefusal::LoginServiceUnavailable,
+        )));
+    }
+    if !chat.is_valid() {
+        return Err(Box::new(refusal(
+            LoginStartRefusal::InvalidProviderEvidence,
+        )));
+    }
+    let Some(now) = now_unix_seconds() else {
+        return Err(Box::new(refusal(
+            LoginStartRefusal::LoginServiceUnavailable,
+        )));
+    };
+    let limit_key = format!("activation:{subject}:{}", chat.provider_actor_id);
+    if let Err(retry) = host.attempts.consume(limit_key, now, 60, 60) {
+        return Err(Box::new(rate_limited(
+            refusal(LoginStartRefusal::LoginRateLimited),
+            retry,
+        )));
+    }
+    Ok((subject, now))
+}
+
+async fn chat_activation(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(query): Json<ChatActivationQuery>,
+) -> Response {
+    let (subject, now) = match chat_activation_caller(&host, principal, &query) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    chat_activation_answer_of(
+        host.repository
+            .telegram_chat_activation_state(&subject, query.provider_actor_id, now)
+            .await,
+    )
+}
+
+async fn chat_activation_answer(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(answer): Json<ChatActivationAnswer>,
+) -> Response {
+    let (subject, now) = match chat_activation_caller(&host, principal, &answer.chat()) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    chat_activation_answer_of(
+        host.repository
+            .answer_telegram_chat_activation(
+                &subject,
+                answer.provider_actor_id,
+                &answer.request_id,
+                answer.approve,
+                now,
+            )
+            .await,
+    )
+}
+
 async fn confirm_login(
     State(host): State<LoginHost>,
     principal: Option<Extension<AuthorizedLoginBot>>,
@@ -618,6 +727,76 @@ mod tests {
                 .insert(AuthorizedLoginBot("test-bot".into()));
         }
         request
+    }
+
+    fn bot_request(trusted: bool, path: &str, body: serde_json::Value) -> Request<Body> {
+        let mut request = Request::post(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        if trusted {
+            request
+                .extensions_mut()
+                .insert(AuthorizedLoginBot("test-bot".into()));
+        }
+        request
+    }
+
+    #[tokio::test]
+    async fn the_chat_reads_and_answers_activation_only_as_the_bot_for_its_own_session() {
+        let app = router(host(offline_client(), Some(chat())).await);
+        let sender = serde_json::json!({
+            "version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42
+        });
+        let answer = serde_json::json!({
+            "version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42,
+            "request_id": "a".repeat(32), "approve": true
+        });
+        for (path, body) in [
+            (CHAT_ACTIVATION_PATH, sender.clone()),
+            (CHAT_ACTIVATION_ANSWER_PATH, answer.clone()),
+        ] {
+            let untrusted = app
+                .clone()
+                .oneshot(bot_request(false, path, body.clone()))
+                .await
+                .unwrap();
+            assert_eq!(untrusted.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                error_code(untrusted).await,
+                "service_authentication_required"
+            );
+            // A chat that never signed in has no activation to read or answer.
+            let unsigned = app
+                .clone()
+                .oneshot(bot_request(true, path, body))
+                .await
+                .unwrap();
+            assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                error_code(unsigned).await,
+                "provider_authentication_required"
+            );
+        }
+        let other_chat = app
+            .clone()
+            .oneshot(bot_request(
+                true,
+                CHAT_ACTIVATION_PATH,
+                serde_json::json!({
+                    "version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 43
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(other_chat.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // Without chat sign-in the routes are not mounted.
+        let bare = router(host(offline_client(), None).await);
+        let missing = bare
+            .oneshot(bot_request(true, CHAT_ACTIVATION_PATH, sender))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     async fn error_code(response: Response) -> String {

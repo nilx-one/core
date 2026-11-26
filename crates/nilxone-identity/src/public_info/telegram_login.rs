@@ -548,6 +548,58 @@ impl PublicInfoRepository {
         }))
     }
 
+    /// The chat's own activation state, for the bot to show. `None` when the
+    /// chat has no session. The host passes the bot workload it
+    /// authenticated and the sender of a verified private update.
+    pub async fn telegram_chat_activation_state(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        now: u64,
+    ) -> Result<Option<nilxone_api::activation::ActivationState>, ActivationError> {
+        let Some(token_hash) = self.chat_token(workload_subject, sender_id).await? else {
+            return Ok(None);
+        };
+        self.activation_state(&token_hash, now).await.map(Some)
+    }
+
+    /// The chat approves or declines the request it was shown. The chat
+    /// keeps no device state, so approving switches at once: its data is
+    /// parked already. `None` when the chat has no session.
+    pub async fn answer_telegram_chat_activation(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        request_id: &str,
+        approve: bool,
+        now: u64,
+    ) -> Result<Option<nilxone_api::activation::ActivationState>, ActivationError> {
+        let Some(token_hash) = self.chat_token(workload_subject, sender_id).await? else {
+            return Ok(None);
+        };
+        let answer = if approve {
+            self.approve_activation(&token_hash, request_id, now).await
+        } else {
+            self.decline_activation(&token_hash, request_id, now).await
+        };
+        answer.map(Some)
+    }
+
+    async fn chat_token(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+    ) -> Result<Option<String>, ActivationError> {
+        match self
+            .telegram_chat_session(workload_subject, sender_id)
+            .await
+        {
+            Ok(token) => Ok(token),
+            Err(PublicInfoError::Storage(error)) => Err(error.into()),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// The owner of the live session this chat signed in to, for a later
     /// update from the same bot workload and verified sender. An inactive
     /// session restores too; a write checks activity itself.

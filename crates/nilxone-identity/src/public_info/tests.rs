@@ -113,6 +113,8 @@ async fn separate_database_and_subject_attachment_preserve_experience_across_ren
             "product_activation_sync",
             "product_parked_payload_parts",
             "product_parked_payloads",
+            "product_parking",
+            "product_parking_parts",
             "product_sessions",
             "public_profiles",
             "telegram_chat_sessions",

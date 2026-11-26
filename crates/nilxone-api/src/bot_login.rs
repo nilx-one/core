@@ -121,6 +121,77 @@ refusals! {
     }
 }
 
+/// POST [`ChatActivationQuery`], with the same authenticated bot-service
+/// credentials as login start: the chat's own
+/// [`crate::activation::ActivationState`]. While the chat is the active
+/// client and a device asks, its state is `approval_requested` and the bot
+/// shows approve and decline. No chat session answers
+/// `provider_authentication_required` (401).
+pub const CHAT_ACTIVATION_PATH: &str = "/api/v1/telegram/activation";
+
+/// POST [`ChatActivationAnswer`]: the chat approves or declines the request
+/// `request_id`, which only its own sender can press in its own chat. The
+/// chat keeps no device state; its data is parked already, so approving is
+/// the switch. The answer is the chat's state afterwards, refusals are
+/// [`crate::activation::ActivationRefusal`] codes.
+pub const CHAT_ACTIVATION_ANSWER_PATH: &str = "/api/v1/telegram/activation/answer";
+
+/// The verified sender of a private chat, as at login start.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatActivationQuery {
+    /// The expected wire contract.
+    pub version: u8,
+    /// Only Telegram.
+    pub provider: String,
+    /// Verified Telegram sender id.
+    pub provider_actor_id: u64,
+    /// The private chat, the sender's own.
+    pub chat_id: i64,
+}
+
+impl ChatActivationQuery {
+    /// Whether the fields have the shape login start accepts.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.version == WIRE_VERSION
+            && self.provider == "telegram"
+            && self.provider_actor_id > 0
+            && i64::try_from(self.provider_actor_id).ok() == Some(self.chat_id)
+    }
+}
+
+/// The chat's answer to an activation request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatActivationAnswer {
+    /// The expected wire contract.
+    pub version: u8,
+    /// Only Telegram.
+    pub provider: String,
+    /// Verified Telegram sender id of the press.
+    pub provider_actor_id: u64,
+    /// The private chat, the sender's own.
+    pub chat_id: i64,
+    /// The request shown to the chat.
+    pub request_id: String,
+    /// Approve, or decline.
+    pub approve: bool,
+}
+
+impl ChatActivationAnswer {
+    /// The sender and chat, as a query.
+    #[must_use]
+    pub fn chat(&self) -> ChatActivationQuery {
+        ChatActivationQuery {
+            version: self.version,
+            provider: self.provider.clone(),
+            provider_actor_id: self.provider_actor_id,
+            chat_id: self.chat_id,
+        }
+    }
+}
+
 /// The header that carries the bot's request signature.
 pub const SIGNATURE_HEADER: &str = "x-0x1-telegram-bot-signature";
 /// How far a signature's timestamp may be from the host's clock.
