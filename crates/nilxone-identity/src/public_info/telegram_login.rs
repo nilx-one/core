@@ -491,30 +491,24 @@ impl PublicInfoRepository {
         };
         let state_digest = Sha256::digest(state.as_bytes());
         let Some(row) = sqlx::query(
-            "SELECT t.workload_subject, t.actor_id, t.chat_id, t.message_id, t.expires_at, c.token_hash
-             FROM telegram_login_transactions t LEFT JOIN telegram_login_claims c USING (state_digest)
+            "SELECT t.expires_at, c.token_hash, s.token_hash IS NOT NULL AS bound,
+                    f.expires_at IS NOT NULL AS failed
+             FROM telegram_login_transactions t
+             LEFT JOIN telegram_login_failures f
+               ON (f.workload_subject, f.actor_id, f.chat_id, f.message_id) =
+                  (t.workload_subject, t.actor_id, t.chat_id, t.message_id) AND f.expires_at > ?
+             LEFT JOIN telegram_login_claims c USING (state_digest)
+             LEFT JOIN telegram_chat_sessions s ON s.token_hash = c.token_hash
              WHERE t.state_digest = ?",
         )
+        .bind(now_sql)
         .bind(&state_digest[..])
         .fetch_optional(&self.pool)
         .await?
         else {
             return Ok(None);
         };
-        let login = LoginMessage::from_row(&row)?;
-        let failed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM telegram_login_failures
-             WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?
-                 AND expires_at > ?)",
-        )
-        .bind(&login.workload_subject)
-        .bind(login.actor_id)
-        .bind(login.chat_id)
-        .bind(login.message_id)
-        .bind(now_sql)
-        .fetch_one(&self.pool)
-        .await?;
-        if failed {
+        if row.try_get::<bool, _>("failed")? {
             return Ok(Some(TelegramLoginProgress::Failed));
         }
         let Some(token_hash) = row.try_get::<Option<String>, _>("token_hash")? else {
@@ -528,6 +522,9 @@ impl PublicInfoRepository {
                 TelegramLoginProgress::Waiting
             }));
         };
+        if !row.try_get::<bool, _>("bound")? {
+            return Ok(Some(TelegramLoginProgress::Declined));
+        }
         let state = match self.activation_state(&token_hash, now).await {
             Ok(state) => state,
             // The session ended in between: signed out, or replaced.
@@ -1237,7 +1234,7 @@ mod tests {
         assert_eq!(chat.owner.public_profile(), web.public_profile());
         // A second /login in the same chat replaces the chat's session.
         repository
-            .await_telegram_confirmation(&verified(8, "pairwise"), 102)
+            .await_telegram_confirmation(&verified(8, "another-bond"), 102)
             .await
             .unwrap();
         repository
@@ -1503,7 +1500,7 @@ mod tests {
             Some(TelegramLoginProgress::Waiting)
         );
         repository
-            .await_telegram_confirmation(&verified(8, "pairwise"), 102)
+            .await_telegram_confirmation(&verified(8, "another-bond"), 102)
             .await
             .unwrap();
         repository
