@@ -1458,3 +1458,237 @@ async fn a_store_from_before_activation_keeps_every_session_and_one_active() {
     active.sort();
     assert_eq!(active, [token("older"), token("only")]);
 }
+
+/// Signs `name` in as the owner's Telegram chat: a client that keeps no
+/// device state.
+async fn chat(repository: &PublicInfoRepository, name: &str, now: u64) -> bool {
+    let active = sign_in(repository, "bond", name, "Telegram · Chat", now, DAY).await;
+    sqlx::query(
+        "INSERT INTO telegram_chat_sessions (workload_subject, actor_id, token_hash) \
+         VALUES ('bot', 42, ?)",
+    )
+    .bind(token(name))
+    .execute(&repository.pool)
+    .await
+    .unwrap();
+    active
+}
+
+async fn park(
+    repository: &PublicInfoRepository,
+    token: &str,
+    data: &[u8],
+    now: u64,
+) -> ActivationState {
+    let total_bytes = data.len() as u64;
+    let mut offset = 0;
+    loop {
+        let len = sync_part_len(total_bytes, offset).unwrap();
+        let end = offset + len;
+        let answer = repository
+            .park_part(
+                token,
+                UploadPartQuery {
+                    offset,
+                    total_bytes,
+                },
+                &data[offset as usize..end as usize],
+                now,
+            )
+            .await
+            .unwrap();
+        offset = end;
+        if offset == total_bytes {
+            return answer;
+        }
+    }
+}
+
+async fn fetch_parked(
+    repository: &PublicInfoRepository,
+    token: &str,
+    total: u64,
+    now: u64,
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut offset = 0;
+    while let Some(len) = sync_part_len(total, offset) {
+        data.extend(
+            repository
+                .download_parked_part(token, offset, now)
+                .await
+                .unwrap(),
+        );
+        offset += len;
+        if offset >= total {
+            break;
+        }
+    }
+    data
+}
+
+async fn parked_rows(repository: &PublicInfoRepository) -> (i64, i64) {
+    (
+        count(repository, "SELECT count(*) FROM product_parked_payloads").await,
+        count(
+            repository,
+            "SELECT count(*) FROM product_parked_payload_parts",
+        )
+        .await,
+    )
+}
+
+#[tokio::test]
+async fn the_active_client_parks_before_it_signs_out_and_the_next_one_applies_it() {
+    let (repository, telegram, browser) = pair().await;
+    let data = payload(SYNC_PART_BYTES + 1_000);
+    // Only the active client that keeps its state parks.
+    assert_eq!(
+        refused(
+            repository
+                .park_part(
+                    &browser,
+                    UploadPartQuery {
+                        offset: 0,
+                        total_bytes: 1
+                    },
+                    &[1],
+                    NOW
+                )
+                .await
+        ),
+        ActivationRefusal::StepRefused
+    );
+    let parked = park(&repository, &telegram, &data, NOW + 1).await;
+    let view = parked.parked.unwrap();
+    assert_eq!(view.total_bytes, data.len() as u64);
+    assert_eq!(view.digest, sync_digest(&data));
+    assert_eq!(parked_rows(&repository).await, (1, 2));
+    assert_eq!(
+        count(&repository, "SELECT count(*) FROM product_parking_parts").await,
+        0,
+        "the staging copy is gone once it is whole"
+    );
+    // It signs out; the browser is not active and cannot fetch.
+    repository.close_session(&telegram, NOW + 2).await.unwrap();
+    assert_eq!(
+        refused(repository.download_parked_part(&browser, 0, NOW + 2).await),
+        ActivationRefusal::StepRefused
+    );
+    assert!(state(&repository, &browser, NOW + 2).await.parked.is_none());
+    // The next sign-in is active and finds the parked data to apply.
+    assert!(sign_in(&repository, "bond", "phone", BROWSER, NOW + 3, DAY).await);
+    let phone = token("phone");
+    let view = state(&repository, &phone, NOW + 3).await.parked.unwrap();
+    assert_eq!(
+        fetch_parked(&repository, &phone, view.total_bytes, NOW + 4).await,
+        data
+    );
+    assert_eq!(
+        refused(
+            repository
+                .acknowledge_parked(&phone, &"0".repeat(64), NOW + 5)
+                .await
+        ),
+        ActivationRefusal::SyncIncomplete
+    );
+    assert_eq!(
+        parked_rows(&repository).await,
+        (1, 2),
+        "a wrong digest deletes nothing"
+    );
+    let applied = repository
+        .acknowledge_parked(&phone, &view.digest, NOW + 5)
+        .await
+        .unwrap();
+    assert!(applied.parked.is_none());
+    assert_eq!(parked_rows(&repository).await, (0, 0));
+    // Again only answers the state.
+    assert!(
+        repository
+            .acknowledge_parked(&phone, &view.digest, NOW + 6)
+            .await
+            .unwrap()
+            .parked
+            .is_none()
+    );
+    assert_eq!(
+        refused(repository.download_parked_part(&phone, 0, NOW + 6).await),
+        ActivationRefusal::ParkedNotFound
+    );
+}
+
+#[tokio::test]
+async fn a_device_takes_activity_back_from_the_chat_and_applies_what_was_parked() {
+    let repository = repository().await;
+    assert!(sign_in(&repository, "bond", "web", BROWSER, NOW, DAY).await);
+    assert!(!chat(&repository, "chat", NOW).await);
+    let (web, chat) = (token("web"), token("chat"));
+    // The chat asks; the web client agrees and uploads; the data is parked
+    // and the chat is active.
+    let mut connection = repository.pool.acquire().await.unwrap();
+    let asked = super::request_for_stateless_client(&mut connection, &chat, NOW as i64)
+        .await
+        .unwrap();
+    drop(connection);
+    let id = asked.request.unwrap().id;
+    repository
+        .approve_activation(&web, &id, NOW + 1)
+        .await
+        .unwrap();
+    let data = payload(2_000);
+    upload(&repository, &web, &id, &data, NOW + 2).await;
+    assert_eq!(
+        active_clients(&repository).await,
+        std::slice::from_ref(&chat)
+    );
+    // The chat itself never sees parked data: it has nowhere to apply it.
+    assert!(state(&repository, &chat, NOW + 2).await.parked.is_none());
+    assert_eq!(
+        refused(repository.download_parked_part(&chat, 0, NOW + 2).await),
+        ActivationRefusal::StepRefused
+    );
+    // The web client asks back. The chat's agreement is the switch: its
+    // data is parked already, so nothing is uploaded or fetched.
+    let back = ask(&repository, &web, NOW + 3).await;
+    let shown = repository
+        .telegram_chat_activation_state("bot", 42, NOW + 3)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(shown.state, ClientState::ApprovalRequested);
+    assert_eq!(shown.request.unwrap().id, back);
+    assert!(
+        repository
+            .telegram_chat_activation_state("bot", 43, NOW + 3)
+            .await
+            .unwrap()
+            .is_none(),
+        "another sender has no chat session here"
+    );
+    let answered = repository
+        .answer_telegram_chat_activation("bot", 42, &back, true, NOW + 4)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(answered.state, ClientState::ActiveElsewhere);
+    assert_eq!(status_of(&repository, &back).await, "completed");
+    assert_eq!(
+        active_clients(&repository).await,
+        std::slice::from_ref(&web)
+    );
+    // Active again, the web client fetches the parked data, applies it over
+    // its own and acknowledges; only then is it deleted.
+    let view = state(&repository, &web, NOW + 5).await.parked.unwrap();
+    assert_eq!(view.digest, sync_digest(&data));
+    assert_eq!(
+        fetch_parked(&repository, &web, view.total_bytes, NOW + 5).await,
+        data
+    );
+    assert_eq!(parked_rows(&repository).await, (1, 1));
+    repository
+        .acknowledge_parked(&web, &view.digest, NOW + 6)
+        .await
+        .unwrap();
+    assert_eq!(parked_rows(&repository).await, (0, 0));
+}

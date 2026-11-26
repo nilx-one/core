@@ -12,8 +12,8 @@
 
 use nilxone_api::activation::{
     ActivationRefusal, ActivationRequestView, ActivationRole, ActivationState, ActivationStatus,
-    ClientState, HandoffProgress, REQUESTS_PER_HOUR, RESPOND_SECONDS, SYNC_SECONDS, SyncDigest,
-    UPLOAD_SECONDS, UploadPartQuery, is_request_id, is_sync_digest, sync_part_len,
+    ClientState, HandoffProgress, ParkedView, REQUESTS_PER_HOUR, RESPOND_SECONDS, SYNC_SECONDS,
+    SyncDigest, UPLOAD_SECONDS, UploadPartQuery, is_request_id, is_sync_digest, sync_part_len,
 };
 use sqlx::{Row, Sqlite, SqliteConnection, Transaction, sqlite::SqliteRow};
 
@@ -22,7 +22,8 @@ use super::PublicInfoRepository;
 const HOUR_SECONDS: i64 = 60 * 60;
 const REQUEST_COLUMNS: &str = "id, requester_token_hash, approver_token_hash, requester_label, \
                                approver_label, epoch, status, created_at, deadline, sync_total, \
-                               sync_uploaded, sync_delivered, requester_keeps_state";
+                               sync_uploaded, sync_delivered, requester_keeps_state, \
+                               approver_keeps_state";
 
 /// Why an activation step did nothing.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +69,9 @@ struct Request {
     /// False for an asking client that keeps no device state: the whole
     /// upload is parked for the owner and the switch follows at once.
     requester_keeps_state: bool,
+    /// False when the client that was active keeps no device state: its
+    /// data is parked already, so its approval is the switch.
+    approver_keeps_state: bool,
 }
 
 impl Request {
@@ -242,6 +246,247 @@ impl PublicInfoRepository {
     }
 }
 
+impl PublicInfoRepository {
+    /// The active client that keeps its state on its device fetches the
+    /// part of the parked data that starts at `offset`, as often as it
+    /// needs to.
+    pub async fn download_parked_part(
+        &self,
+        token_hash: &str,
+        offset: u64,
+        now: u64,
+    ) -> Result<Vec<u8>, ActivationError> {
+        let mut connection = self.pool.acquire().await?;
+        let session = parking_session(&mut connection, token_hash, clock(now)?).await?;
+        let parked = parked_of(&mut connection, &session)
+            .await?
+            .ok_or(ActivationRefusal::ParkedNotFound)?;
+        if sync_part_len(parked.total_bytes, offset).is_none() {
+            return Err(ActivationRefusal::SyncOutOfOrder.into());
+        }
+        let data = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT data FROM product_parked_payload_parts \
+             WHERE issuer = ? AND subject = ? AND part_offset = ?",
+        )
+        .bind(&session.issuer)
+        .bind(&session.subject)
+        .bind(signed(offset)?)
+        .fetch_optional(&mut *connection)
+        .await?
+        .ok_or_else(|| sqlx::Error::Protocol("a parked part is missing".into()))?;
+        Ok(data)
+    }
+
+    /// The active client applied the parked data with `digest` over its
+    /// own; the back-end deletes it. Again, or with nothing parked, it only
+    /// answers the state.
+    pub async fn acknowledge_parked(
+        &self,
+        token_hash: &str,
+        digest: &str,
+        now: u64,
+    ) -> Result<ActivationState, ActivationError> {
+        if !is_sync_digest(digest) {
+            return Err(ActivationRefusal::InvalidSyncDigest.into());
+        }
+        let now = clock(now)?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = async {
+            let session = parking_session(&mut transaction, token_hash, now).await?;
+            if let Some(parked) = parked_of(&mut transaction, &session).await? {
+                if parked.digest != digest {
+                    return Err(ActivationRefusal::SyncIncomplete.into());
+                }
+                sqlx::query("DELETE FROM product_parked_payloads WHERE issuer = ? AND subject = ?")
+                    .bind(&session.issuer)
+                    .bind(&session.subject)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
+            state_with(&mut transaction, &session, now, None).await
+        }
+        .await;
+        settle(transaction, result).await
+    }
+
+    /// The active client that keeps its state on its device parks its data
+    /// in parts, before it signs out. Parts arrive in order, as in a
+    /// handoff; the first part fixes the size, and a first part with
+    /// another size starts over. The part that makes it whole replaces the
+    /// owner's parked data. The same part again is a retry.
+    pub async fn park_part(
+        &self,
+        token_hash: &str,
+        part: UploadPartQuery,
+        data: &[u8],
+        now: u64,
+    ) -> Result<ActivationState, ActivationError> {
+        let now = clock(now)?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = park_step(&mut transaction, token_hash, part, data, now).await;
+        settle(transaction, result).await
+    }
+}
+
+/// The live, active session of a client that keeps its state on its
+/// device: the only one that parks its data or fetches parked data.
+async fn parking_session(
+    connection: &mut SqliteConnection,
+    token_hash: &str,
+    now: i64,
+) -> Step<Session> {
+    let session = live_session(connection, token_hash, now).await?;
+    if !session.active || !keeps_state(connection, token_hash).await? {
+        return Err(ActivationRefusal::StepRefused.into());
+    }
+    Ok(session)
+}
+
+async fn park_step(
+    connection: &mut SqliteConnection,
+    token_hash: &str,
+    part: UploadPartQuery,
+    data: &[u8],
+    now: i64,
+) -> Step<ActivationState> {
+    let session = parking_session(connection, token_hash, now).await?;
+    part.validate(data.len())?;
+    let offset = signed(part.offset)?;
+    let total = signed(part.total_bytes)?;
+    let staged = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT total, uploaded FROM product_parking WHERE token_hash = ?",
+    )
+    .bind(token_hash)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let uploaded = match staged {
+        // A first part starts over, also with another size.
+        _ if offset == 0 => {
+            sqlx::query("DELETE FROM product_parking WHERE token_hash = ?")
+                .bind(token_hash)
+                .execute(&mut *connection)
+                .await?;
+            sqlx::query("INSERT INTO product_parking (token_hash, total) VALUES (?, ?)")
+                .bind(token_hash)
+                .bind(total)
+                .execute(&mut *connection)
+                .await?;
+            0
+        }
+        Some((declared, uploaded)) if declared == total => uploaded,
+        _ => return Err(ActivationRefusal::SyncOutOfOrder.into()),
+    };
+    if offset < uploaded {
+        let stored = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT data FROM product_parking_parts WHERE token_hash = ? AND part_offset = ?",
+        )
+        .bind(token_hash)
+        .bind(offset)
+        .fetch_optional(&mut *connection)
+        .await?;
+        if stored.as_deref() != Some(data) {
+            return Err(ActivationRefusal::SyncOutOfOrder.into());
+        }
+        return state_with(connection, &session, now, None).await;
+    }
+    if offset != uploaded {
+        return Err(ActivationRefusal::SyncOutOfOrder.into());
+    }
+    sqlx::query(
+        "INSERT INTO product_parking_parts (token_hash, part_offset, data) VALUES (?, ?, ?)",
+    )
+    .bind(token_hash)
+    .bind(offset)
+    .bind(data)
+    .execute(&mut *connection)
+    .await?;
+    let uploaded = offset.saturating_add(signed(data.len() as u64)?);
+    if uploaded < total {
+        sqlx::query("UPDATE product_parking SET uploaded = ? WHERE token_hash = ?")
+            .bind(uploaded)
+            .bind(token_hash)
+            .execute(&mut *connection)
+            .await?;
+        return state_with(connection, &session, now, None).await;
+    }
+    // Whole: it replaces what was parked, and the staging rows go.
+    let mut digest = SyncDigest::new();
+    let parts = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT data FROM product_parking_parts WHERE token_hash = ? ORDER BY part_offset",
+    )
+    .bind(token_hash)
+    .fetch_all(&mut *connection)
+    .await?;
+    for part in &parts {
+        digest.update(part);
+    }
+    let digest = digest.finish();
+    sqlx::query("DELETE FROM product_parked_payloads WHERE issuer = ? AND subject = ?")
+        .bind(&session.issuer)
+        .bind(&session.subject)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query(
+        "INSERT INTO product_parked_payloads (issuer, subject, total, digest, parked_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&session.issuer)
+    .bind(&session.subject)
+    .bind(total)
+    .bind(&digest)
+    .bind(now)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query(
+        "INSERT INTO product_parked_payload_parts (issuer, subject, part_offset, data) \
+         SELECT ?, ?, part_offset, data FROM product_parking_parts WHERE token_hash = ?",
+    )
+    .bind(&session.issuer)
+    .bind(&session.subject)
+    .bind(token_hash)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query("DELETE FROM product_parking WHERE token_hash = ?")
+        .bind(token_hash)
+        .execute(&mut *connection)
+        .await?;
+    state_with(connection, &session, now, None).await
+}
+
+/// Whether the session's client keeps its state on its device. The Telegram
+/// chat does not.
+async fn keeps_state(
+    connection: &mut SqliteConnection,
+    token_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT NOT EXISTS(SELECT 1 FROM telegram_chat_sessions WHERE token_hash = ?)",
+    )
+    .bind(token_hash)
+    .fetch_one(&mut *connection)
+    .await
+}
+
+async fn parked_of(
+    connection: &mut SqliteConnection,
+    session: &Session,
+) -> Result<Option<ParkedView>, sqlx::Error> {
+    let row = sqlx::query_as::<_, (i64, String)>(
+        "SELECT total, digest FROM product_parked_payloads WHERE issuer = ? AND subject = ?",
+    )
+    .bind(&session.issuer)
+    .bind(&session.subject)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(|(total, digest)| {
+        Ok(ParkedView {
+            total_bytes: unsigned(total)?,
+            digest,
+        })
+    })
+    .transpose()
+}
+
 /// A refusal keeps what was due anyway (a lapsed deadline, a request that
 /// lost its active client); only a storage failure undoes the transaction.
 async fn settle<T>(transaction: Transaction<'_, Sqlite>, result: Step<T>) -> Step<T> {
@@ -310,6 +555,7 @@ async fn request(
     .fetch_optional(&mut *connection)
     .await?
     .ok_or(ActivationRefusal::NoActiveClient)?;
+    let approver_keeps_state = keeps_state(connection, &approver).await?;
     let recent = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM product_activation_requests \
          WHERE issuer = ? AND subject = ? AND created_at > ?",
@@ -328,8 +574,9 @@ async fn request(
     let row = sqlx::query(&format!(
         "INSERT INTO product_activation_requests \
          (id, issuer, subject, requester_token_hash, approver_token_hash, requester_label, \
-          approver_label, epoch, status, created_at, deadline, requester_keeps_state) \
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) \
+          approver_label, epoch, status, created_at, deadline, requester_keeps_state, \
+          approver_keeps_state) \
+         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?) \
          RETURNING {REQUEST_COLUMNS}"
     ))
     .bind(&session.issuer)
@@ -342,6 +589,7 @@ async fn request(
     .bind(now)
     .bind(deadline(now, RESPOND_SECONDS))
     .bind(requester_keeps_state)
+    .bind(approver_keeps_state)
     .fetch_one(&mut *connection)
     .await?;
     let created = decode(&row)?;
@@ -392,6 +640,17 @@ async fn approve(
     match request.status {
         // A second tap or a replayed call changes nothing and is not an error.
         ActivationStatus::Approved | ActivationStatus::Syncing | ActivationStatus::Completed => {}
+        // The active client keeps no device state: its data is parked
+        // already, so agreeing is the switch. The asking client fetches the
+        // parked data once it is active.
+        ActivationStatus::Pending if !request.approver_keeps_state => {
+            switch_active_client(connection, &session, &request, now).await?;
+            close(connection, &request.id, ActivationStatus::Completed, now).await?;
+            request.status = ActivationStatus::Completed;
+            let session = live_session(connection, token_hash, now).await?;
+            let shown = (ActivationRole::Approver, &request);
+            return state_with(connection, &session, now, Some(shown)).await;
+        }
         ActivationStatus::Pending => {
             request.status = ActivationStatus::Approved;
             request.deadline = deadline(now, UPLOAD_SECONDS);
@@ -957,6 +1216,11 @@ async fn state_with(
             .as_ref()
             .map(|request| (request.role, request.status)),
     );
+    let parked = if session.active && keeps_state(connection, &session.token_hash).await? {
+        parked_of(connection, session).await?
+    } else {
+        None
+    };
     Ok(ActivationState {
         state,
         active: session.active,
@@ -964,6 +1228,7 @@ async fn state_with(
         client_label: session.client_label.clone(),
         active_client_label,
         request,
+        parked,
     })
 }
 
@@ -984,6 +1249,7 @@ fn decode(row: &SqliteRow) -> Result<Request, sqlx::Error> {
         sync_uploaded: row.try_get("sync_uploaded")?,
         sync_delivered: row.try_get("sync_delivered")?,
         requester_keeps_state: row.try_get("requester_keeps_state")?,
+        approver_keeps_state: row.try_get("approver_keeps_state")?,
     })
 }
 

@@ -466,6 +466,7 @@ fn refusals_carry_stable_codes() {
             ("sync_out_of_order", 409),
             ("invalid_sync_digest", 422),
             ("sync_incomplete", 409),
+            ("parked_data_not_found", 404),
         ]
     );
 }

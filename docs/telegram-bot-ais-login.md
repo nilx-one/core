@@ -75,6 +75,23 @@ Bond are created only on a first sign-in, when no 0x1 profile exists yet for
 the AIS identity (`telegram_login_returns`); a returning sign-in plays the
 sign-in stages instead and creates nothing.
 
+### Chat activation
+
+Routes: POST /api/v1/telegram/activation and POST
+/api/v1/telegram/activation/answer
+(`nilxone_api::bot_login::CHAT_ACTIVATION_PATH`, `CHAT_ACTIVATION_ANSWER_PATH`),
+behind the same bot-service authentication as login start.
+
+The first takes the sender and chat (`ChatActivationQuery`) and answers the
+chat's own `ActivationState`. When a device asks while the chat is active,
+it is `approval_requested`, and the bot shows approve and decline. The second
+(`ChatActivationAnswer`) carries the request id and `approve`. The chat keeps
+no device state and its data is parked already, so approving is the switch
+(`docs/client-activation.md`). A chat without a session is
+`provider_authentication_required` (401); other refusals are
+`ActivationRefusal` codes. Each sender has its own budget of 60 calls a
+minute.
+
 ### Progress for the page
 
 Route: GET /api/v1/telegram/login/progress?state=… (public, like the callback).
