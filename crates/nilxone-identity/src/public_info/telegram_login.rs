@@ -260,6 +260,24 @@ impl PublicInfoRepository {
         Ok(Some(awaiting))
     }
 
+    /// Whether the identity of a verified callback already has a 0x1
+    /// profile: a returning sign-in rather than a first one. It only picks
+    /// the words the success page shows; nothing is attached or created.
+    pub async fn telegram_login_returns(
+        &self,
+        awaiting: &TelegramLoginAwaitingConfirmation,
+    ) -> Result<bool, TelegramLoginError> {
+        let identity = &awaiting.callback().identity;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM public_profiles WHERE issuer = ? AND subject = ?)",
+        )
+        .bind(&identity.issuer)
+        .bind(&identity.subject)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
     /// Keep a verified callback until its sender confirms it in the chat.
     async fn await_telegram_confirmation(
         &self,
@@ -1030,6 +1048,23 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_callback_returns_only_for_an_identity_with_a_profile() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let first = verified(7, "pairwise");
+        assert!(!repository.telegram_login_returns(&first).await.unwrap());
+        repository.attach(&first.callback().identity).await.unwrap();
+        assert!(repository.telegram_login_returns(&first).await.unwrap());
+        assert!(
+            !repository
+                .telegram_login_returns(&verified(8, "someone-else"))
+                .await
+                .unwrap()
         );
     }
 

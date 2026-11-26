@@ -21,13 +21,34 @@ use sha2::{Digest as _, Sha256};
 const SCRIPT: &str = include_str!("page.js");
 const STYLE: &str = include_str!("page.css");
 
-/// The visual stages of a sign-in, in order. The last one is the result.
-const STAGES: [&str; 4] = [
+/// The visual stages of a first sign-in, in order. The last one is the
+/// result: the account and its Bond are new.
+const FIRST_STAGES: [&str; 4] = [
     "Створюємо акаунт",
     "Привʼязуємо Telegram",
     "Налаштовуємо ідентичність",
     "Bond створено успішно",
 ];
+
+/// The visual stages of a sign-in to an account that already exists. It
+/// creates nothing, so it never says so.
+const RETURNING_STAGES: [&str; 4] = [
+    "Перевіряємо вхід",
+    "Звіряємо Telegram",
+    "Відкриваємо сесію",
+    "Вхід виконано",
+];
+
+/// What the callback page tells the person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// A verified first sign-in: the account is created.
+    FirstSignIn,
+    /// A verified sign-in to an existing account.
+    Returning,
+    /// The sign-in failed.
+    Failed,
+}
 
 const SCENE: &str = concat!(
     "<div class=\"world-scene\" aria-hidden=\"true\">",
@@ -63,9 +84,9 @@ static POLICY: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-fn success_body() -> String {
-    let count = STAGES.len();
-    let stages: String = STAGES
+fn success_body(labels: &[&str]) -> String {
+    let count = labels.len();
+    let stages: String = labels
         .iter()
         .enumerate()
         .map(|(index, label)| {
@@ -92,11 +113,11 @@ const FAILURE_BODY: &str = "<div class=\"panel error\"><h1>Вхід не вда�
     <p>Надішли /login у чаті з ботом ще раз. Send /login in the bot chat again.</p>\
     <button id=\"back\" type=\"button\">Повернутися в чат</button></div>";
 
-pub(crate) fn callback_page(verified: bool) -> Response {
-    let (status, body) = if verified {
-        (StatusCode::OK, success_body())
-    } else {
-        (StatusCode::BAD_REQUEST, FAILURE_BODY.to_owned())
+pub(crate) fn callback_page(outcome: Outcome) -> Response {
+    let (status, body) = match outcome {
+        Outcome::FirstSignIn => (StatusCode::OK, success_body(&FIRST_STAGES)),
+        Outcome::Returning => (StatusCode::OK, success_body(&RETURNING_STAGES)),
+        Outcome::Failed => (StatusCode::BAD_REQUEST, FAILURE_BODY.to_owned()),
     };
     let html = format!(
         "<!doctype html><html lang=\"uk\"><head><meta charset=\"utf-8\">\
@@ -128,8 +149,8 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
 
-    async fn render(verified: bool) -> (StatusCode, String, String) {
-        let page = callback_page(verified);
+    async fn render(outcome: Outcome) -> (StatusCode, String, String) {
+        let page = callback_page(outcome);
         let status = page.status();
         let csp = page.headers()["content-security-policy"]
             .to_str()
@@ -140,10 +161,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_verified_sign_in_plays_the_stages_and_closes_the_mini_app() {
-        let (status, csp, body) = render(true).await;
+    async fn a_first_sign_in_plays_the_creation_stages_and_closes_the_mini_app() {
+        let (status, csp, body) = render(Outcome::FirstSignIn).await;
         assert_eq!(status, StatusCode::OK);
-        for stage in STAGES {
+        for stage in FIRST_STAGES {
             assert!(body.contains(stage), "{stage}");
         }
         assert!(body.contains("web_app_close") && body.contains("web_app_trigger_haptic_feedback"));
@@ -160,8 +181,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_returning_sign_in_never_says_it_creates_an_account() {
+        let (status, _, body) = render(Outcome::Returning).await;
+        assert_eq!(status, StatusCode::OK);
+        for stage in RETURNING_STAGES {
+            assert!(body.contains(stage), "{stage}");
+        }
+        for stage in FIRST_STAGES {
+            assert!(!body.contains(stage), "{stage}");
+        }
+        assert!(body.contains("web_app_close"));
+    }
+
+    #[tokio::test]
     async fn the_inline_script_and_style_are_exactly_what_the_policy_admits() {
-        let (_, _, body) = render(true).await;
+        let (_, _, body) = render(Outcome::Returning).await;
         assert!(body.contains(&format!("<script>{SCRIPT}</script>")));
         assert!(body.contains(&format!("<style>{STYLE}</style>")));
         assert_eq!(body.matches("<script").count(), 1);
@@ -169,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_sign_in_shows_no_stages() {
-        let (status, _, body) = render(false).await;
+        let (status, _, body) = render(Outcome::Failed).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(!body.contains("id=\"stages\""));
         assert!(body.contains("Sign-in failed"));

@@ -14,7 +14,7 @@ mod authority;
 mod page;
 
 pub use authority::{Authority, ISSUER};
-use page::callback_page;
+use page::{Outcome, callback_page};
 
 use std::{
     sync::Arc,
@@ -225,7 +225,7 @@ fn loggable_error_code(code: &str) -> &str {
 
 fn refused(reason: &'static str) -> Response {
     tracing::warn!(reason, "Telegram login callback refused");
-    callback_page(false)
+    callback_page(Outcome::Failed)
 }
 
 async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQuery>) -> Response {
@@ -249,7 +249,7 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
         {
             tracing::error!(%error, "recording a refused Telegram login failed");
         }
-        return callback_page(false);
+        return callback_page(Outcome::Failed);
     }
     let (Some(state), Some(code)) = (query.state, query.code) else {
         return refused("missing_state_or_code");
@@ -279,15 +279,29 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
         )
         .await
     {
-        Ok(Some(_)) => {
+        Ok(Some(awaiting)) => {
             tracing::info!("Telegram login callback verified; awaiting the bot");
-            callback_page(true)
+            // Only the words depend on this; when unsure, never claim that
+            // an account was created.
+            let returning = host
+                .repository
+                .telegram_login_returns(&awaiting)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::error!(%error, "reading whether a Telegram login returns failed");
+                    true
+                });
+            callback_page(if returning {
+                Outcome::Returning
+            } else {
+                Outcome::FirstSignIn
+            })
         }
         // Core logged the reason.
-        Ok(None) => callback_page(false),
+        Ok(None) => callback_page(Outcome::Failed),
         Err(error) => {
             tracing::error!(%error, "Telegram login callback failed");
-            callback_page(false)
+            callback_page(Outcome::Failed)
         }
     }
 }
