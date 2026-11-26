@@ -1234,7 +1234,7 @@ mod tests {
         assert_eq!(chat.owner.public_profile(), web.public_profile());
         // A second /login in the same chat replaces the chat's session.
         repository
-            .await_telegram_confirmation(&verified(8, "another-bond"), 102)
+            .await_telegram_confirmation(&verified(8, "pairwise"), 102)
             .await
             .unwrap();
         repository
