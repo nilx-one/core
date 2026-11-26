@@ -10,7 +10,7 @@
 (function () {
   'use strict';
   var PROGRESS = '/api/v1/telegram/login/progress';
-  var POLL = 1200, CLAIM_WAIT = 8000, ERRORS = 3;
+  var POLL = 1200, ERRORS = 3;
   var STEP = 500, CHECK = 330, HOLD = 1400;
   function send(type, data) {
     var proxy = window.TelegramWebviewProxy;
@@ -110,14 +110,15 @@
 
   var state = null;
   try { state = new URLSearchParams(window.location.search).get('state'); } catch (e) { state = null; }
+  var unavailable = 'Не вдалося перевірити вхід. Повернися в чат, щоб перевірити результат.';
   if (!state || !window.fetch) {
-    play(result, 0);
+    refuse(unavailable);
     return;
   }
   // Until the host answers, the first stage spins; nothing is checked yet.
   root.classList.add('playing');
   show(result, 1);
-  var started = Date.now(), errors = 0;
+  var errors = 0;
   function poll() {
     window.fetch(PROGRESS + '?state=' + encodeURIComponent(state), {
       cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer'
@@ -135,15 +136,13 @@
           return refuse('Вхід не підтверджено. Чат лишився неактивним.');
         case 'failed':
           return refuse('Вхід не вдався. Надішли /login у чаті ще раз.');
-        default:
-          // The bot has not claimed the sign-in yet. Past the wait, play
-          // the result as before: the chat reports the rest.
-          if (approval.hidden && Date.now() - started > CLAIM_WAIT) return play(result, 0);
+        case 'waiting': break;
+        default: return refuse(unavailable);
       }
       setTimeout(poll, POLL);
     }).catch(function () {
       errors += 1;
-      if (errors >= ERRORS && approval.hidden) return play(result, 0);
+      if (errors >= ERRORS) return refuse(unavailable);
       setTimeout(poll, POLL);
     });
   }

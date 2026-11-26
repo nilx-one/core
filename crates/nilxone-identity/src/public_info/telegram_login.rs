@@ -458,6 +458,18 @@ impl PublicInfoRepository {
         .bind(&token_hash)
         .execute(&mut *db)
         .await?;
+        sqlx::query(
+            "INSERT INTO telegram_login_claims (state_digest, token_hash)
+             SELECT state_digest, ? FROM telegram_login_transactions
+             WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?",
+        )
+        .bind(&token_hash)
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(chat_id)
+        .bind(message_id)
+        .execute(&mut *db)
+        .await?;
         db.commit().await?;
         Ok(Some(TelegramChatSignedIn { owner, active }))
     }
@@ -479,8 +491,9 @@ impl PublicInfoRepository {
         };
         let state_digest = Sha256::digest(state.as_bytes());
         let Some(row) = sqlx::query(
-            "SELECT workload_subject, actor_id, chat_id, message_id, expires_at
-             FROM telegram_login_transactions WHERE state_digest = ?",
+            "SELECT t.workload_subject, t.actor_id, t.chat_id, t.message_id, t.expires_at, c.token_hash
+             FROM telegram_login_transactions t LEFT JOIN telegram_login_claims c USING (state_digest)
+             WHERE t.state_digest = ?",
         )
         .bind(&state_digest[..])
         .fetch_optional(&self.pool)
@@ -489,9 +502,6 @@ impl PublicInfoRepository {
             return Ok(None);
         };
         let login = LoginMessage::from_row(&row)?;
-        let started_at = row
-            .try_get::<i64, _>("expires_at")?
-            .saturating_sub(LOGIN_LIFETIME_SECONDS);
         let failed: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM telegram_login_failures
              WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?
@@ -507,20 +517,16 @@ impl PublicInfoRepository {
         if failed {
             return Ok(Some(TelegramLoginProgress::Failed));
         }
-        // Only a chat session opened by this sign-in counts, not one the
-        // chat already had from an earlier /login.
-        let token_hash: Option<String> = sqlx::query_scalar(
-            "SELECT c.token_hash FROM telegram_chat_sessions c
-             JOIN product_sessions s ON s.token_hash = c.token_hash
-             WHERE c.workload_subject = ? AND c.actor_id = ? AND s.created_at >= ?",
-        )
-        .bind(&login.workload_subject)
-        .bind(login.actor_id)
-        .bind(started_at)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some(token_hash) = token_hash else {
-            return Ok(Some(TelegramLoginProgress::Waiting));
+        let Some(token_hash) = row.try_get::<Option<String>, _>("token_hash")? else {
+            // A callback accepted at the deadline gets another login lifetime for the bot to claim it.
+            let claim_deadline = row
+                .try_get::<i64, _>("expires_at")?
+                .saturating_add(LOGIN_LIFETIME_SECONDS);
+            return Ok(Some(if now_sql >= claim_deadline {
+                TelegramLoginProgress::Failed
+            } else {
+                TelegramLoginProgress::Waiting
+            }));
         };
         let state = match self.activation_state(&token_hash, now).await {
             Ok(state) => state,
@@ -1486,6 +1492,31 @@ mod tests {
                 .await
                 .unwrap(),
             Some(TelegramLoginProgress::SignedIn)
+        );
+        let overlapping = "e".repeat(32);
+        started(&repository, 8, &overlapping, 101).await;
+        assert_eq!(
+            repository
+                .telegram_login_progress(&overlapping, 102)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::Waiting)
+        );
+        repository
+            .await_telegram_confirmation(&verified(8, "pairwise"), 102)
+            .await
+            .unwrap();
+        repository
+            .confirm_telegram_login("bot", 42, 42, 8, 103, 1_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 104)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::Declined)
         );
         let requests: i64 = sqlx::query_scalar("SELECT count(*) FROM product_activation_requests")
             .fetch_one(&repository.pool)
