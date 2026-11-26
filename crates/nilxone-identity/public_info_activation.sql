@@ -24,6 +24,10 @@ WHERE active = 1;
 -- `sync_uploaded` how much of it has arrived, `sync_delivered` how much the
 -- asking client has been handed in its current pass, and `sync_digest` the
 -- SHA-256 of the whole, set when the upload is whole.
+--
+-- `requester_keeps_state` is 0 for an asking client that keeps no device
+-- state, such as the Telegram chat. Its request parks the whole upload for
+-- the owner (`product_parked_payloads`) and switches at once; nobody fetches.
 CREATE TABLE IF NOT EXISTS product_activation_requests (
     id TEXT PRIMARY KEY NOT NULL COLLATE BINARY CHECK (length(id) = 32),
     issuer TEXT NOT NULL COLLATE BINARY,
@@ -44,6 +48,7 @@ CREATE TABLE IF NOT EXISTS product_activation_requests (
     sync_uploaded INTEGER NOT NULL DEFAULT 0 CHECK (sync_uploaded >= 0),
     sync_delivered INTEGER NOT NULL DEFAULT 0 CHECK (sync_delivered >= 0),
     sync_digest TEXT COLLATE BINARY CHECK (length(sync_digest) = 64),
+    requester_keeps_state INTEGER NOT NULL DEFAULT 1 CHECK (requester_keeps_state IN (0, 1)),
     FOREIGN KEY (issuer, subject) REFERENCES public_profiles (issuer, subject) ON DELETE CASCADE
 ) STRICT;
 
@@ -67,4 +72,29 @@ CREATE TABLE IF NOT EXISTS product_activation_sync (
     data BLOB NOT NULL,
     PRIMARY KEY (request_id, part_offset),
     FOREIGN KEY (request_id) REFERENCES product_activation_requests (id) ON DELETE CASCADE
+) STRICT;
+
+-- The last active client's data, parked by the back-end while the active
+-- client keeps no device state (the Telegram chat). One per owner; a newer
+-- park replaces it. It stays until a client that keeps its state on its
+-- device takes activity and confirms it applied the data; then it is
+-- deleted. The bytes are opaque here, as in a handoff.
+CREATE TABLE IF NOT EXISTS product_parked_payloads (
+    issuer TEXT NOT NULL COLLATE BINARY,
+    subject TEXT NOT NULL COLLATE BINARY,
+    total INTEGER NOT NULL CHECK (total >= 0),
+    digest TEXT NOT NULL COLLATE BINARY CHECK (length(digest) = 64),
+    parked_at INTEGER NOT NULL CHECK (parked_at >= 0),
+    PRIMARY KEY (issuer, subject),
+    FOREIGN KEY (issuer, subject) REFERENCES public_profiles (issuer, subject) ON DELETE CASCADE
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS product_parked_payload_parts (
+    issuer TEXT NOT NULL COLLATE BINARY,
+    subject TEXT NOT NULL COLLATE BINARY,
+    part_offset INTEGER NOT NULL CHECK (part_offset >= 0),
+    data BLOB NOT NULL,
+    PRIMARY KEY (issuer, subject, part_offset),
+    FOREIGN KEY (issuer, subject) REFERENCES product_parked_payloads (issuer, subject)
+        ON DELETE CASCADE
 ) STRICT;

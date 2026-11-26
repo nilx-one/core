@@ -23,7 +23,8 @@ mod legacy_migration;
 mod telegram_login;
 pub use telegram_login::{
     TELEGRAM_CHAT_CLIENT_LABEL, TelegramChatSignedIn, TelegramLoginAwaitingConfirmation,
-    TelegramLoginCallback, TelegramLoginError, TelegramLoginVerificationError,
+    TelegramLoginCallback, TelegramLoginError, TelegramLoginProgress,
+    TelegramLoginVerificationError,
 };
 
 pub use activation::ActivationError;
@@ -133,6 +134,7 @@ impl PublicInfoRepository {
         sqlx::raw_sql(include_str!("../public_info_activation.sql"))
             .execute(&pool)
             .await?;
+        add_request_data_kind(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -402,6 +404,26 @@ async fn open_session_in(
         activation::advance_epoch(transaction, &owner.issuer, &owner.subject).await?;
     }
     Ok(active)
+}
+
+/// Brings a store created before requests from clients without device
+/// state up to the current shape: every earlier requester kept its state.
+async fn add_request_data_kind(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let present = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('product_activation_requests') \
+         WHERE name = 'requester_keeps_state')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !present {
+        sqlx::query(
+            "ALTER TABLE product_activation_requests ADD COLUMN requester_keeps_state INTEGER \
+             NOT NULL DEFAULT 1 CHECK (requester_keeps_state IN (0, 1))",
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Brings a store created before sessions were active or inactive up to the

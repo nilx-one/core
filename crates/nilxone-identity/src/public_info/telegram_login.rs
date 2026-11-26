@@ -11,7 +11,12 @@ use sqlx::Row;
 
 use crate::aiaiaiai_sign_in::{SignInClient, SignInError, SignInTransaction, VerifiedSignIn};
 
-use super::{AuthenticatedProfile, PublicInfoError, PublicInfoRepository};
+use nilxone_api::activation::ClientState;
+
+use super::{
+    AuthenticatedProfile, PublicInfoError, PublicInfoRepository,
+    activation::{ActivationError, request_for_stateless_client},
+};
 
 const CALLBACK_PATH: &str = "/api/v1/telegram/login/callback";
 const LOGIN_LIFETIME_SECONDS: i64 = 300;
@@ -66,6 +71,28 @@ pub struct TelegramChatSignedIn {
     pub owner: AuthenticatedProfile,
     /// Whether the chat became the active client (Single Active Client).
     pub active: bool,
+}
+
+/// Where a Telegram sign-in stands, for the page it was started on. It names
+/// no account and carries no session value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TelegramLoginProgress {
+    /// The bot has not claimed the verified callback yet.
+    Waiting,
+    /// The chat signed in while another client is active and asks that
+    /// client to agree.
+    AwaitingApproval {
+        /// The label of the client that has to agree.
+        active_client_label: String,
+    },
+    /// The chat is signed in and active.
+    SignedIn,
+    /// The active client refused, or the request ended without its
+    /// agreement: it ran out of time, the active client signed out, or
+    /// another request replaced it.
+    Declined,
+    /// The browser step failed; the bot says so in the chat.
+    Failed,
 }
 
 impl TelegramLoginAwaitingConfirmation {
@@ -404,6 +431,23 @@ impl PublicInfoRepository {
             expires_sql,
         )
         .await?;
+        // The password signed the chat in; another client is active, so the
+        // chat asks it at once. The chat keeps no device state: once the
+        // active client agrees and uploads, the back-end parks the data and
+        // switches. A refusal (the hourly limit) leaves the chat signed in
+        // and inactive, as before.
+        if !active {
+            match request_for_stateless_client(&mut db, &token_hash, now_sql).await {
+                Ok(_) => {}
+                Err(ActivationError::Refused(refusal)) => {
+                    tracing::warn!(
+                        refusal = refusal.code(),
+                        "Telegram chat could not ask the active client"
+                    );
+                }
+                Err(ActivationError::Storage(error)) => return Err(error.into()),
+            }
+        }
         sqlx::query(
             "INSERT INTO telegram_chat_sessions (workload_subject, actor_id, token_hash)
              VALUES (?, ?, ?)
@@ -414,8 +458,94 @@ impl PublicInfoRepository {
         .bind(&token_hash)
         .execute(&mut *db)
         .await?;
+        sqlx::query(
+            "INSERT INTO telegram_login_claims (state_digest, token_hash)
+             SELECT state_digest, ? FROM telegram_login_transactions
+             WHERE workload_subject = ? AND actor_id = ? AND chat_id = ? AND message_id = ?",
+        )
+        .bind(&token_hash)
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(chat_id)
+        .bind(message_id)
+        .execute(&mut *db)
+        .await?;
         db.commit().await?;
         Ok(Some(TelegramChatSignedIn { owner, active }))
+    }
+
+    /// Where the sign-in started for `state` stands, for the page the
+    /// callback rendered. `None` for an unknown or malformed state. The state
+    /// was already spent at the callback; it only reads here and grants
+    /// nothing.
+    pub async fn telegram_login_progress(
+        &self,
+        state: &str,
+        now: u64,
+    ) -> Result<Option<TelegramLoginProgress>, PublicInfoError> {
+        if state.len() != 32 {
+            return Ok(None);
+        }
+        let Ok(now_sql) = i64::try_from(now) else {
+            return Ok(None);
+        };
+        let state_digest = Sha256::digest(state.as_bytes());
+        let Some(row) = sqlx::query(
+            "SELECT t.expires_at, c.token_hash, s.token_hash IS NOT NULL AS bound,
+                    f.expires_at IS NOT NULL AS failed
+             FROM telegram_login_transactions t
+             LEFT JOIN telegram_login_failures f
+               ON (f.workload_subject, f.actor_id, f.chat_id, f.message_id) =
+                  (t.workload_subject, t.actor_id, t.chat_id, t.message_id) AND f.expires_at > ?
+             LEFT JOIN telegram_login_claims c USING (state_digest)
+             LEFT JOIN telegram_chat_sessions s ON s.token_hash = c.token_hash
+             WHERE t.state_digest = ?",
+        )
+        .bind(now_sql)
+        .bind(&state_digest[..])
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+        if row.try_get::<bool, _>("failed")? {
+            return Ok(Some(TelegramLoginProgress::Failed));
+        }
+        let Some(token_hash) = row.try_get::<Option<String>, _>("token_hash")? else {
+            // A callback accepted at the deadline gets another login lifetime for the bot to claim it.
+            let claim_deadline = row
+                .try_get::<i64, _>("expires_at")?
+                .saturating_add(LOGIN_LIFETIME_SECONDS);
+            return Ok(Some(if now_sql >= claim_deadline {
+                TelegramLoginProgress::Failed
+            } else {
+                TelegramLoginProgress::Waiting
+            }));
+        };
+        if !row.try_get::<bool, _>("bound")? {
+            return Ok(Some(TelegramLoginProgress::Declined));
+        }
+        let state = match self.activation_state(&token_hash, now).await {
+            Ok(state) => state,
+            // The session ended in between: signed out, or replaced.
+            Err(ActivationError::Refused(_)) => return Ok(Some(TelegramLoginProgress::Declined)),
+            Err(ActivationError::Storage(error)) => return Err(error.into()),
+        };
+        Ok(Some(match state.state {
+            ClientState::AuthenticatedActive | ClientState::ApprovalRequested => {
+                TelegramLoginProgress::SignedIn
+            }
+            ClientState::ActivationPending
+            | ClientState::ActivationApproved
+            | ClientState::ActivationSyncing => TelegramLoginProgress::AwaitingApproval {
+                active_client_label: state
+                    .request
+                    .map(|request| request.from_label)
+                    .or(state.active_client_label)
+                    .unwrap_or_default(),
+            },
+            _ => TelegramLoginProgress::Declined,
+        }))
     }
 
     /// The owner of the live session this chat signed in to, for a later
@@ -1144,5 +1274,251 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bindings, 0);
+    }
+
+    /// A started sign-in for message `message_id`, as login start stores it,
+    /// known by `state`.
+    async fn started(repository: &PublicInfoRepository, message_id: i32, state: &str, at: i64) {
+        sqlx::query(
+            "INSERT INTO telegram_login_transactions
+             (workload_subject, actor_id, chat_id, message_id, state_digest,
+              issuer, redirect_uri, expires_at, pending)
+             VALUES ('bot', 42, 42, ?, ?, 'https://auth.aiaiaiai.org', 'r', ?, NULL)",
+        )
+        .bind(message_id)
+        .bind(&Sha256::digest(state.as_bytes())[..])
+        .bind(at + LOGIN_LIFETIME_SECONDS)
+        .execute(&repository.pool)
+        .await
+        .unwrap();
+    }
+
+    /// The owner with the Mini App active, and a chat that signed in after
+    /// it for message `message_id`.
+    async fn chat_beside_the_mini_app(state: &str) -> (PublicInfoRepository, String) {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let web = repository
+            .attach(&verified(1, "pairwise").callback().identity)
+            .await
+            .unwrap();
+        let web_token = "w".repeat(64);
+        assert!(
+            repository
+                .open_session(&web, &web_token, "Telegram · Mini App", None, 100, 1_000)
+                .await
+                .unwrap()
+        );
+        started(&repository, 7, state, 100).await;
+        assert_eq!(
+            repository
+                .telegram_login_progress(state, 100)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::Waiting)
+        );
+        repository
+            .await_telegram_confirmation(&verified(7, "pairwise"), 100)
+            .await
+            .unwrap();
+        let chat = repository
+            .confirm_telegram_login("bot", 42, 42, 7, 101, 1_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!chat.active, "the password alone never takes activity away");
+        assert_eq!(
+            repository
+                .telegram_login_progress(state, 101)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::AwaitingApproval {
+                active_client_label: "Telegram · Mini App".into()
+            })
+        );
+        (repository, web_token)
+    }
+
+    #[tokio::test]
+    async fn a_chat_signed_in_beside_an_active_client_takes_over_once_its_data_is_parked() {
+        use nilxone_api::activation::{UploadPartQuery, sync_digest};
+
+        let state = "a".repeat(32);
+        let (repository, web) = chat_beside_the_mini_app(&state).await;
+        let asked = repository.activation_state(&web, 102).await.unwrap();
+        assert_eq!(asked.state, ClientState::ApprovalRequested);
+        let request = asked.request.unwrap();
+        assert_eq!(request.to_label, TELEGRAM_CHAT_CLIENT_LABEL);
+        // Agreeing alone switches nothing: the active client's data comes
+        // first, as in any handoff.
+        let agreed = repository
+            .approve_activation(&web, &request.id, 103)
+            .await
+            .unwrap();
+        assert_eq!(agreed.state, ClientState::UploadRequired);
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 103)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::AwaitingApproval {
+                active_client_label: "Telegram · Mini App".into()
+            })
+        );
+        let data = br#"{"format":"nilx-one.activation-payload","version":1,"records":[]}"#;
+        let part = UploadPartQuery {
+            offset: 0,
+            total_bytes: data.len() as u64,
+        };
+        // The whole upload is parked for the owner and the chat is active.
+        let uploaded = repository
+            .upload_activation_sync_part(&web, &request.id, part, data, 104)
+            .await
+            .unwrap();
+        assert_eq!(uploaded.state, ClientState::ActiveElsewhere);
+        assert!(!uploaded.active);
+        assert_eq!(
+            chat_sessions(&repository).await,
+            [
+                ("Telegram · Mini App".to_owned(), false),
+                (TELEGRAM_CHAT_CLIENT_LABEL.to_owned(), true),
+            ]
+        );
+        let parked: (i64, String) =
+            sqlx::query_as("SELECT total, digest FROM product_parked_payloads")
+                .fetch_one(&repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(parked, (data.len() as i64, sync_digest(data)));
+        let parts: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT data FROM product_parked_payload_parts")
+                .fetch_all(&repository.pool)
+                .await
+                .unwrap();
+        assert_eq!(parts, [data.to_vec()]);
+        let in_transit: i64 = sqlx::query_scalar("SELECT count(*) FROM product_activation_sync")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(in_transit, 0, "the handoff's own copy is gone");
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 105)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::SignedIn)
+        );
+        // The same last part again only answers what happened.
+        assert_eq!(
+            repository
+                .upload_activation_sync_part(&web, &request.id, part, data, 106)
+                .await
+                .unwrap()
+                .state,
+            ClientState::ActiveElsewhere
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_chat_stays_inactive_and_its_page_says_so() {
+        let state = "b".repeat(32);
+        let (repository, web) = chat_beside_the_mini_app(&state).await;
+        let id = repository
+            .activation_state(&web, 102)
+            .await
+            .unwrap()
+            .request
+            .unwrap()
+            .id;
+        let answered = repository.decline_activation(&web, &id, 103).await.unwrap();
+        assert_eq!(answered.state, ClientState::AuthenticatedActive);
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 104)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::Declined)
+        );
+        assert_eq!(
+            chat_sessions(&repository).await,
+            [
+                ("Telegram · Mini App".to_owned(), true),
+                (TELEGRAM_CHAT_CLIENT_LABEL.to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            repository
+                .telegram_login_progress(&"c".repeat(32), 104)
+                .await
+                .unwrap(),
+            None,
+            "an unknown state names nothing"
+        );
+        assert_eq!(
+            repository
+                .telegram_login_progress("short", 104)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_client_signs_in_active_and_asks_nobody() {
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let state = "d".repeat(32);
+        started(&repository, 7, &state, 100).await;
+        repository
+            .await_telegram_confirmation(&verified(7, "pairwise"), 100)
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .confirm_telegram_login("bot", 42, 42, 7, 101, 1_000)
+                .await
+                .unwrap()
+                .unwrap()
+                .active
+        );
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 102)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::SignedIn)
+        );
+        let overlapping = "e".repeat(32);
+        started(&repository, 8, &overlapping, 101).await;
+        assert_eq!(
+            repository
+                .telegram_login_progress(&overlapping, 102)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::Waiting)
+        );
+        repository
+            .await_telegram_confirmation(&verified(8, "another-bond"), 102)
+            .await
+            .unwrap();
+        repository
+            .confirm_telegram_login("bot", 42, 42, 8, 103, 1_000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repository
+                .telegram_login_progress(&state, 104)
+                .await
+                .unwrap(),
+            Some(TelegramLoginProgress::Declined)
+        );
+        let requests: i64 = sqlx::query_scalar("SELECT count(*) FROM product_activation_requests")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(requests, 0);
     }
 }

@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS telegram_login_transactions (
 CREATE INDEX IF NOT EXISTS telegram_login_transactions_expiry
     ON telegram_login_transactions(expires_at);
 
+-- Bind each callback page to the session its exact login message opened.
+CREATE TABLE IF NOT EXISTS telegram_login_claims (
+    state_digest BLOB PRIMARY KEY REFERENCES telegram_login_transactions (state_digest) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL
+) STRICT;
+
 -- A verified Telegram login callback waits here until the bot claims it for
 -- the original /login message in the original private chat. The key is the one-use login
 -- message; a confirmation deletes its row, so it opens at most one session.
