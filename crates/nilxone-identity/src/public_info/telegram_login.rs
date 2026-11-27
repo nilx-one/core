@@ -963,6 +963,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn callback_accepts_public_telegram_proof_without_a_bot_token() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use serde_json::json;
+        use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+
+        // Historical interoperability fixture published for third-party validation:
+        // https://docs.telegram-mini-apps.com/platform/init-data
+        // This expired example belongs to the documentation, not to 0x1.
+        // Keep the clock fixed; never use this proof as a live login.
+        const FIXTURE_TIME: u64 = 1_733_584_787;
+        const FIXTURE_BOT: u64 = 7_342_037_359;
+        const FIXTURE_ACTOR: u64 = 279_058_397;
+        let init_data = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair(
+                "user",
+                r#"{"id":279058397,"first_name":"Vladislav + - ? \/","last_name":"Kibenko","username":"vdkfrost","language_code":"ru","is_premium":true,"allows_write_to_pm":true,"photo_url":"https:\/\/t.me\/i\/userpic\/320\/4FPEE4tmP3ATHa57u6MqTDih13LTOiMoKoLDRG4PnSA.svg"}"#,
+            )
+            .append_pair("chat_instance", "8134722200314281151")
+            .append_pair("chat_type", "private")
+            .append_pair("auth_date", "1733584787")
+            .append_pair(
+                "signature",
+                "zL-ucjNyREiHDE8aihFwpfR9aggP2xiAo3NSpfe-p7IbCisNlDKlo7Kb6G4D0Ao2mBrSgEk4maLSdv6MLIlADQ",
+            )
+            .finish();
+        let proof = crate::telegram_init_data::InitDataProof::PublicBot(FIXTURE_BOT);
+        assert_eq!(proof.verify(&init_data, FIXTURE_TIME), Ok(FIXTURE_ACTOR));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let backchannel = format!("http://{}", listener.local_addr().unwrap());
+        let client = SignInClient::new(
+            SignInClientConfig::public(
+                "https://auth.aiaiaiai.org",
+                Some(&backchannel),
+                "0x1",
+                "https://nilx.one/api/v1/telegram/login/callback",
+            )
+            .unwrap(),
+        );
+        let repository = PublicInfoRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let mut login = message();
+        login.provider_actor_id = FIXTURE_ACTOR;
+        login.chat_id = i64::try_from(FIXTURE_ACTOR).unwrap();
+        let started = repository
+            .start_telegram_login(&client, "telegram-bot:7342037359", &login, FIXTURE_TIME)
+            .await
+            .unwrap()
+            .unwrap();
+        let url = url::Url::parse(&started.authorization_url).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+
+        // A synthetic AIS issuer response is signed with a test key. The real
+        // Telegram proof is verified separately using the pinned production key.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let signed = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(json!({"alg":"EdDSA","kid":"k1"}).to_string()),
+            URL_SAFE_NO_PAD.encode(
+                json!({
+                    "iss": "https://auth.aiaiaiai.org",
+                    "sub": "fixture-pairwise-subject",
+                    "aud": "0x1",
+                    "nonce": query["nonce"],
+                    "exp": FIXTURE_TIME + 300,
+                    "iat": FIXTURE_TIME,
+                    "auth_time": FIXTURE_TIME,
+                    "telegram_binding": false,
+                })
+                .to_string()
+            )
+        );
+        let token = format!(
+            "{signed}.{}",
+            URL_SAFE_NO_PAD.encode(key.sign(signed.as_bytes()).to_bytes())
+        );
+        let responses = [
+            json!({"id_token": token, "telegram_init_data": init_data}).to_string(),
+            json!({"keys": [{
+                "kty": "OKP", "crv": "Ed25519", "kid": "k1",
+                "x": URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes())
+            }]})
+            .to_string(),
+        ];
+        let server = std::thread::spawn(move || {
+            for (index, response) in responses.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(if index == 0 {
+                    "POST /token "
+                } else {
+                    "GET /.well-known/jwks.json "
+                }));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                )
+                .unwrap();
+            }
+        });
+        let callback = repository
+            .complete_telegram_login_with_proof(
+                &client,
+                &query["state"],
+                "fixture-code",
+                Some(proof),
+                FIXTURE_TIME + 1,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(callback.actor_id, FIXTURE_ACTOR);
+        assert_eq!(callback.identity.subject, "fixture-pairwise-subject");
+        assert_eq!(callback.workload_subject, "telegram-bot:7342037359");
+    }
+
+    #[tokio::test]
     async fn retries_return_the_same_scoped_url_and_never_extend_it() {
         let repository = PublicInfoRepository::connect("sqlite::memory:")
             .await
