@@ -5,18 +5,20 @@
 //! Leases and message IDs are shared with the old Web worker until cutover.
 
 use nilxone_api::bot_admin::{
-    AdminDeliveryAck, AdminDeliveryKind, AdminDeliveryLease, AdminInboxDelivery, AdminInboxEntry,
+    AdminDecisionOutcome, AdminDecisionRequest, AdminDecisionResponse, AdminDeliveryAck,
+    AdminDeliveryKind, AdminDeliveryLease, AdminInboxDelivery, AdminInboxEntry,
 };
 use sqlx::Row;
 
 use super::{PublicInfoError, PublicInfoRepository};
+use crate::{AdminRoleDecision, IdentityRepository, PubDress};
 
 const LEASE_SECONDS: i64 = 300;
 
 // Resolve the actual attached Bond through the live AIS product session.
 // The stored Telegram binding must agree, and the Bond must still be admin.
 // Never attach by a display address supplied by the Bot.
-const ELIGIBLE: &str = "SELECT c.actor_id
+const ELIGIBLE: &str = "SELECT c.actor_id, i.pub_dress AS actor_pub_dress, s.active
     FROM telegram_chat_sessions c
     JOIN product_sessions s ON s.token_hash = c.token_hash
     JOIN legacy_bond_bindings b ON b.profile_id = s.profile_id
@@ -228,13 +230,93 @@ impl PublicInfoRepository {
         tx.commit().await?;
         Ok(true)
     }
+    /// Resolve an active AIS chat's attached admin, its current message slot,
+    /// and the opaque request token in the same transaction as the decision.
+    pub async fn decide_admin_inbox_request(
+        &self,
+        workload: &str,
+        request: &AdminDecisionRequest,
+        now: u64,
+    ) -> Result<AdminDecisionResponse, PublicInfoError> {
+        let forbidden = || AdminDecisionResponse {
+            outcome: AdminDecisionOutcome::Forbidden,
+            pending: Vec::new(),
+        };
+        if !request.is_valid() {
+            return Ok(forbidden());
+        }
+        let time = i64::try_from(now).map_err(|_| PublicInfoError::InvalidSession)?;
+        let actor_id = i64::try_from(request.chat.provider_actor_id)
+            .map_err(|_| PublicInfoError::InvalidSession)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let query = format!(
+            "SELECT a.actor_pub_dress FROM ({ELIGIBLE}) a
+             JOIN telegram_message_slots m ON m.chat_id = a.actor_id
+             WHERE a.actor_id = ? AND a.active = 1 AND m.admin_message_id = ?"
+        );
+        let actor: Option<String> = sqlx::query_scalar(&query)
+            .bind(workload)
+            .bind(time)
+            .bind(actor_id)
+            .bind(request.source_message_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(actor) = actor else {
+            return Ok(forbidden());
+        };
+        let candidate: Option<String> = sqlx::query_scalar(
+            "SELECT pub_dress FROM admin_role_requests
+             WHERE request_token = ? AND status = 'pending'",
+        )
+        .bind(&request.request_token)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let outcome = if let Some(candidate) = candidate {
+            let candidate: PubDress = candidate
+                .parse()
+                .map_err(|_| PublicInfoError::InvalidSession)?;
+            match IdentityRepository::decide_admin_role_request_in(
+                &mut tx,
+                &actor,
+                &candidate,
+                request.approve,
+                now,
+            )
+            .await?
+            {
+                AdminRoleDecision::Approved => AdminDecisionOutcome::Approved,
+                AdminRoleDecision::Denied => AdminDecisionOutcome::Denied,
+                AdminRoleDecision::AlreadyDecided => AdminDecisionOutcome::AlreadyDecided,
+                AdminRoleDecision::Forbidden => return Ok(forbidden()),
+            }
+        } else {
+            AdminDecisionOutcome::AlreadyDecided
+        };
+        let pending = sqlx::query(
+            "SELECT request_token, pub_dress FROM admin_role_requests
+             WHERE status = 'pending' ORDER BY requested_at, pub_dress LIMIT 10",
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(AdminInboxEntry {
+                request_token: row.try_get("request_token")?,
+                pub_dress: row.try_get("pub_dress")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+        tx.commit().await?;
+        Ok(AdminDecisionResponse { outcome, pending })
+    }
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        BondAccessRole, IdentityRepository, ProviderIdentity, TelegramMessageSlot,
+        BondAccessRole, ProviderIdentity, TelegramMessageSlot,
         aiaiaiai_sign_in::VerifiedSignIn, public_info::LegacyBondMigrationRepository,
     };
 
@@ -329,6 +411,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.admin_message_id, Some(7));
         assert_eq!(first.pending.len(), 1);
+        let request_token = first.pending[0].request_token.clone();
         assert!(
             repository
                 .claim_admin_inbox_deliveries("bot", 10, now + 1)
@@ -379,6 +462,52 @@ mod tests {
                 .await
                 .unwrap(),
             Some(9)
+        );
+        let mut decision = AdminDecisionRequest {
+            chat: nilxone_api::bot_login::ChatActivationQuery {
+                version: 1,
+                provider: "telegram".into(),
+                provider_actor_id: 42,
+                chat_id: 42,
+            },
+            source_message_id: 7,
+            request_token,
+            approve: true,
+        };
+        assert_eq!(
+            repository
+                .decide_admin_inbox_request("bot", &decision, now + 303)
+                .await
+                .unwrap()
+                .outcome,
+            AdminDecisionOutcome::Forbidden,
+        );
+        decision.source_message_id = 9;
+        assert_eq!(
+            repository
+                .decide_admin_inbox_request("other", &decision, now + 303)
+                .await
+                .unwrap()
+                .outcome,
+            AdminDecisionOutcome::Forbidden,
+        );
+        let result = repository
+            .decide_admin_inbox_request("bot", &decision, now + 303)
+            .await
+            .unwrap();
+        assert_eq!(result.outcome, AdminDecisionOutcome::Approved);
+        assert!(result.pending.is_empty());
+        assert_eq!(
+            repository
+                .decide_admin_inbox_request("bot", &decision, now + 304)
+                .await
+                .unwrap()
+                .outcome,
+            AdminDecisionOutcome::AlreadyDecided,
+        );
+        assert_eq!(
+            legacy.role_for("0x0new").await.unwrap(),
+            BondAccessRole::Admin
         );
     }
 }

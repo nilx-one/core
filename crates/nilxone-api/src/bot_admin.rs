@@ -5,10 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bot_login::WIRE_VERSION;
+use crate::bot_login::{ChatActivationQuery, WIRE_VERSION};
 
 pub const PULL_PATH: &str = "/api/v1/telegram/admin/delivery/pull";
 pub const ACK_PATH: &str = "/api/v1/telegram/admin/delivery/ack";
+pub const DECIDE_PATH: &str = "/api/v1/telegram/admin/decide";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +67,45 @@ impl AdminDeliveryAck {
             && !self.lease.candidate_pub_dress.is_empty()
             && self.lease.candidate_pub_dress.len() <= 128
     }
+}
+
+/// The Telegram callback is a request, never role authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminDecisionRequest {
+    pub chat: ChatActivationQuery,
+    pub source_message_id: i32,
+    pub request_token: String,
+    pub approve: bool,
+}
+
+impl AdminDecisionRequest {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.chat.is_valid()
+            && self.source_message_id > 0
+            && self.request_token.len() == 32
+            && self
+                .request_token
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminDecisionOutcome {
+    Approved,
+    Denied,
+    AlreadyDecided,
+    Forbidden,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdminDecisionResponse {
+    pub outcome: AdminDecisionOutcome,
+    /// Empty for a refused caller. Never grants authority to a button.
+    pub pending: Vec<AdminInboxEntry>,
 }
 
 #[cfg(test)]

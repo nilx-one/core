@@ -34,8 +34,8 @@ use axum::{
 use nilxone_api::{
     activation::ActivationRefusal,
     bot_admin::{
-        ACK_PATH as ADMIN_ACK_PATH, AdminDeliveryAck, AdminDeliveryPull,
-        PULL_PATH as ADMIN_PULL_PATH,
+        ACK_PATH as ADMIN_ACK_PATH, AdminDecisionRequest, AdminDeliveryAck, AdminDeliveryPull,
+        DECIDE_PATH as ADMIN_DECIDE_PATH, PULL_PATH as ADMIN_PULL_PATH,
     },
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
@@ -130,6 +130,7 @@ fn router(host: LoginHost) -> Router {
             .route(NOTIFICATIONS_ACK_PATH, post(acknowledge_notifications))
             .route(ADMIN_PULL_PATH, post(pull_admin_deliveries))
             .route(ADMIN_ACK_PATH, post(acknowledge_admin_delivery))
+            .route(ADMIN_DECIDE_PATH, post(decide_admin_request))
     } else {
         router
     };
@@ -673,6 +674,31 @@ fn notification_caller(
         )));
     }
     Ok((subject, now))
+}
+
+async fn decide_admin_request(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(request): Json<AdminDecisionRequest>,
+) -> Response {
+    let (subject, now) = match verified_chat_caller(&host, principal, &request.chat, "admin") {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    if !request.is_valid() {
+        return refusal(LoginStartRefusal::InvalidProviderEvidence);
+    }
+    match host
+        .repository
+        .decide_admin_inbox_request(&subject, &request, now)
+        .await
+    {
+        Ok(outcome) => no_store_json(StatusCode::OK, outcome),
+        Err(error) => {
+            tracing::error!(%error, "deciding admin request failed");
+            refusal(LoginStartRefusal::LoginServiceUnavailable)
+        }
+    }
 }
 
 async fn pull_admin_deliveries(
