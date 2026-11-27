@@ -1,10 +1,8 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Bot workload authentication with the Telegram Bot API token the bot and
-//! this host already hold. No other credential exists for the bot: whoever
-//! holds the token already controls the chat, so signing with it grants no
-//! new authority.
+//! Bot workload authentication through a pinned public verification key.
+//! The production host cannot call Telegram Bot API or sign Bot requests.
 
 use axum::{
     body::{Body, to_bytes},
@@ -16,6 +14,9 @@ use nilxone_api::bot_login::{
     LoginStartRefusal, SIGNATURE_HEADER, verify_request, workload_subject,
 };
 
+use nilxone_identity::{
+    telegram_bot_signature::BotRequestVerifier, telegram_init_data::InitDataProof,
+};
 use crate::{AuthorizedLoginBot, now_unix_seconds, refusal};
 
 pub const ISSUER: &str = "https://auth.aiaiaiai.org";
@@ -24,8 +25,14 @@ const MAX_BODY_BYTES: usize = 4_096;
 
 #[derive(Clone)]
 pub struct Authority {
-    bot_token: String,
+    proof: RequestProof,
     subject: String,
+}
+
+#[derive(Clone)]
+enum RequestProof {
+    LegacyHmac(String),
+    Public { bot_id: u64, verifier: BotRequestVerifier },
 }
 
 impl Authority {
@@ -34,17 +41,36 @@ impl Authority {
         let bot_token = bot_token.trim();
         Some(Self {
             subject: workload_subject(bot_token)?,
-            bot_token: bot_token.to_owned(),
+            proof: RequestProof::LegacyHmac(bot_token.to_owned()),
         })
     }
 
-    /// The Bot API token; also the key Telegram signs Mini App initData with.
-    pub(crate) fn bot_token(&self) -> &str {
-        &self.bot_token
+    /// The independently configured public identity and verification key.
+    pub fn from_public_key(bot_id: u64, public_key: &str) -> Option<Self> {
+        if bot_id == 0 {
+            return None;
+        }
+        Some(Self {
+            subject: format!("telegram-bot:{bot_id}"),
+            proof: RequestProof::Public {
+                bot_id,
+                verifier: BotRequestVerifier::from_public_key(public_key)?,
+            },
+        })
+    }
+
+    pub(crate) fn init_data_proof(&self) -> InitDataProof<'_> {
+        match &self.proof {
+            RequestProof::LegacyHmac(token) => InitDataProof::LegacyHmac(token),
+            RequestProof::Public { bot_id, .. } => InitDataProof::PublicBot(*bot_id),
+        }
     }
 
     fn accepts(&self, header: &str, path: &str, body: &[u8], now: u64) -> bool {
-        verify_request(&self.bot_token, header, path, body, now)
+        match &self.proof {
+            RequestProof::LegacyHmac(token) => verify_request(token, header, path, body, now),
+            RequestProof::Public { verifier, .. } => verifier.accepts(header, path, body, now),
+        }
     }
 }
 

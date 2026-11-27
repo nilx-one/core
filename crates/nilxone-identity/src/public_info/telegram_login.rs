@@ -274,8 +274,21 @@ impl PublicInfoRepository {
         code: &str,
         telegram_bot_token: Option<&str>,
     ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
+        self.verify_telegram_login_callback_with_proof(
+            client, state, code,
+            telegram_bot_token.map(crate::telegram_init_data::InitDataProof::LegacyHmac),
+        ).await
+    }
+
+    pub async fn verify_telegram_login_callback_with_proof(
+        &self,
+        client: &SignInClient,
+        state: &str,
+        code: &str,
+        proof: Option<crate::telegram_init_data::InitDataProof<'_>>,
+    ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
         let Some(callback) = self
-            .complete_telegram_login(client, state, code, telegram_bot_token, unix_seconds()?)
+            .complete_telegram_login_with_proof(client, state, code, proof, unix_seconds()?)
             .await?
         else {
             return Ok(None);
@@ -713,6 +726,21 @@ impl PublicInfoRepository {
         telegram_bot_token: Option<&str>,
         now: u64,
     ) -> Result<Option<TelegramLoginCallback>, TelegramLoginError> {
+        self.complete_telegram_login_with_proof(
+            client, state, code,
+            telegram_bot_token.map(crate::telegram_init_data::InitDataProof::LegacyHmac),
+            now,
+        ).await
+    }
+
+    pub async fn complete_telegram_login_with_proof(
+        &self,
+        client: &SignInClient,
+        state: &str,
+        code: &str,
+        proof: Option<crate::telegram_init_data::InitDataProof<'_>>,
+        now: u64,
+    ) -> Result<Option<TelegramLoginCallback>, TelegramLoginError> {
         let redirect_uri = check_client(client)?;
         if state.len() != 32 || code.is_empty() || code.len() > 512 {
             tracing::warn!(
@@ -770,9 +798,9 @@ impl PublicInfoRepository {
         // Without an AIS link, the person signed in inside Telegram: the
         // account Telegram signed the page for must be the /login sender. A
         // link forwarded to someone else carries their account, not this one.
-        let telegram_signed_in = match (telegram_bot_token, init_data.as_deref()) {
-            (Some(bot_token), Some(init_data)) if !bound => {
-                match crate::telegram_init_data::verify(bot_token, init_data, now) {
+        let telegram_signed_in = match (proof, init_data.as_deref()) {
+            (Some(proof), Some(init_data)) if !bound => {
+                match proof.verify(init_data, now) {
                     Ok(account) => i64::try_from(account).ok() == Some(chat_id),
                     Err(rejection) => {
                         tracing::warn!(

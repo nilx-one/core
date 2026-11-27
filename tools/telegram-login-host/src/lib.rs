@@ -303,11 +303,11 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
     }
     match host
         .repository
-        .verify_telegram_login_callback(
+        .verify_telegram_login_callback_with_proof(
             &host.client,
             &state,
             &code,
-            Some(host.authority.bot_token()),
+            Some(host.authority.init_data_proof()),
         )
         .await
     {

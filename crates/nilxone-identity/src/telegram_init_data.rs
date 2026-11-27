@@ -8,6 +8,11 @@
 
 use std::collections::BTreeMap;
 
+use base64::{
+    Engine as _,
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+};
+use ed25519_dalek::{Signature, VerifyingKey};
 use hmac::{Hmac, Mac as _};
 use serde::Deserialize;
 use sha2::Sha256;
@@ -15,6 +20,28 @@ use sha2::Sha256;
 const MAX_AGE_SECONDS: u64 = 600;
 const FUTURE_SKEW_SECONDS: u64 = 30;
 const MAX_INIT_DATA_BYTES: usize = 4096;
+// Telegram's production third-party validation key.
+const PRODUCTION_KEY: [u8; 32] = [
+    0xe7, 0xbf, 0x03, 0xa2, 0xfa, 0x46, 0x02, 0xaf, 0x45, 0x80, 0x70, 0x3d, 0x88, 0xdd, 0xa5, 0xbb,
+    0x59, 0xf3, 0x2e, 0xd8, 0xb0, 0x2a, 0x56, 0xc1, 0x87, 0xfe, 0x7d, 0x34, 0xca, 0xed, 0x24, 0x2d,
+];
+
+/// Provider evidence is separate from the Bot workload's request signature.
+/// The production host uses only the public bot ID, never the API token.
+#[derive(Clone, Copy)]
+pub enum InitDataProof<'a> {
+    LegacyHmac(&'a str),
+    PublicBot(u64),
+}
+
+impl InitDataProof<'_> {
+    pub fn verify(self, init_data: &str, now: u64) -> Result<u64, InitDataRejection> {
+        match self {
+            Self::LegacyHmac(token) => verify(token, init_data, now),
+            Self::PublicBot(id) => verify_public(id, init_data, now),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InitDataRejection {
@@ -51,18 +78,7 @@ struct TelegramUser {
 ///
 /// Anything Telegram did not sign for this bot, stale data, or a bot user.
 pub fn verify(bot_token: &str, init_data: &str, now: u64) -> Result<u64, InitDataRejection> {
-    if init_data.is_empty() || init_data.len() > MAX_INIT_DATA_BYTES {
-        return Err(InitDataRejection::Malformed);
-    }
-    let mut fields = BTreeMap::new();
-    for (key, value) in url::form_urlencoded::parse(init_data.as_bytes()) {
-        if fields
-            .insert(key.into_owned(), value.into_owned())
-            .is_some()
-        {
-            return Err(InitDataRejection::Malformed);
-        }
-    }
+    let mut fields = parse_fields(init_data)?;
     let hash = fields
         .remove("hash")
         .and_then(|hash| decode_hex(&hash))
@@ -79,7 +95,59 @@ pub fn verify(bot_token: &str, init_data: &str, now: u64) -> Result<u64, InitDat
     mac.update(check.as_bytes());
     mac.verify_slice(&hash)
         .map_err(|_| InitDataRejection::InvalidHash)?;
+    verified_user(&fields, now)
+}
 
+/// Verify Telegram's third-party Ed25519 evidence, without an HMAC fallback.
+pub fn verify_public(bot_id: u64, init_data: &str, now: u64) -> Result<u64, InitDataRejection> {
+    let key = VerifyingKey::from_bytes(&PRODUCTION_KEY)
+        .map_err(|_| InitDataRejection::InvalidHash)?;
+    verify_public_with_key(bot_id, init_data, now, &key)
+}
+
+fn verify_public_with_key(
+    bot_id: u64,
+    init_data: &str,
+    now: u64,
+    key: &VerifyingKey,
+) -> Result<u64, InitDataRejection> {
+    if bot_id == 0 {
+        return Err(InitDataRejection::InvalidHash);
+    }
+    let mut fields = parse_fields(init_data)?;
+    let encoded = fields.remove("signature").ok_or(InitDataRejection::InvalidHash)?;
+    fields.remove("hash");
+    let bytes = URL_SAFE_NO_PAD.decode(&encoded).or_else(|_| URL_SAFE.decode(&encoded))
+        .map_err(|_| InitDataRejection::InvalidHash)?;
+    let signature = Signature::from_slice(&bytes).map_err(|_| InitDataRejection::InvalidHash)?;
+    let check = fields
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let message = format!("{bot_id}:WebAppData\n{check}");
+    key.verify_strict(message.as_bytes(), &signature)
+        .map_err(|_| InitDataRejection::InvalidHash)?;
+    verified_user(&fields, now)
+}
+
+fn parse_fields(init_data: &str) -> Result<BTreeMap<String, String>, InitDataRejection> {
+    if init_data.is_empty() || init_data.len() > MAX_INIT_DATA_BYTES {
+        return Err(InitDataRejection::Malformed);
+    }
+    let mut fields = BTreeMap::new();
+    for (key, value) in url::form_urlencoded::parse(init_data.as_bytes()) {
+        if fields
+            .insert(key.into_owned(), value.into_owned())
+            .is_some()
+        {
+            return Err(InitDataRejection::Malformed);
+        }
+    }
+    Ok(fields)
+}
+
+fn verified_user(fields: &BTreeMap<String, String>, now: u64) -> Result<u64, InitDataRejection> {
     let auth_date: u64 = fields
         .get("auth_date")
         .and_then(|value| value.parse().ok())
@@ -150,7 +218,28 @@ pub fn sign_for_tests(bot_token: &str, fields: &[(&str, &str)]) -> String {
 mod tests {
     use super::*;
 
+    use ed25519_dalek::{Signer, SigningKey};
+
     const TOKEN: &str = "123456:test-bot-token";
+
+    #[test]
+    fn public_evidence_is_bound_to_bot_and_has_no_legacy_fallback() {
+        let signing = SigningKey::from_bytes(&[42; 32]);
+        let user = r#"{"id":42}"#;
+        let msg = format!("123456:WebAppData\nauth_date=1000\nuser={user}");
+        let signature = URL_SAFE_NO_PAD.encode(signing.sign(msg.as_bytes()).to_bytes());
+        let data = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("user", user)
+            .append_pair("auth_date", "1000")
+            .append_pair("signature", &signature)
+            .finish();
+        let key = signing.verifying_key();
+        assert_eq!(verify_public_with_key(123_456, &data, 1_100, &key), Ok(42));
+        assert_eq!(verify_public_with_key(123_457, &data, 1_100, &key), Err(InitDataRejection::InvalidHash));
+        assert_eq!(verify_public_with_key(123_456, &data, 1_601, &key), Err(InitDataRejection::Expired));
+        let legacy = sign_for_tests(TOKEN, &[("auth_date", "1000"), ("user", user)]);
+        assert_eq!(verify_public_with_key(123_456, &legacy, 1_100, &key), Err(InitDataRejection::InvalidHash));
+    }
 
     #[test]
     fn accepts_only_fresh_data_telegram_signed_for_this_bot() {

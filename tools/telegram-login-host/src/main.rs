@@ -19,10 +19,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let callback = "https://nilx.one/api/v1/telegram/login/callback";
     let config = SignInClientConfig::public(ISSUER, None, "0x1", callback)?;
-    // The bot signs its requests with the @nilxone_bot token both processes
-    // already hold; the host holds no other credential.
-    let authority = Authority::from_bot_token(&configured("TELEGRAM_BOT_TOKEN")?)
-        .ok_or_else(|| io::Error::other("TELEGRAM_BOT_TOKEN is not a Telegram Bot API token"))?;
+    // Only public configuration crosses the Bot boundary. No token fallback.
+    let bot_id = configured("TELEGRAM_BOT_ID")?.parse()?;
+    let authority = Authority::from_public_key(bot_id, &configured("TELEGRAM_BOT_PUBLIC_KEY")?)
+        .ok_or_else(|| io::Error::other("Invalid Telegram Bot public authority"))?;
     let session_ttl_seconds = configured("TELEGRAM_LOGIN_SESSION_TTL_SECONDS")?.parse()?;
     if session_ttl_seconds == 0 {
         return Err(io::Error::other("Telegram session TTL must be positive").into());
