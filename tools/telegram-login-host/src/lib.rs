@@ -36,9 +36,8 @@ use nilxone_api::{
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_PROFILE_PATH, CONFIRM_PATH,
         ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation, ChatAvaiaProfile,
-        ChatProfileQuery, ChatProfileSection, ChatWalletProfile, LoginConfirmRefusal,
-        LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal, LoginStartRequest,
-        START_PATH,
+        ChatProfileQuery, ChatProfileSection, LoginConfirmRefusal, LoginConfirmRequest,
+        LoginConfirmResponse, LoginStartRefusal, LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -499,13 +498,20 @@ async fn chat_profile(
                 }),
             )
         }
+        Ok(Some(owner)) if section == ChatProfileSection::Wallet => {
+            match host.repository.read_chat_wallet(&owner, now).await {
+                Ok(wallet) => no_store_json(StatusCode::OK, wallet),
+                Err(error) => {
+                    tracing::error!(%error, "reading Telegram Seeds history failed");
+                    no_store_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "profile_unavailable",
+                        "The Seeds wallet is unavailable.",
+                    )
+                }
+            }
+        }
         Ok(Some(owner)) => match host.repository.read_chat_bond_state(&owner, now).await {
-            Ok(state) if section == ChatProfileSection::Wallet => no_store_json(
-                StatusCode::OK,
-                ChatWalletProfile {
-                    seeds: state.map(|state| state.seeds),
-                },
-            ),
             Ok(state) => no_store_json(
                 StatusCode::OK,
                 ChatAvaiaProfile {
