@@ -583,7 +583,10 @@ mod tests {
                 .unwrap(),
             "revoked admin cannot acknowledge"
         );
-        legacy.set_role(&admin, BondAccessRole::Admin).await.unwrap();
+        legacy
+            .set_role(&admin, BondAccessRole::Admin)
+            .await
+            .unwrap();
         assert!(
             repository
                 .acknowledge_admin_inbox_delivery("bot", &ack, now + 3)
