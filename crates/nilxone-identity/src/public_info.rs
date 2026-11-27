@@ -7,6 +7,7 @@
 
 use std::{str::FromStr, time::Duration};
 
+use nilxone_api::bot_login::{ChatSeedsEntry, ChatSeedsEntryKind, ChatWalletProfile};
 use serde::Serialize;
 use sqlx::{
     Row, SqlitePool,
@@ -206,6 +207,93 @@ impl PublicInfoRepository {
             Ok(ChatBondState { seeds, avaia })
         })
         .transpose()
+    }
+
+    /// Return the current wallet and up to ten recorded movements in one
+    /// database snapshot, bound to the session that authorized the read.
+    /// Repairs have no immutable debit receipt and are absent from this view.
+    pub async fn read_chat_wallet(
+        &self,
+        owner: &AuthenticatedProfile,
+        now: u64,
+    ) -> Result<ChatWalletProfile, PublicInfoError> {
+        let mut wallet = ChatWalletProfile {
+            seeds: None,
+            recent: Vec::new(),
+        };
+        let (Some(session), Ok(now)) = (&owner.session, i64::try_from(now)) else {
+            return Ok(wallet);
+        };
+        let rows = sqlx::query(
+            "WITH owner AS (
+                SELECT i.pub_dress, COALESCE(w.balance, 0) AS balance
+                FROM product_sessions s
+                JOIN legacy_bond_bindings b ON b.profile_id = s.profile_id
+                JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+                JOIN identities i ON i.pub_dress = k.legacy_pub_dress AND i.identity_kind = 'human'
+                LEFT JOIN bond_seeds w ON w.owner_pub_dress = i.pub_dress
+                WHERE s.token_hash = ? AND s.expires_at > ?
+                  AND s.profile_id = ? AND s.issuer = ? AND s.subject = ?
+             ), movements(kind, delta, at_ms, tie) AS (
+                SELECT 'starter', c.amount_minor, c.committed_at_ms, c.source_id
+                FROM owner o JOIN bond_seed_credits c ON c.owner_pub_dress = o.pub_dress
+                WHERE c.source_kind = 'starter'
+                UNION ALL
+                SELECT 'find', f.pickup_credit, f.attested_at_ms, f.attestation_id
+                FROM owner o JOIN find_attestations f ON f.owner_pub_dress = o.pub_dress
+                WHERE f.pickup_credit > 0
+                UNION ALL
+                SELECT 'sale', f.sale_credit, f.sold_at_ms, f.attestation_id
+                FROM owner o JOIN find_attestations f ON f.owner_pub_dress = o.pub_dress
+                WHERE f.sale_credit > 0
+                UNION ALL
+                SELECT 'craft', -c.seeds_debited, c.started_at_ms, c.craft_id
+                FROM owner o JOIN craft_receipts c ON c.owner_pub_dress = o.pub_dress
+                WHERE c.seeds_debited > 0
+                UNION ALL
+                SELECT 'subscription', -d.amount_minor, d.committed_at_ms, d.order_id
+                FROM owner o JOIN bond_seed_subscription_debits d ON d.owner_pub_dress = o.pub_dress
+             ), recent AS (
+                SELECT * FROM movements ORDER BY at_ms DESC, kind ASC, tie ASC LIMIT 10
+             )
+             SELECT o.balance, r.kind, r.delta, r.at_ms
+             FROM owner o LEFT JOIN recent r ON TRUE
+             ORDER BY r.at_ms DESC, r.kind ASC, r.tie ASC",
+        )
+        .bind(session)
+        .bind(now)
+        .bind(&owner.profile.profile_id)
+        .bind(&owner.issuer)
+        .bind(&owner.subject)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            let amount = |column| {
+                u64::try_from(row.try_get::<i64, _>(column)?)
+                    .map_err(|_| sqlx::Error::Protocol("negative wallet value".into()))
+            };
+            wallet.seeds = Some(amount("balance")?);
+            if let Some(kind) = row.try_get::<Option<String>, _>("kind")? {
+                let kind = match kind.as_str() {
+                    "starter" => ChatSeedsEntryKind::Starter,
+                    "find" => ChatSeedsEntryKind::Find,
+                    "sale" => ChatSeedsEntryKind::Sale,
+                    "craft" => ChatSeedsEntryKind::Craft,
+                    "subscription" => ChatSeedsEntryKind::Subscription,
+                    _ => {
+                        return Err(
+                            sqlx::Error::Protocol("unknown wallet entry kind".into()).into()
+                        );
+                    }
+                };
+                wallet.recent.push(ChatSeedsEntry {
+                    kind,
+                    delta: row.try_get("delta")?,
+                    at_ms: amount("at_ms")?,
+                });
+            }
+        }
+        Ok(wallet)
     }
 
     /// Discovery only. Possessing this public id grants no write access.

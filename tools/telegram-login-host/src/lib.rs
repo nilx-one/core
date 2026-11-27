@@ -37,8 +37,8 @@ use nilxone_api::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
         CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
         ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
-        ChatWalletProfile, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
-        LoginStartRefusal, LoginStartRequest, START_PATH,
+        LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
+        LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -443,6 +443,7 @@ fn verified_chat_caller(
     host: &LoginHost,
     principal: Option<Extension<AuthorizedLoginBot>>,
     chat: &ChatActivationQuery,
+    bucket: &str,
 ) -> Result<(String, u64), Box<Response>> {
     let Some(Extension(AuthorizedLoginBot(subject))) = principal else {
         return Err(Box::new(refusal(
@@ -464,7 +465,7 @@ fn verified_chat_caller(
             LoginStartRefusal::LoginServiceUnavailable,
         )));
     };
-    let limit_key = format!("chat:{subject}:{}", chat.provider_actor_id);
+    let limit_key = format!("{bucket}:{subject}:{}", chat.provider_actor_id);
     if let Err(retry) = host.attempts.consume(limit_key, now, 60, 60) {
         return Err(Box::new(rate_limited(
             refusal(LoginStartRefusal::LoginRateLimited),
@@ -479,7 +480,7 @@ async fn chat_location(
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(report): Json<ChatLocationReport>,
 ) -> Response {
-    let (subject, now) = match verified_chat_caller(&host, principal, &report.chat) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &report.chat, "location") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -492,28 +493,6 @@ async fn chat_location(
             "Invalid location.",
         );
     };
-    match host
-        .repository
-        .restore_telegram_chat_session(&subject, report.chat.provider_actor_id, now)
-        .await
-    {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return no_store_error(
-                StatusCode::CONFLICT,
-                "location_not_applied",
-                "The location was not applied.",
-            );
-        }
-        Err(_) => {
-            tracing::error!("Telegram Bond location session lookup failed");
-            return no_store_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "location_unavailable",
-                "The location service is unavailable.",
-            );
-        }
-    }
     match host
         .repository
         .record_chat_live_location(
@@ -531,9 +510,10 @@ async fn chat_location(
             "location_not_applied",
             "The location was not applied.",
         ),
-        Err(_) => {
-            // Do not include the coordinate or the request in diagnostics.
-            tracing::error!("Telegram Bond location write failed");
+        Err(error) => {
+            // The error carries no bound values: neither the coordinate nor
+            // the request reaches the log.
+            tracing::error!(%error, "Telegram Bond location write failed");
             no_store_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "location_unavailable",
@@ -550,7 +530,7 @@ async fn chat_profile(
 ) -> Response {
     let section = query.section;
     let query = query.chat();
-    let (subject, now) = match verified_chat_caller(&host, principal, &query) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &query, "chat") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -569,13 +549,20 @@ async fn chat_profile(
                 }),
             )
         }
+        Ok(Some(owner)) if section == ChatProfileSection::Wallet => {
+            match host.repository.read_chat_wallet(&owner, now).await {
+                Ok(wallet) => no_store_json(StatusCode::OK, wallet),
+                Err(error) => {
+                    tracing::error!(%error, "reading Telegram Seeds history failed");
+                    no_store_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "profile_unavailable",
+                        "The Seeds wallet is unavailable.",
+                    )
+                }
+            }
+        }
         Ok(Some(owner)) => match host.repository.read_chat_bond_state(&owner, now).await {
-            Ok(state) if section == ChatProfileSection::Wallet => no_store_json(
-                StatusCode::OK,
-                ChatWalletProfile {
-                    seeds: state.map(|state| state.seeds),
-                },
-            ),
             Ok(state) => no_store_json(
                 StatusCode::OK,
                 ChatAvaiaProfile {
@@ -621,7 +608,7 @@ async fn chat_activation(
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(query): Json<ChatActivationQuery>,
 ) -> Response {
-    let (subject, now) = match verified_chat_caller(&host, principal, &query) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &query, "chat") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -637,7 +624,7 @@ async fn chat_activation_answer(
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(answer): Json<ChatActivationAnswer>,
 ) -> Response {
-    let (subject, now) = match verified_chat_caller(&host, principal, &answer.chat()) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &answer.chat(), "chat") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -1082,7 +1069,18 @@ mod tests {
 
     #[tokio::test]
     async fn chat_location_refuses_unsigned_and_unbound_requests() {
-        let app = router(host(offline_client(), Some(chat())).await);
+        // In production the host shares the identity database, so the write
+        // sees Bonds and their locations; give the test the same schema.
+        let url = "sqlite:file:chat-location?mode=memory&cache=shared";
+        let _identity = nilxone_identity::IdentityRepository::connect(url)
+            .await
+            .unwrap();
+        let mut shared = host(offline_client(), Some(chat())).await;
+        shared.repository = PublicInfoRepository::connect(url).await.unwrap();
+        LegacyBondMigrationRepository::prepare(shared.repository.clone())
+            .await
+            .unwrap();
+        let app = router(shared);
         let sender = serde_json::json!({
             "chat": {"version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42},
             "latitude": 50.45, "longitude": 30.52, "observed_at": now_unix_seconds().unwrap()

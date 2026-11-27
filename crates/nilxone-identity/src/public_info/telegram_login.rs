@@ -635,7 +635,12 @@ impl PublicInfoRepository {
         now: u64,
     ) -> Result<bool, PublicInfoError> {
         const MAX_OBSERVATION_AGE_SECONDS: u64 = 120;
-        if observed_at == 0 || observed_at > now || now - observed_at > MAX_OBSERVATION_AGE_SECONDS
+        // `observed_at` is Telegram's clock and `now` this host's: allow a
+        // little skew so a fresh report is not refused as from the future.
+        const MAX_CLOCK_SKEW_SECONDS: u64 = 5;
+        if observed_at == 0
+            || observed_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
+            || now.saturating_sub(observed_at) > MAX_OBSERVATION_AGE_SECONDS
         {
             return Ok(false);
         }

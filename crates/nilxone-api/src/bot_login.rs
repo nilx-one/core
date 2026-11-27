@@ -221,6 +221,25 @@ pub struct ChatAvaiaLocation {
 #[derive(Debug, Serialize)]
 pub struct ChatWalletProfile {
     pub seeds: Option<u64>,
+    pub recent: Vec<ChatSeedsEntry>,
+}
+
+/// A recorded movement of Seeds, without payment, find or location identifiers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChatSeedsEntry {
+    pub kind: ChatSeedsEntryKind,
+    pub delta: i64,
+    pub at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatSeedsEntryKind {
+    Starter,
+    Find,
+    Sale,
+    Craft,
+    Subscription,
 }
 
 /// Signed Telegram live location report for the active Bond.
