@@ -100,8 +100,8 @@ pub fn verify(bot_token: &str, init_data: &str, now: u64) -> Result<u64, InitDat
 
 /// Verify Telegram's third-party Ed25519 evidence, without an HMAC fallback.
 pub fn verify_public(bot_id: u64, init_data: &str, now: u64) -> Result<u64, InitDataRejection> {
-    let key = VerifyingKey::from_bytes(&PRODUCTION_KEY)
-        .map_err(|_| InitDataRejection::InvalidHash)?;
+    let key =
+        VerifyingKey::from_bytes(&PRODUCTION_KEY).map_err(|_| InitDataRejection::InvalidHash)?;
     verify_public_with_key(bot_id, init_data, now, &key)
 }
 
@@ -115,9 +115,13 @@ fn verify_public_with_key(
         return Err(InitDataRejection::InvalidHash);
     }
     let mut fields = parse_fields(init_data)?;
-    let encoded = fields.remove("signature").ok_or(InitDataRejection::InvalidHash)?;
+    let encoded = fields
+        .remove("signature")
+        .ok_or(InitDataRejection::InvalidHash)?;
     fields.remove("hash");
-    let bytes = URL_SAFE_NO_PAD.decode(&encoded).or_else(|_| URL_SAFE.decode(&encoded))
+    let bytes = URL_SAFE_NO_PAD
+        .decode(&encoded)
+        .or_else(|_| URL_SAFE.decode(&encoded))
         .map_err(|_| InitDataRejection::InvalidHash)?;
     let signature = Signature::from_slice(&bytes).map_err(|_| InitDataRejection::InvalidHash)?;
     let check = fields
@@ -235,10 +239,19 @@ mod tests {
             .finish();
         let key = signing.verifying_key();
         assert_eq!(verify_public_with_key(123_456, &data, 1_100, &key), Ok(42));
-        assert_eq!(verify_public_with_key(123_457, &data, 1_100, &key), Err(InitDataRejection::InvalidHash));
-        assert_eq!(verify_public_with_key(123_456, &data, 1_601, &key), Err(InitDataRejection::Expired));
+        assert_eq!(
+            verify_public_with_key(123_457, &data, 1_100, &key),
+            Err(InitDataRejection::InvalidHash)
+        );
+        assert_eq!(
+            verify_public_with_key(123_456, &data, 1_601, &key),
+            Err(InitDataRejection::Expired)
+        );
         let legacy = sign_for_tests(TOKEN, &[("auth_date", "1000"), ("user", user)]);
-        assert_eq!(verify_public_with_key(123_456, &legacy, 1_100, &key), Err(InitDataRejection::InvalidHash));
+        assert_eq!(
+            verify_public_with_key(123_456, &legacy, 1_100, &key),
+            Err(InitDataRejection::InvalidHash)
+        );
     }
 
     #[test]

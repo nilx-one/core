@@ -14,10 +14,10 @@ use nilxone_api::bot_login::{
     LoginStartRefusal, SIGNATURE_HEADER, verify_request, workload_subject,
 };
 
+use crate::{AuthorizedLoginBot, now_unix_seconds, refusal};
 use nilxone_identity::{
     telegram_bot_signature::BotRequestVerifier, telegram_init_data::InitDataProof,
 };
-use crate::{AuthorizedLoginBot, now_unix_seconds, refusal};
 
 pub const ISSUER: &str = "https://auth.aiaiaiai.org";
 /// Login requests are small JSON documents.
@@ -32,7 +32,10 @@ pub struct Authority {
 #[derive(Clone)]
 enum RequestProof {
     LegacyHmac(String),
-    Public { bot_id: u64, verifier: BotRequestVerifier },
+    Public {
+        bot_id: u64,
+        verifier: BotRequestVerifier,
+    },
 }
 
 impl Authority {

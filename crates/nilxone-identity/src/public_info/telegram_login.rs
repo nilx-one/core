@@ -275,9 +275,12 @@ impl PublicInfoRepository {
         telegram_bot_token: Option<&str>,
     ) -> Result<Option<TelegramLoginAwaitingConfirmation>, TelegramLoginVerificationError> {
         self.verify_telegram_login_callback_with_proof(
-            client, state, code,
+            client,
+            state,
+            code,
             telegram_bot_token.map(crate::telegram_init_data::InitDataProof::LegacyHmac),
-        ).await
+        )
+        .await
     }
 
     pub async fn verify_telegram_login_callback_with_proof(
@@ -727,10 +730,13 @@ impl PublicInfoRepository {
         now: u64,
     ) -> Result<Option<TelegramLoginCallback>, TelegramLoginError> {
         self.complete_telegram_login_with_proof(
-            client, state, code,
+            client,
+            state,
+            code,
             telegram_bot_token.map(crate::telegram_init_data::InitDataProof::LegacyHmac),
             now,
-        ).await
+        )
+        .await
     }
 
     pub async fn complete_telegram_login_with_proof(
@@ -799,18 +805,16 @@ impl PublicInfoRepository {
         // account Telegram signed the page for must be the /login sender. A
         // link forwarded to someone else carries their account, not this one.
         let telegram_signed_in = match (proof, init_data.as_deref()) {
-            (Some(proof), Some(init_data)) if !bound => {
-                match proof.verify(init_data, now) {
-                    Ok(account) => i64::try_from(account).ok() == Some(chat_id),
-                    Err(rejection) => {
-                        tracing::warn!(
-                            reason = rejection.reason(),
-                            "Telegram login init data refused"
-                        );
-                        false
-                    }
+            (Some(proof), Some(init_data)) if !bound => match proof.verify(init_data, now) {
+                Ok(account) => i64::try_from(account).ok() == Some(chat_id),
+                Err(rejection) => {
+                    tracing::warn!(
+                        reason = rejection.reason(),
+                        "Telegram login init data refused"
+                    );
+                    false
                 }
-            }
+            },
             _ => false,
         };
         // AIS confirmed that this identity's linked Telegram account is the
