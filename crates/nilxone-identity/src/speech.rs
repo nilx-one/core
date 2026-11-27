@@ -5,7 +5,7 @@ use nilxone_contracts::{
     DecimalU64, EarshotRadius, GeoCoordinate, PubDress, SpokenLine, SpokenLineId, SpokenText,
 };
 use sqlx::{
-    Row, SqlitePool,
+    Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::str::FromStr;
@@ -56,6 +56,9 @@ impl SpeechRepository {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(include_str!("../migrations/0018_spoken_lines.sql"))
+            .execute(&pool)
+            .await?;
+        sqlx::raw_sql(include_str!("../speech_telegram_delivery.sql"))
             .execute(&pool)
             .await?;
         let repository = Self { pool };
@@ -112,12 +115,23 @@ impl SpeechRepository {
         line: &SpokenLine,
         received_at: u64,
     ) -> Result<bool, SpeechRepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let created = Self::record_in(&mut tx, line, received_at).await?;
+        tx.commit().await?;
+        Ok(created)
+    }
+
+    async fn record_in(
+        connection: &mut SqliteConnection,
+        line: &SpokenLine,
+        received_at: u64,
+    ) -> Result<bool, SpeechRepositoryError> {
         let spoken_at = i64::try_from(line.spoken_at().get())
             .map_err(|_| SpeechRepositoryError::CorruptState)?;
         let received_at =
             i64::try_from(received_at).map_err(|_| SpeechRepositoryError::CorruptState)?;
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO spoken_lines (line_id, speaker, text, spoken_at, received_at) \
+            "INSERT OR IGNORE INTO spoken_lines (line_id, speaker, text, spoken_at, received_at)
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(line.id().as_str())
@@ -125,9 +139,62 @@ impl SpeechRepository {
         .bind(line.text().as_str())
         .bind(spoken_at)
         .bind(received_at)
-        .execute(&self.pool)
+        .execute(connection)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Record the canonical utterance and its server-selected Telegram
+    /// recipients atomically. The recipients must already have been filtered
+    /// by the caller's exact earshot policy. This is an internal producer API,
+    /// never a browser or Bot-controlled list. Duplicate lines cannot fan out
+    /// again. A recipient must have a live, attached AIS chat at enqueue time.
+    pub async fn record_with_telegram_recipients(
+        &self,
+        line: &SpokenLine,
+        received_at: u64,
+        recipients: &[i64],
+    ) -> Result<(bool, u64), SpeechRepositoryError> {
+        use nilxone_api::bot_speech::{MAX_RECIPIENTS, TTL_SECONDS};
+
+        if recipients.len() > MAX_RECIPIENTS {
+            return Err(SpeechRepositoryError::CorruptState);
+        }
+        let now = i64::try_from(received_at).map_err(|_| SpeechRepositoryError::CorruptState)?;
+        let expires = line.spoken_at().get().saturating_add(TTL_SECONDS);
+        let expires = i64::try_from(expires).map_err(|_| SpeechRepositoryError::CorruptState)?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let created = Self::record_in(&mut tx, line, received_at).await?;
+        let mut queued = 0;
+        if created && expires > now {
+            for actor in recipients.iter().copied().filter(|actor| *actor > 0) {
+                queued += sqlx::query(
+                    "INSERT OR IGNORE INTO speech_telegram_delivery
+                       (line_id, token_hash, bond_id, workload_subject, actor_id, expires_at)
+                     SELECT ?, c.token_hash, b.bond_id, c.workload_subject, c.actor_id, ?
+                     FROM telegram_chat_sessions c
+                     JOIN product_sessions s ON s.token_hash = c.token_hash
+                     JOIN legacy_bond_bindings b ON b.profile_id = s.profile_id
+                     JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+                     JOIN identities i ON i.pub_dress = k.legacy_pub_dress
+                     JOIN identity_providers p ON p.pub_dress = i.pub_dress
+                     WHERE c.actor_id = ? AND s.expires_at > ?
+                       AND i.identity_kind = 'human' AND i.pub_dress != ?
+                       AND p.provider = 'telegram'
+                       AND p.provider_subject = CAST(c.actor_id AS TEXT)",
+                )
+                .bind(line.id().as_str())
+                .bind(expires)
+                .bind(actor)
+                .bind(now)
+                .bind(line.speaker().as_str())
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+            }
+        }
+        tx.commit().await?;
+        Ok((created, queued))
     }
 
     /// Lines spoken at or after `since`, oldest first, capped.

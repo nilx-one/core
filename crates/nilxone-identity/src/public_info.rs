@@ -22,6 +22,7 @@ use crate::{
 mod activation;
 mod bot_admin;
 mod bot_notifications;
+mod bot_speech;
 mod legacy_migration;
 mod telegram_login;
 pub use telegram_login::{
