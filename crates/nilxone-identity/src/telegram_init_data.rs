@@ -1,7 +1,7 @@
 // © 2026 aiaiaiai · aiaiaiai.org
 // SPDX-License-Identifier: MPL-2.0
 
-//! Telegram Mini App `initData`, verified with the Bot API token
+//! Telegram Mini App `initData`, verified with Telegram's public key or legacy HMAC
 //! (core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app).
 //! It proves which Telegram account opened a page inside Telegram; it is not
 //! an AIS identity, a Bond or a product session.
@@ -225,6 +225,24 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     const TOKEN: &str = "123456:test-bot-token";
+
+    #[test]
+    fn production_key_matches_telegram_documentation() {
+        use std::fmt::Write as _;
+        let key = PRODUCTION_KEY.iter().fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        });
+        assert_eq!(
+            key,
+            "e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d"
+        );
+        let legacy = sign_for_tests(TOKEN, &[("auth_date", "1000"), ("user", r#"{"id":42}"#)]);
+        assert_eq!(
+            InitDataProof::PublicBot(123_456).verify(&legacy, 1_100),
+            Err(InitDataRejection::InvalidHash)
+        );
+    }
 
     #[test]
     fn public_evidence_is_bound_to_bot_and_has_no_legacy_fallback() {

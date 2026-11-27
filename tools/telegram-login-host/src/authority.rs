@@ -111,12 +111,13 @@ pub(super) async fn authenticate(
 mod tests {
     use super::*;
     use axum::{Router, http::StatusCode, routing::post};
-    use nilxone_api::bot_login::{START_PATH, sign_request};
+    use ed25519_dalek::{Signer, SigningKey};
+    use nilxone_api::bot_login::{GATEWAY_HEALTH_PATH, START_PATH, sign_request};
     use tower::ServiceExt as _;
 
     const TOKEN: &str = "123456:test-bot-token";
 
-    fn app() -> Router {
+    fn app_with(authority: Authority) -> Router {
         Router::new()
             .route(
                 START_PATH,
@@ -127,10 +128,85 @@ mod tests {
                      body: String| async move { format!("{subject} {body}") },
                 ),
             )
+            .route(GATEWAY_HEALTH_PATH, post(crate::gateway_health))
             .route_layer(axum::middleware::from_fn_with_state(
-                Authority::from_bot_token(TOKEN).unwrap(),
+                authority,
                 authenticate,
             ))
+    }
+
+    fn app() -> Router {
+        app_with(Authority::from_bot_token(TOKEN).unwrap())
+    }
+
+    fn encode(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        bytes.iter().fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+    }
+
+    fn public_authority(key: &SigningKey) -> Authority {
+        Authority::from_public_key(123_456, &encode(key.verifying_key().as_bytes())).unwrap()
+    }
+
+    fn public_signature(key: &SigningKey, now: u64, path: &str, body: &[u8]) -> String {
+        let mut message = format!("0x1-telegram-bot-request-v2\n{now}\n{path}\n").into_bytes();
+        message.extend_from_slice(body);
+        format!("t={now},v2={}", encode(&key.sign(&message).to_bytes()))
+    }
+
+    #[tokio::test]
+    async fn production_middleware_accepts_only_public_v2_authority() {
+        let key = SigningKey::from_bytes(&[23; 32]);
+        let authority = public_authority(&key);
+        let now = now_unix_seconds().unwrap();
+        let body = r#"{"version":1}"#;
+        let ok = app_with(authority.clone())
+            .oneshot(request(Some(public_signature(&key, now, START_PATH, body.as_bytes())), body))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let text = to_bytes(ok.into_body(), 1024).await.unwrap();
+        assert_eq!(&text[..], format!("telegram-bot:123456 {body}").as_bytes());
+
+        for signature in [
+            None,
+            Some(sign_request(TOKEN, now, START_PATH, body.as_bytes())),
+            Some(public_signature(&key, now - 120, START_PATH, body.as_bytes())),
+            Some(public_signature(&key, now, "/other", body.as_bytes())),
+            Some(public_signature(&key, now, START_PATH, b"{}")),
+            Some(public_signature(&SigningKey::from_bytes(&[24; 32]), now, START_PATH, body.as_bytes())),
+        ] {
+            let response = app_with(authority.clone()).oneshot(request(signature, body)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json["error"]["code"], "service_authentication_required");
+        }
+    }
+
+    #[tokio::test]
+    async fn health_probe_requires_the_same_public_authority_and_is_no_store() {
+        let key = SigningKey::from_bytes(&[23; 32]);
+        let authority = public_authority(&key);
+        let now = now_unix_seconds().unwrap();
+        for signed in [false, true] {
+            let mut builder = Request::post(GATEWAY_HEALTH_PATH);
+            if signed {
+                builder = builder.header(SIGNATURE_HEADER, public_signature(&key, now, GATEWAY_HEALTH_PATH, b"{}"));
+            }
+            let response = app_with(authority.clone()).oneshot(builder.body(Body::from("{}")).unwrap()).await.unwrap();
+            if signed {
+                assert_eq!(response.status(), StatusCode::NO_CONTENT);
+                assert_eq!(response.headers()["cache-control"], "no-store");
+                assert!(to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
+            } else {
+                assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            }
+        }
+        assert!(matches!(authority.init_data_proof(), InitDataProof::PublicBot(123_456)));
     }
 
     fn request(signature: Option<String>, body: &'static str) -> Request {

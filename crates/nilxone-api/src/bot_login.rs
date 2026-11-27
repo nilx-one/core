@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// POST, with authenticated bot-service credentials; not a public API.
 pub const START_PATH: &str = "/api/v1/telegram/login/start";
+/// Signed, read-only workload readiness probe.
+pub const GATEWAY_HEALTH_PATH: &str = "/api/v1/telegram/gateway/health";
 /// A started request may remain pending for at most fifteen minutes.
 pub const MAX_TTL_SECONDS: u64 = 900;
 /// Current wire version.

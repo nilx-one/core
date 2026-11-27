@@ -8,7 +8,7 @@ The Core-owned product host is the relying party for Telegram bot commands. It a
 
 Route: POST /api/v1/telegram/login/start
 
-Authentication: only `nilx-one/bot` holds the Telegram Bot API token. It derives a domain-separated Ed25519 signing key inside the Bot process. Core receives only the pinned `TELEGRAM_BOT_ID` and `TELEGRAM_BOT_PUBLIC_KEY`. The header `x-0x1-telegram-bot-signature: t=<unix>,v2=<hex>` signs `0x1-telegram-bot-request-v2\n<timestamp>\n<path>\n<body>`. Core verifies it within 60 seconds and keeps the stable workload subject `telegram-bot:<bot id>`. Production does not accept v1 HMAC or a Bot API token in its environment. A valid workload signature does not prove an AIS identity, Bond session or permission to perform a product action. POST `/api/v1/telegram/gateway/health` uses the same middleware and returns 204 without modifying product state.
+Authentication: only `nilx-one/bot` holds the Telegram Bot API token. It derives a domain-separated Ed25519 signing key inside the Bot process. Core receives only the pinned `TELEGRAM_BOT_ID` and `TELEGRAM_BOT_PUBLIC_KEY`. The header `x-0x1-telegram-bot-signature: t=<unix>,v2=<hex>` signs `0x1-telegram-bot-request-v2\n<timestamp>\n<path>\n<body>`. Core verifies it within 60 seconds and keeps the stable workload subject `telegram-bot:<bot id>`. Production does not accept v1 HMAC or a Bot API token in its environment. A valid workload signature does not prove an AIS identity, Bond session or permission to perform a product action. POST `/api/v1/telegram/gateway/health` uses the same middleware and returns 204 without modifying product state. It does not consume the product command quota. Within the 60-second signature window the request may be replayed: login start deduplicates the original message, confirm is one-use, admin decisions recheck current authority and pending status, exact-lease ACKs are no-ops on replay, and health is read-only. Pulls can claim new work and are rate limited; do not treat signatures alone as replay prevention. Product actions retain their own authorization and idempotency contracts.
 
 Request JSON:
 
@@ -211,3 +211,8 @@ Core persists login transactions, confirmations and the chat session binding. `t
 No merge, deploy, production token cutover or data migration is implied.
 
 <!-- © 2026 aiaiaiai · aiaiaiai.org -->
+## Public-authority rollout
+
+Bot signer reference: nilx-one/bot#44, merged `260ff1a629b16aced5831f6a2ffd1b78d8dbc399`; the synthetic key/header/body/path/time vector matches Core's verifier fixture. Telegram production public key is pinned to https://core.telegram.org/bots/webapps#validating-data-for-third-party-use. Real production initData and first-login acceptance remain a live cutover gate; do not log or commit a live user's proof.
+
+Infra#181 disables scheduled pair activation; Infra#182 prepares public metadata, removes the old token from Core's environment, validates both candidates and restores the previous host, poller, and ingress on failure. No production dispatch is implied by merging this PR.

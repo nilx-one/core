@@ -39,7 +39,7 @@ use nilxone_api::{
     },
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
-        CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
+        CONFIRM_PATH, GATEWAY_HEALTH_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
         ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
         LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
         LoginStartRequest, START_PATH,
@@ -120,7 +120,7 @@ fn router(host: LoginHost) -> Router {
     let confirm = host.chat.is_some();
     let router = Router::new()
         .route(START_PATH, post(start))
-        .route("/api/v1/telegram/gateway/health", post(gateway_health));
+        .route(GATEWAY_HEALTH_PATH, post(gateway_health));
     let router = if confirm {
         router
             .route(CONFIRM_PATH, post(confirm_login))
@@ -141,6 +141,8 @@ fn router(host: LoginHost) -> Router {
 
 /// Read-only probe behind the same workload middleware as product commands.
 /// It proves the deployed Bot and Core agree on the signing authority.
+/// Deliberately no database access or shared command rate-limit consumption:
+/// the signed, body-bounded probe has no product side effect.
 async fn gateway_health(principal: Option<Extension<AuthorizedLoginBot>>) -> Response {
     if principal.is_none() {
         return refusal(LoginStartRefusal::ServiceAuthenticationRequired);
