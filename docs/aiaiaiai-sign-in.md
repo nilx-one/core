@@ -32,7 +32,8 @@ in and apply what comes back; they decide nothing:
 
 Core owns the transaction cookie (`__Host-0x1_aiaiaiai`: HMAC-signed under
 the native authentication secret with its own domain, Secure, HttpOnly,
-SameSite=Lax, fifteen minutes), the `state` check (constant time, before
+SameSite=None so Safari keeps it across the issuer's cross-site 303,
+fifteen minutes), the `state` check (constant time, before
 anything else, so even a decline with a foreign `state` is `Invalid`), the
 return-path rule (same-origin paths only) and the failure codes:
 
