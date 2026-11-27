@@ -113,6 +113,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pull_delivery_and_ack_match_bot_wire() {
+        let pull = serde_json::json!({"version": 1, "limit": 1});
+        let request: crate::bot_notifications::NotificationPullRequest =
+            serde_json::from_value(pull.clone()).unwrap();
+        assert!(request.is_valid());
+        assert_eq!(serde_json::to_value(request).unwrap(), pull);
+        let lease = serde_json::json!({
+            "kind": "approved",
+            "candidate_pub_dress": "0x0new",
+            "provider_actor_id": 42,
+            "claimed_at": 1_800_000_000
+        });
+        let delivery = serde_json::json!({"deliveries": [{
+            "lease": lease.clone(),
+            "admin_message_id": 7,
+            "pending": [{
+                "request_token": "0123456789abcdef0123456789abcdef",
+                "pub_dress": "0x0next"
+            }]
+        }]});
+        let response: AdminDeliveryPull = serde_json::from_value(delivery.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), delivery);
+        let ack = serde_json::json!({"version": 1, "lease": lease, "message_id": 9});
+        let receipt: AdminDeliveryAck = serde_json::from_value(ack.clone()).unwrap();
+        assert!(receipt.is_valid());
+        assert_eq!(serde_json::to_value(receipt).unwrap(), ack);
+    }
+
+    #[test]
     fn acknowledgement_carries_only_a_delivery_lease_and_message_receipt() {
         let body = serde_json::json!({
             "version": 1,
@@ -120,7 +149,7 @@ mod tests {
                 "kind": "pending",
                 "candidate_pub_dress": "0x0new",
                 "provider_actor_id": 42,
-                "claimed_at": 1800000000
+                "claimed_at": 1_800_000_000
             },
             "message_id": 17
         });

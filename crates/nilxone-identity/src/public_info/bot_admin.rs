@@ -177,10 +177,7 @@ impl PublicInfoRepository {
         ack: &AdminDeliveryAck,
         now: u64,
     ) -> Result<bool, PublicInfoError> {
-        if !ack.is_valid()
-            || ack.lease.claimed_at > now
-            || now.saturating_sub(ack.lease.claimed_at) >= 300
-        {
+        if !ack.is_valid() {
             return Ok(false);
         }
         let now = i64::try_from(now).map_err(|_| PublicInfoError::InvalidSession)?;
@@ -188,6 +185,9 @@ impl PublicInfoRepository {
             .map_err(|_| PublicInfoError::InvalidSession)?;
         let claim =
             i64::try_from(ack.lease.claimed_at).map_err(|_| PublicInfoError::InvalidSession)?;
+        if claim > now || now.saturating_sub(claim) >= LEASE_SECONDS {
+            return Ok(false);
+        }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let query = format!("SELECT EXISTS(SELECT 1 FROM ({ELIGIBLE}) WHERE actor_id = ?)");
         let eligible: bool = sqlx::query_scalar(&query)
@@ -490,6 +490,24 @@ mod tests {
                 .outcome,
             AdminDecisionOutcome::Forbidden,
         );
+        sqlx::query("UPDATE product_sessions SET active = 0 WHERE token_hash = ?")
+            .bind(&token)
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository
+                .decide_admin_inbox_request("bot", &decision, now + 303)
+                .await
+                .unwrap()
+                .outcome,
+            AdminDecisionOutcome::Forbidden,
+        );
+        sqlx::query("UPDATE product_sessions SET active = 1 WHERE token_hash = ?")
+            .bind(&token)
+            .execute(&repository.pool)
+            .await
+            .unwrap();
         let result = repository
             .decide_admin_inbox_request("bot", &decision, now + 303)
             .await
@@ -508,5 +526,79 @@ mod tests {
             legacy.role_for("0x0new").await.unwrap(),
             BondAccessRole::Admin
         );
+        verify_approved_lane(&repository, &legacy, &token, now + 305).await;
+    }
+
+    async fn verify_approved_lane(
+        repository: &PublicInfoRepository,
+        legacy: &IdentityRepository,
+        token: &str,
+        now: u64,
+    ) {
+        legacy
+            .register(
+                &"0x0next".parse().unwrap(),
+                &ProviderIdentity::telegram(44),
+                1,
+            )
+            .await
+            .unwrap();
+        legacy
+            .request_admin_review_on_login("0x0next", now)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE product_sessions SET active = 0 WHERE token_hash = ?")
+            .bind(token)
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        let delivery = repository
+            .claim_admin_inbox_deliveries("bot", 10, now)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(delivery.lease.kind, AdminDeliveryKind::Approved);
+        assert_eq!(delivery.lease.candidate_pub_dress, "0x0new");
+        assert_eq!(delivery.pending.len(), 1);
+        assert!(
+            repository
+                .claim_admin_inbox_deliveries("bot", 10, now + 1)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the approved lease excludes the pending lane"
+        );
+        let ack = AdminDeliveryAck {
+            version: 1,
+            lease: delivery.lease,
+            message_id: 10,
+        };
+        let admin: PubDress = "0x1admin".parse().unwrap();
+        legacy.set_role(&admin, BondAccessRole::User).await.unwrap();
+        assert!(
+            !repository
+                .acknowledge_admin_inbox_delivery("bot", &ack, now + 2)
+                .await
+                .unwrap(),
+            "revoked admin cannot acknowledge"
+        );
+        legacy.set_role(&admin, BondAccessRole::Admin).await.unwrap();
+        assert!(
+            repository
+                .acknowledge_admin_inbox_delivery("bot", &ack, now + 3)
+                .await
+                .unwrap(),
+            "inactive live session may acknowledge a delivery"
+        );
+        let pending = repository
+            .claim_admin_inbox_deliveries("bot", 10, now + 4)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(pending.lease.kind, AdminDeliveryKind::Pending);
+        assert_eq!(pending.admin_message_id, Some(10));
+        assert_eq!(pending.lease.candidate_pub_dress, "0x0next");
     }
 }
