@@ -309,15 +309,14 @@ impl PublicInfoRepository {
         tx.commit().await?;
         Ok(AdminDecisionResponse { outcome, pending })
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        BondAccessRole, ProviderIdentity, TelegramMessageSlot,
-        aiaiaiai_sign_in::VerifiedSignIn, public_info::LegacyBondMigrationRepository,
+        BondAccessRole, ProviderIdentity, TelegramMessageSlot, aiaiaiai_sign_in::VerifiedSignIn,
+        public_info::LegacyBondMigrationRepository,
     };
 
     #[tokio::test]
