@@ -178,6 +178,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_location_requires_active_session_and_preserves_manual_and_newer_data() {
+        let (store, _dir) = store().await;
+        let token = token('a');
+        let profile_id = profile(&store, "subject-a", &token).await;
+        attach(&store, "0x1owner", &profile_id).await;
+        exec(
+            &store,
+            "INSERT INTO telegram_chat_sessions VALUES ('bot', 42, ?)",
+            &[&token],
+        )
+        .await;
+        let first = crate::GeoCoordinate::new(30, 40).unwrap();
+        let next = crate::GeoCoordinate::new(50, 60).unwrap();
+        let repository = &store.repository;
+        let submit = |bot, actor, point, observed, now| async move {
+            repository
+                .record_chat_live_location(bot, actor, point, observed, now)
+                .await
+                .unwrap()
+        };
+
+        assert!(!submit("bot", 42, first, NOW, NOW).await);
+        exec(
+            &store,
+            "UPDATE product_sessions SET active = 1 WHERE token_hash = ?",
+            &[&token],
+        )
+        .await;
+        assert!(!submit("other-bot", 42, first, NOW, NOW).await);
+        assert!(!submit("bot", 99, first, NOW, NOW).await);
+        assert!(!submit("bot", 42, first, NOW - 121, NOW).await);
+        assert!(submit("bot", 42, first, NOW, NOW).await);
+        assert!(!submit("bot", 42, next, NOW, NOW + 1).await);
+        assert!(submit("bot", 42, next, NOW + 1, NOW + 1).await);
+        assert!(!submit("bot", 42, first, NOW, NOW + 2).await);
+        let longitude: i32 = sqlx::query_scalar("SELECT longitude_e7 FROM bond_locations")
+            .fetch_one(&store.repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(longitude, 50);
+
+        exec(&store, "UPDATE bond_locations SET mode = 'manual'", &[]).await;
+        assert!(!submit("bot", 42, first, NOW + 2, NOW + 2).await);
+        assert!(!submit("bot", 42, first, NOW + 600, NOW + 600).await);
+    }
+
+    #[tokio::test]
     async fn a_live_bound_session_resolves_its_bond() {
         let (store, _dir) = store().await;
         let profile_id = profile(&store, "subject-a", &token('a')).await;

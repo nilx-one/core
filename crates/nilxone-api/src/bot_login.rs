@@ -223,6 +223,18 @@ pub struct ChatWalletProfile {
     pub seeds: Option<u64>,
 }
 
+/// Signed Telegram live location report for the active Bond.
+pub const CHAT_LOCATION_PATH: &str = "/api/v1/telegram/location";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatLocationReport {
+    pub chat: ChatActivationQuery,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub observed_at: u64,
+}
+
 /// The chat's answer to an activation request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

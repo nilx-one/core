@@ -34,11 +34,11 @@ use axum::{
 use nilxone_api::{
     activation::ActivationRefusal,
     bot_login::{
-        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_PROFILE_PATH, CONFIRM_PATH,
-        ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation, ChatAvaiaProfile,
-        ChatProfileQuery, ChatProfileSection, ChatWalletProfile, LoginConfirmRefusal,
-        LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal, LoginStartRequest,
-        START_PATH,
+        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
+        CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
+        ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
+        ChatWalletProfile, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
+        LoginStartRefusal, LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -119,6 +119,7 @@ fn router(host: LoginHost) -> Router {
         router
             .route(CONFIRM_PATH, post(confirm_login))
             .route(CHAT_PROFILE_PATH, post(chat_profile))
+            .route(CHAT_LOCATION_PATH, post(chat_location))
             .route(CHAT_ACTIVATION_PATH, post(chat_activation))
             .route(CHAT_ACTIVATION_ANSWER_PATH, post(chat_activation_answer))
             .route(NOTIFICATIONS_PULL_PATH, post(pull_notifications))
@@ -471,6 +472,75 @@ fn verified_chat_caller(
         )));
     }
     Ok((subject, now))
+}
+
+async fn chat_location(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(report): Json<ChatLocationReport>,
+) -> Response {
+    let (subject, now) = match verified_chat_caller(&host, principal, &report.chat) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    let Ok(coordinate) =
+        nilxone_identity::GeoCoordinate::from_degrees(report.longitude, report.latitude)
+    else {
+        return no_store_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_location",
+            "Invalid location.",
+        );
+    };
+    match host
+        .repository
+        .restore_telegram_chat_session(&subject, report.chat.provider_actor_id, now)
+        .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return no_store_error(
+                StatusCode::CONFLICT,
+                "location_not_applied",
+                "The location was not applied.",
+            );
+        }
+        Err(_) => {
+            tracing::error!("Telegram Bond location session lookup failed");
+            return no_store_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "location_unavailable",
+                "The location service is unavailable.",
+            );
+        }
+    }
+    match host
+        .repository
+        .record_chat_live_location(
+            &subject,
+            report.chat.provider_actor_id,
+            coordinate,
+            report.observed_at,
+            now,
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => no_store_error(
+            StatusCode::CONFLICT,
+            "location_not_applied",
+            "The location was not applied.",
+        ),
+        Err(_) => {
+            // Do not include the coordinate or the request in diagnostics.
+            tracing::error!("Telegram Bond location write failed");
+            no_store_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "location_unavailable",
+                "The location service is unavailable.",
+            )
+        }
+    }
 }
 
 async fn chat_profile(
@@ -1008,6 +1078,27 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
             serde_json::json!({"acknowledged": 0})
         );
+    }
+
+    #[tokio::test]
+    async fn chat_location_refuses_unsigned_and_unbound_requests() {
+        let app = router(host(offline_client(), Some(chat())).await);
+        let sender = serde_json::json!({
+            "chat": {"version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42},
+            "latitude": 50.45, "longitude": 30.52, "observed_at": now_unix_seconds().unwrap()
+        });
+        let response = app
+            .clone()
+            .oneshot(bot_request(false, CHAT_LOCATION_PATH, sender.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .oneshot(bot_request(true, CHAT_LOCATION_PATH, sender))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(error_code(response).await, "location_not_applied");
     }
 
     async fn error_code(response: Response) -> String {
