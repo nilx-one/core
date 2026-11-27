@@ -359,6 +359,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wallet_history_shows_a_pickup_credit_and_a_sale_once_each() {
+        use nilxone_api::bot_login::ChatSeedsEntryKind;
+
+        let (store, _dir) = store().await;
+        let a = profile(&store, "subject-a", &token('a')).await;
+        attach(&store, "0x1owner", &a).await;
+        // A find credited on pickup, a find sold later (no pickup credit), and
+        // an unsold find without credit, which is no wallet movement.
+        for (n, pickup, sold) in [(1, 5, None), (2, 0, Some((25, 7))), (3, 0, None)] {
+            sqlx::query(
+                "INSERT INTO find_attestations (attestation_id, owner_pub_dress, artifact_id,
+                    artifact_sha, epoch, tier, item_id, finder, found_at_ms, longitude_e7,
+                    latitude_e7, attested_at_ms, pickup_credit, sold_at_ms, sale_credit)
+                 VALUES (?, '0x1owner', 'artifact', ?, 1, 1, 'item', 'bond', 10, 0, 0, ?, ?, ?, ?)",
+            )
+            .bind(format!("00000000-0000-0000-0000-00000000000{n}"))
+            .bind(format!("{n}").repeat(64))
+            .bind(10 + n)
+            .bind(pickup)
+            .bind(sold.map(|(at, _)| at))
+            .bind(sold.map(|(_, credit)| credit))
+            .execute(&store.repository.pool)
+            .await
+            .unwrap();
+        }
+        let owner = store
+            .repository
+            .restore_session(&token('a'), NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        let wallet = store
+            .repository
+            .read_chat_wallet(&owner, NOW)
+            .await
+            .unwrap();
+        assert_eq!(
+            wallet
+                .recent
+                .iter()
+                .map(|entry| (entry.kind, entry.delta, entry.at_ms))
+                .collect::<Vec<_>>(),
+            [
+                (ChatSeedsEntryKind::Sale, 7, 25),
+                (ChatSeedsEntryKind::Find, 5, 11)
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn an_unbound_profile_with_a_matching_name_is_not_a_bond() {
         let (store, _dir) = store().await;
         profile(&store, "subject-a", &token('a')).await;
