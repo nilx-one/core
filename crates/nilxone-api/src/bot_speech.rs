@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Short-lived Telegram presentation of a canonical spoken line.
-//! No coordinates, identity credentials, or BondChain evidence.
+//! No coordinates, identity credentials, or `BondChain` evidence.
 
 use serde::{Deserialize, Serialize};
 
