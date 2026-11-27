@@ -131,7 +131,7 @@ impl IdentityRepository {
             .await?
             .is_none()
         {
-            let Some(_) = create_owned_avaia_in(&mut transaction, owner, now).await? else {
+            let Some(_) = create_owned_avaia_in(&mut transaction, owner, next, now).await? else {
                 transaction.rollback().await?;
                 return Ok(AvaiaUpdateOutcome::AvaiaUnavailable);
             };
@@ -440,6 +440,46 @@ mod avaia_lifecycle_repository_tests {
         .await
         .expect("count");
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn occupied_default_does_not_block_a_free_requested_address() {
+        let repository = IdentityRepository::connect("sqlite::memory:")
+            .await
+            .expect("repository");
+        let first: PubDress = "0x1sky".parse().expect("first owner");
+        let second: PubDress = "0x1sk".parse().expect("second owner");
+        repository
+            .register(&first, &ProviderIdentity::telegram(8811), 100)
+            .await
+            .expect("first registration");
+        repository
+            .register(&second, &ProviderIdentity::telegram(8812), 100)
+            .await
+            .expect("second registration");
+        let occupied = AvaiaPubDress::derive_default(&first);
+        assert_eq!(occupied, AvaiaPubDress::derive_default(&second));
+        assert!(matches!(
+            repository.configure_owned_avaia(&first, &occupied, 101).await.unwrap(),
+            AvaiaUpdateOutcome::Updated(_)
+        ));
+        assert_eq!(
+            repository.configure_owned_avaia(&second, &occupied, 102).await.unwrap(),
+            AvaiaUpdateOutcome::AvaiaUnavailable
+        );
+        assert_eq!(repository.owned_avaia_identity(&second).await.unwrap(), None);
+
+        let requested: AvaiaPubDress = "x1alternateai".parse().unwrap();
+        assert!(matches!(
+            repository.configure_owned_avaia(&second, &requested, 103).await.unwrap(),
+            AvaiaUpdateOutcome::Updated(profile)
+                if profile.pub_dress == requested.as_str()
+                    && profile.configuration_state == AvaiaConfigurationState::Configured
+        ));
+        assert_eq!(
+            repository.owned_avaia_identity(&first).await.unwrap().unwrap().pub_dress,
+            occupied.as_str()
+        );
     }
 
     #[tokio::test]

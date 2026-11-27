@@ -1805,13 +1805,14 @@ fn pub_dress_label_with_suffix(
 async fn create_owned_avaia_in(
     transaction: &mut Transaction<'_, Sqlite>,
     owner: &PubDress,
+    requested: &AvaiaPubDress,
     now: u64,
 ) -> Result<Option<String>, sqlx::Error> {
     if let Some(existing) = owned_avaia_for_owner_in(transaction, owner.as_str()).await? {
         return Ok(Some(existing));
     }
 
-    let candidate = AvaiaPubDress::derive_default(owner).to_string();
+    let candidate = requested.to_string();
     let insert = sqlx::query(
         "INSERT INTO identities \
          (pub_dress, identity_kind, owner_pub_dress, created_at) \
