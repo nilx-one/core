@@ -118,3 +118,150 @@ impl PublicInfoRepository {
         Ok(result.rows_affected() == 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        IdentityRepository, ProviderIdentity, aiaiaiai_sign_in::VerifiedSignIn,
+        public_info::LegacyBondMigrationRepository, speech::SpeechRepository,
+    };
+    use nilxone_api::bot_speech::TTL_SECONDS;
+    use nilxone_contracts::{DecimalU64, SpokenLine};
+
+    const NOW: u64 = 1_800_000_000;
+    const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    async fn setup() -> (tempfile::TempDir, PublicInfoRepository, SpeechRepository) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite://{}", dir.path().join("speech.db").display());
+        let legacy = IdentityRepository::connect(&url).await.unwrap();
+        let repository = PublicInfoRepository::connect(&url).await.unwrap();
+        LegacyBondMigrationRepository::prepare(repository.clone())
+            .await
+            .unwrap();
+        for (address, actor) in [("0x1speaker", 41), ("0x1listener", 42), ("0x0guest", 43)] {
+            legacy
+                .register(
+                    &address.parse().unwrap(),
+                    &ProviderIdentity::telegram(actor),
+                    1,
+                )
+                .await
+                .unwrap();
+        }
+        let owner = repository
+            .attach(&VerifiedSignIn {
+                issuer: "https://auth.aiaiaiai.org".into(),
+                subject: "listener-subject".into(),
+                pub_dress: None,
+                auth_time: NOW,
+            })
+            .await
+            .unwrap();
+        repository
+            .open_session(&owner, TOKEN, "Telegram · Chat", None, NOW, NOW + 1_000)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO telegram_chat_sessions (workload_subject, actor_id, token_hash)
+             VALUES ('bot', 42, ?)",
+        )
+        .bind(TOKEN)
+        .execute(&repository.pool)
+        .await
+        .unwrap();
+        let bond_id: String = sqlx::query_scalar(
+            "INSERT INTO legacy_bond_keys (legacy_pub_dress) VALUES ('0x1listener')
+             RETURNING bond_id",
+        )
+        .fetch_one(&repository.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO legacy_bond_bindings VALUES (?, ?, ?)")
+            .bind(bond_id)
+            .bind(&owner.public_profile().profile_id)
+            .bind(i64::try_from(NOW).unwrap())
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        let speech = SpeechRepository::connect(&url).await.unwrap();
+        (dir, repository, speech)
+    }
+
+    fn line(suffix: &str, spoken_at: u64) -> SpokenLine {
+        SpokenLine::new(
+            format!("line_{}", suffix.repeat(64)).try_into().unwrap(),
+            "0x1speaker".parse().unwrap(),
+            "Привіт! 🐈".parse().unwrap(),
+            DecimalU64::new(spoken_at),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_spoken_line_has_one_recipient_lease_and_an_exact_receipt() {
+        let (_dir, repository, speech) = setup().await;
+        let line = line("a", NOW);
+        assert_eq!(
+            speech
+                .record_with_telegram_recipients(&line, NOW, &[41, 42, 42, 43])
+                .await
+                .unwrap(),
+            (true, 1)
+        );
+        assert_eq!(
+            speech
+                .record_with_telegram_recipients(&line, NOW + 1, &[42])
+                .await
+                .unwrap(),
+            (false, 0)
+        );
+        assert!(repository.claim_speech_deliveries("other", 10, NOW).await.unwrap().is_empty());
+        let first = repository.claim_speech_deliveries("bot", 10, NOW).await.unwrap().pop().unwrap();
+        assert_eq!(first.provider_actor_id, 42);
+        assert_eq!(first.speaker, "0x1speaker");
+        assert_eq!(first.text, "Привіт! 🐈");
+        assert_eq!(first.expires_at, NOW + TTL_SECONDS);
+        assert!(repository.claim_speech_deliveries("bot", 10, NOW + 1).await.unwrap().is_empty());
+        let second = repository
+            .claim_speech_deliveries("bot", 10, NOW + LEASE_SECONDS)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(second.id, first.id);
+        let mut ack = SpeechAck { version: 1, id: first.id, claimed_at: first.claimed_at };
+        assert!(!repository.acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS).await.unwrap());
+        ack.claimed_at = second.claimed_at;
+        assert!(!repository.acknowledge_speech_delivery("other", &ack, NOW + LEASE_SECONDS).await.unwrap());
+        assert!(repository.acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS).await.unwrap());
+        assert!(!repository.acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS).await.unwrap());
+        assert_eq!(speech.recent(NOW).await.unwrap(), vec![line]);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_or_expired_recipient_cannot_receive_a_pending_line() {
+        let (_dir, repository, speech) = setup().await;
+        for suffix in ["b", "c"] {
+            assert_eq!(
+                speech.record_with_telegram_recipients(&line(suffix, NOW), NOW, &[42]).await.unwrap(),
+                (true, 1)
+            );
+        }
+        let delivery = repository.claim_speech_deliveries("bot", 1, NOW).await.unwrap().pop().unwrap();
+        let ack = SpeechAck { version: 1, id: delivery.id, claimed_at: delivery.claimed_at };
+        sqlx::query("DELETE FROM telegram_chat_sessions WHERE token_hash = ?")
+            .bind(TOKEN)
+            .execute(&repository.pool)
+            .await
+            .unwrap();
+        assert!(!repository.acknowledge_speech_delivery("bot", &ack, NOW + 1).await.unwrap());
+        assert!(repository.claim_speech_deliveries("bot", 10, NOW + 1).await.unwrap().is_empty());
+        assert!(repository.claim_speech_deliveries("bot", 10, NOW + TTL_SECONDS).await.unwrap().is_empty());
+        let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM speech_telegram_delivery")
+            .fetch_one(&repository.pool)
+            .await
+            .unwrap();
+        assert_eq!(queued, 0);
+    }
+}
