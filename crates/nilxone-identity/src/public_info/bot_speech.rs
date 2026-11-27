@@ -67,11 +67,15 @@ impl PublicInfoRepository {
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
-            let unsigned = |value: i64| u64::try_from(value).map_err(|_| PublicInfoError::InvalidSession);
+            let unsigned =
+                |value: i64| u64::try_from(value).map_err(|_| PublicInfoError::InvalidSession);
             let speaker = row.try_get::<String, _>("speaker")?;
             let text = row.try_get::<String, _>("text")?;
-            let _: crate::PubDress = speaker.parse().map_err(|_| PublicInfoError::InvalidPublicAddress)?;
-            let _: nilxone_contracts::SpokenText = text.parse().map_err(|_| PublicInfoError::InvalidSession)?;
+            let _: crate::PubDress = speaker
+                .parse()
+                .map_err(|_| PublicInfoError::InvalidPublicAddress)?;
+            let _: nilxone_contracts::SpokenText =
+                text.parse().map_err(|_| PublicInfoError::InvalidSession)?;
             deliveries.push(SpeechDelivery {
                 id: unsigned(id)?,
                 provider_actor_id: unsigned(row.try_get("actor_id")?)?,
@@ -216,13 +220,30 @@ mod tests {
                 .unwrap(),
             (false, 0)
         );
-        assert!(repository.claim_speech_deliveries("other", 10, NOW).await.unwrap().is_empty());
-        let first = repository.claim_speech_deliveries("bot", 10, NOW).await.unwrap().pop().unwrap();
+        assert!(
+            repository
+                .claim_speech_deliveries("other", 10, NOW)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let first = repository
+            .claim_speech_deliveries("bot", 10, NOW)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
         assert_eq!(first.provider_actor_id, 42);
         assert_eq!(first.speaker, "0x1speaker");
         assert_eq!(first.text, "Привіт! 🐈");
         assert_eq!(first.expires_at, NOW + TTL_SECONDS);
-        assert!(repository.claim_speech_deliveries("bot", 10, NOW + 1).await.unwrap().is_empty());
+        assert!(
+            repository
+                .claim_speech_deliveries("bot", 10, NOW + 1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let second = repository
             .claim_speech_deliveries("bot", 10, NOW + LEASE_SECONDS)
             .await
@@ -230,12 +251,36 @@ mod tests {
             .pop()
             .unwrap();
         assert_eq!(second.id, first.id);
-        let mut ack = SpeechAck { version: 1, id: first.id, claimed_at: first.claimed_at };
-        assert!(!repository.acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS).await.unwrap());
+        let mut ack = SpeechAck {
+            version: 1,
+            id: first.id,
+            claimed_at: first.claimed_at,
+        };
+        assert!(
+            !repository
+                .acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS)
+                .await
+                .unwrap()
+        );
         ack.claimed_at = second.claimed_at;
-        assert!(!repository.acknowledge_speech_delivery("other", &ack, NOW + LEASE_SECONDS).await.unwrap());
-        assert!(repository.acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS).await.unwrap());
-        assert!(!repository.acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS).await.unwrap());
+        assert!(
+            !repository
+                .acknowledge_speech_delivery("other", &ack, NOW + LEASE_SECONDS)
+                .await
+                .unwrap()
+        );
+        assert!(
+            repository
+                .acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .acknowledge_speech_delivery("bot", &ack, NOW + LEASE_SECONDS)
+                .await
+                .unwrap()
+        );
         assert_eq!(speech.recent(NOW).await.unwrap(), vec![line]);
     }
 
@@ -244,20 +289,49 @@ mod tests {
         let (_dir, repository, speech) = setup().await;
         for suffix in ["b", "c"] {
             assert_eq!(
-                speech.record_with_telegram_recipients(&line(suffix, NOW), NOW, &[42]).await.unwrap(),
+                speech
+                    .record_with_telegram_recipients(&line(suffix, NOW), NOW, &[42])
+                    .await
+                    .unwrap(),
                 (true, 1)
             );
         }
-        let delivery = repository.claim_speech_deliveries("bot", 1, NOW).await.unwrap().pop().unwrap();
-        let ack = SpeechAck { version: 1, id: delivery.id, claimed_at: delivery.claimed_at };
+        let delivery = repository
+            .claim_speech_deliveries("bot", 1, NOW)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let ack = SpeechAck {
+            version: 1,
+            id: delivery.id,
+            claimed_at: delivery.claimed_at,
+        };
         sqlx::query("DELETE FROM telegram_chat_sessions WHERE token_hash = ?")
             .bind(TOKEN)
             .execute(&repository.pool)
             .await
             .unwrap();
-        assert!(!repository.acknowledge_speech_delivery("bot", &ack, NOW + 1).await.unwrap());
-        assert!(repository.claim_speech_deliveries("bot", 10, NOW + 1).await.unwrap().is_empty());
-        assert!(repository.claim_speech_deliveries("bot", 10, NOW + TTL_SECONDS).await.unwrap().is_empty());
+        assert!(
+            !repository
+                .acknowledge_speech_delivery("bot", &ack, NOW + 1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            repository
+                .claim_speech_deliveries("bot", 10, NOW + 1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            repository
+                .claim_speech_deliveries("bot", 10, NOW + TTL_SECONDS)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM speech_telegram_delivery")
             .fetch_one(&repository.pool)
             .await

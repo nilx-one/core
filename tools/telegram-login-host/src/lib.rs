@@ -44,10 +44,12 @@ use nilxone_api::{
         LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
         LoginStartRequest, START_PATH,
     },
-    bot_speech::{SpeechAck, SpeechPull, ACK_PATH as SPEECH_ACK_PATH, PULL_PATH as SPEECH_PULL_PATH},
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
         NotificationPullRequest, PULL_PATH as NOTIFICATIONS_PULL_PATH,
+    },
+    bot_speech::{
+        ACK_PATH as SPEECH_ACK_PATH, PULL_PATH as SPEECH_PULL_PATH, SpeechAck, SpeechPull,
     },
 };
 use nilxone_identity::{
@@ -769,7 +771,11 @@ async fn pull_speech(
     if !request.is_valid() || request.limit > nilxone_api::bot_speech::MAX_BATCH {
         return refusal(LoginStartRefusal::InvalidProviderEvidence);
     }
-    match host.repository.claim_speech_deliveries(&subject, request.limit, now).await {
+    match host
+        .repository
+        .claim_speech_deliveries(&subject, request.limit, now)
+        .await
+    {
         Ok(deliveries) => no_store_json(StatusCode::OK, SpeechPull { deliveries }),
         Err(_) => {
             tracing::error!("pulling spoken line deliveries failed");
@@ -790,8 +796,15 @@ async fn acknowledge_speech(
     if !ack.is_valid() {
         return refusal(LoginStartRefusal::InvalidProviderEvidence);
     }
-    match host.repository.acknowledge_speech_delivery(&subject, &ack, now).await {
-        Ok(acknowledged) => no_store_json(StatusCode::OK, serde_json::json!({ "acknowledged": acknowledged })),
+    match host
+        .repository
+        .acknowledge_speech_delivery(&subject, &ack, now)
+        .await
+    {
+        Ok(acknowledged) => no_store_json(
+            StatusCode::OK,
+            serde_json::json!({ "acknowledged": acknowledged }),
+        ),
         Err(_) => {
             tracing::error!("acknowledging spoken line delivery failed");
             refusal(LoginStartRefusal::LoginServiceUnavailable)
