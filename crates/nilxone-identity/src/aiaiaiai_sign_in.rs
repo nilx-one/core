@@ -814,8 +814,14 @@ impl SignInFlow {
         let cookie_name = self.transaction_cookie();
         Ok(Started {
             location,
+            // `SameSite=None`: the issuer answers a cross-site POST with a
+            // 303 back here, and Safari drops `Lax` cookies on a navigation
+            // that arrives through a cross-site redirect (WebKit bug 196375),
+            // so every Safari sign-in came back as `Expired`. The cookie is
+            // still `__Host-`, Secure and HttpOnly, lives fifteen minutes and
+            // only answers a callback that also carries its random `state`.
             set_cookie: format!(
-                "{cookie_name}={value}; Path=/; Max-Age={TRANSACTION_TTL_SECONDS}; Secure; HttpOnly; SameSite=Lax"
+                "{cookie_name}={value}; Path=/; Max-Age={TRANSACTION_TTL_SECONDS}; Secure; HttpOnly; SameSite=None"
             ),
         })
     }
@@ -866,7 +872,7 @@ impl SignInFlow {
                 .verify_callback_inner(cookie_header, callback, now)
                 .await,
             clear_cookie: format!(
-                "{}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax",
+                "{}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=None",
                 self.transaction_cookie()
             ),
         }
@@ -1415,7 +1421,7 @@ mod tests {
             "Path=/",
             "Secure",
             "HttpOnly",
-            "SameSite=Lax",
+            "SameSite=None",
             "Max-Age=900",
         ] {
             assert!(started.set_cookie.contains(attribute), "{attribute}");
@@ -1459,7 +1465,7 @@ mod tests {
             assert!(
                 started
                     .set_cookie
-                    .contains("Secure; HttpOnly; SameSite=Lax")
+                    .contains("Secure; HttpOnly; SameSite=None")
             );
             assert!(!started.set_cookie.contains("Domain="));
         }
