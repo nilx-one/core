@@ -10,9 +10,9 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use nilxone_api::bot_login::{
-    LoginStartRefusal, SIGNATURE_HEADER, verify_request, workload_subject,
-};
+use nilxone_api::bot_login::{LoginStartRefusal, SIGNATURE_HEADER};
+#[cfg(test)]
+use nilxone_api::bot_login::{verify_request, workload_subject};
 
 use crate::{AuthorizedLoginBot, now_unix_seconds, refusal};
 use nilxone_identity::{
@@ -31,6 +31,7 @@ pub struct Authority {
 
 #[derive(Clone)]
 enum RequestProof {
+    #[cfg(test)]
     LegacyHmac(String),
     Public {
         bot_id: u64,
@@ -39,7 +40,8 @@ enum RequestProof {
 }
 
 impl Authority {
-    /// The `@nilxone_bot` token. Refuses a value that is not a Bot API token.
+    /// Legacy fixture support only; never compiled into the production host.
+    #[cfg(test)]
     pub fn from_bot_token(bot_token: &str) -> Option<Self> {
         let bot_token = bot_token.trim();
         Some(Self {
@@ -64,6 +66,7 @@ impl Authority {
 
     pub(crate) fn init_data_proof(&self) -> InitDataProof<'_> {
         match &self.proof {
+            #[cfg(test)]
             RequestProof::LegacyHmac(token) => InitDataProof::LegacyHmac(token),
             RequestProof::Public { bot_id, .. } => InitDataProof::PublicBot(*bot_id),
         }
@@ -71,6 +74,7 @@ impl Authority {
 
     fn accepts(&self, header: &str, path: &str, body: &[u8], now: u64) -> bool {
         match &self.proof {
+            #[cfg(test)]
             RequestProof::LegacyHmac(token) => verify_request(token, header, path, body, now),
             RequestProof::Public { verifier, .. } => verifier.accepts(header, path, body, now),
         }

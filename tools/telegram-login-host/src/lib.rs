@@ -83,7 +83,7 @@ pub struct ChatSignIn {
 struct LoginHost {
     repository: PublicInfoRepository,
     client: SignInClient,
-    /// The bot's token: it also verifies the Telegram initData of the AIS page.
+    /// Public workload verification, separate from AIS provider evidence.
     authority: Authority,
     chat: Option<Arc<ChatSignIn>>,
     /// Per-process only; each replica has its own budget.
@@ -118,7 +118,9 @@ pub fn authenticated_router(
 
 fn router(host: LoginHost) -> Router {
     let confirm = host.chat.is_some();
-    let router = Router::new().route(START_PATH, post(start));
+    let router = Router::new()
+        .route(START_PATH, post(start))
+        .route("/api/v1/telegram/gateway/health", post(gateway_health));
     let router = if confirm {
         router
             .route(CONFIRM_PATH, post(confirm_login))
@@ -135,6 +137,19 @@ fn router(host: LoginHost) -> Router {
         router
     };
     router.with_state(host)
+}
+
+/// Read-only probe behind the same workload middleware as product commands.
+/// It proves the deployed Bot and Core agree on the signing authority.
+async fn gateway_health(principal: Option<Extension<AuthorizedLoginBot>>) -> Response {
+    if principal.is_none() {
+        return refusal(LoginStartRefusal::ServiceAuthenticationRequired);
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// The browser reaches this route from AIS, never with workload credentials.

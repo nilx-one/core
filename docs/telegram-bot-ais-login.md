@@ -1,4 +1,4 @@
-# Telegram AIS login — Gateway wire v1
+# Telegram AIS login — Gateway authorization v2 (JSON wire v1)
 
 Status: typed Core contract, durable OIDC transactions, the bot's claim of a verified callback and the chat product session; **no public route or production activation**.
 
@@ -8,7 +8,7 @@ The Core-owned product host is the relying party for Telegram bot commands. It a
 
 Route: POST /api/v1/telegram/login/start
 
-Authentication: the bot signs each request with the Telegram Bot API token of `@nilxone_bot`. The bot and the host both already hold that token, so no other credential exists (`nilxone_api::bot_login::sign_request`). The header `x-0x1-telegram-bot-signature: t=<unix>,v1=<hex>` carries HMAC-SHA256 under a key derived from the token, over the timestamp, the path and the body. The host accepts it within 60 seconds and names the workload `telegram-bot:<bot id>`. Whoever holds the bot token already controls the chat, so the signature grants no new authority. A replay inside the window reaches only idempotent login start or one-use confirmation.
+Authentication: only `nilx-one/bot` holds the Telegram Bot API token. It derives a domain-separated Ed25519 signing key inside the Bot process. Core receives only the pinned `TELEGRAM_BOT_ID` and `TELEGRAM_BOT_PUBLIC_KEY`. The header `x-0x1-telegram-bot-signature: t=<unix>,v2=<hex>` signs `0x1-telegram-bot-request-v2\n<timestamp>\n<path>\n<body>`. Core verifies it within 60 seconds and keeps the stable workload subject `telegram-bot:<bot id>`. Production does not accept v1 HMAC or a Bot API token in its environment. A valid workload signature does not prove an AIS identity, Bond session or permission to perform a product action. POST `/api/v1/telegram/gateway/health` uses the same middleware and returns 204 without modifying product state.
 
 Request JSON:
 
@@ -55,9 +55,9 @@ Inside Telegram that page copies `Telegram.WebApp.initData` into its form.
 AIS passes the value through unverified as `telegram_init_data` in the token
 response (4x-ais `docs/runtime.md`).
 
-`complete_telegram_login` verifies it with the bot token
-(`nilxone_identity::telegram_init_data`):
-- Telegram's HMAC under `WebAppData`;
+`complete_telegram_login_with_proof` verifies it using the public bot ID
+and Telegram's production Ed25519 key (`nilxone_identity::telegram_init_data`):
+- Telegram's third-party signature, without HMAC fallback;
 - at most 10 minutes old;
 - no duplicated fields and no bot user;
 - the account must be the `/login` sender.
@@ -201,7 +201,7 @@ host on edge-dev-1. Core holds no credential for Infra.
 
 ## Dependencies
 
-Core persists login transactions, confirmations and the chat session binding. `tools/telegram-login-host` serves start, callback and confirm with `TELEGRAM_BOT_TOKEN` and the product `DATABASE_URL`. AIS must allow `telegram_binding` for client `0x1` (aiaiaiai-org/4x-ais#28).
+Core persists login transactions, confirmations and the chat session binding. `tools/telegram-login-host` serves start, callback and confirm with `TELEGRAM_BOT_ID`, `TELEGRAM_BOT_PUBLIC_KEY` and the product `DATABASE_URL`. AIS must allow `telegram_binding` for client `0x1` (aiaiaiai-org/4x-ais#28).
 
 - nilx-one/bot#4 — test Telegram adapter for gateway-issued AIS URL (depends on bot#1)
 - nilx-one/core#122 — authenticated Core-owned Gateway runtime
