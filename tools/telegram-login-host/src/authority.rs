@@ -164,7 +164,10 @@ mod tests {
         let now = now_unix_seconds().unwrap();
         let body = r#"{"version":1}"#;
         let ok = app_with(authority.clone())
-            .oneshot(request(Some(public_signature(&key, now, START_PATH, body.as_bytes())), body))
+            .oneshot(request(
+                Some(public_signature(&key, now, START_PATH, body.as_bytes())),
+                body,
+            ))
             .await
             .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
@@ -174,12 +177,25 @@ mod tests {
         for signature in [
             None,
             Some(sign_request(TOKEN, now, START_PATH, body.as_bytes())),
-            Some(public_signature(&key, now - 120, START_PATH, body.as_bytes())),
+            Some(public_signature(
+                &key,
+                now - 120,
+                START_PATH,
+                body.as_bytes(),
+            )),
             Some(public_signature(&key, now, "/other", body.as_bytes())),
             Some(public_signature(&key, now, START_PATH, b"{}")),
-            Some(public_signature(&SigningKey::from_bytes(&[24; 32]), now, START_PATH, body.as_bytes())),
+            Some(public_signature(
+                &SigningKey::from_bytes(&[24; 32]),
+                now,
+                START_PATH,
+                body.as_bytes(),
+            )),
         ] {
-            let response = app_with(authority.clone()).oneshot(request(signature, body)).await.unwrap();
+            let response = app_with(authority.clone())
+                .oneshot(request(signature, body))
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
             let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -195,18 +211,32 @@ mod tests {
         for signed in [false, true] {
             let mut builder = Request::post(GATEWAY_HEALTH_PATH);
             if signed {
-                builder = builder.header(SIGNATURE_HEADER, public_signature(&key, now, GATEWAY_HEALTH_PATH, b"{}"));
+                builder = builder.header(
+                    SIGNATURE_HEADER,
+                    public_signature(&key, now, GATEWAY_HEALTH_PATH, b"{}"),
+                );
             }
-            let response = app_with(authority.clone()).oneshot(builder.body(Body::from("{}")).unwrap()).await.unwrap();
+            let response = app_with(authority.clone())
+                .oneshot(builder.body(Body::from("{}")).unwrap())
+                .await
+                .unwrap();
             if signed {
                 assert_eq!(response.status(), StatusCode::NO_CONTENT);
                 assert_eq!(response.headers()["cache-control"], "no-store");
-                assert!(to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
+                assert!(
+                    to_bytes(response.into_body(), 1024)
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
             } else {
                 assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             }
         }
-        assert!(matches!(authority.init_data_proof(), InitDataProof::PublicBot(123_456)));
+        assert!(matches!(
+            authority.init_data_proof(),
+            InitDataProof::PublicBot(123_456)
+        ));
     }
 
     fn request(signature: Option<String>, body: &'static str) -> Request {

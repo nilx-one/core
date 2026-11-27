@@ -39,10 +39,10 @@ use nilxone_api::{
     },
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
-        CONFIRM_PATH, GATEWAY_HEALTH_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
+        CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
         ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
-        LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
-        LoginStartRequest, START_PATH,
+        GATEWAY_HEALTH_PATH, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
+        LoginStartRefusal, LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
