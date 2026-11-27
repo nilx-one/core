@@ -89,6 +89,12 @@ mod tests {
         let mut forged = body;
         forged["approve"] = true.into();
         assert!(serde_json::from_value::<AdminDeliveryAck>(forged).is_err());
-        assert!(!AdminDeliveryAck { message_id: 0, ..ack }.is_valid());
+        assert!(
+            !AdminDeliveryAck {
+                message_id: 0,
+                ..ack
+            }
+            .is_valid()
+        );
     }
 }

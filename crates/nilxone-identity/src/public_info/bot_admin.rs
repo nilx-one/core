@@ -42,7 +42,18 @@ impl PublicInfoRepository {
         let limit = i64::try_from(limit.clamp(1, 50)).unwrap_or(1);
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let query = format!(
-            "WITH eligible AS ({ELIGIBLE}), candidates AS (
+            "WITH authorized AS ({ELIGIBLE}), eligible AS (
+                SELECT actor_id FROM authorized a
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM admin_role_telegram_deliveries d
+                    WHERE d.telegram_user_id = a.actor_id
+                      AND d.delivered_at IS NULL AND d.last_attempt_at > ?
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM admin_role_telegram_confirmations d
+                    WHERE d.telegram_user_id = a.actor_id
+                      AND d.delivered_at IS NULL AND d.last_attempt_at > ?
+                )
+            ), candidates AS (
                 SELECT q.pub_dress, e.actor_id, 'pending' AS kind, 1 AS priority,
                        q.requested_at AS event_time
                 FROM eligible e CROSS JOIN admin_role_requests q
@@ -69,6 +80,8 @@ impl PublicInfoRepository {
         let rows = sqlx::query(&query)
             .bind(workload)
             .bind(now)
+            .bind(cutoff)
+            .bind(cutoff)
             .bind(cutoff)
             .bind(cutoff)
             .bind(limit)
@@ -144,8 +157,7 @@ impl PublicInfoRepository {
                     candidate_pub_dress: candidate,
                     provider_actor_id: u64::try_from(actor)
                         .map_err(|_| PublicInfoError::InvalidSession)?,
-                    claimed_at: u64::try_from(now)
-                        .map_err(|_| PublicInfoError::InvalidSession)?,
+                    claimed_at: u64::try_from(now).map_err(|_| PublicInfoError::InvalidSession)?,
                 },
                 admin_message_id,
                 pending,
@@ -163,14 +175,17 @@ impl PublicInfoRepository {
         ack: &AdminDeliveryAck,
         now: u64,
     ) -> Result<bool, PublicInfoError> {
-        if !ack.is_valid() || ack.lease.claimed_at > now {
+        if !ack.is_valid()
+            || ack.lease.claimed_at > now
+            || now.saturating_sub(ack.lease.claimed_at) >= 300
+        {
             return Ok(false);
         }
         let now = i64::try_from(now).map_err(|_| PublicInfoError::InvalidSession)?;
         let actor = i64::try_from(ack.lease.provider_actor_id)
             .map_err(|_| PublicInfoError::InvalidSession)?;
-        let claim = i64::try_from(ack.lease.claimed_at)
-            .map_err(|_| PublicInfoError::InvalidSession)?;
+        let claim =
+            i64::try_from(ack.lease.claimed_at).map_err(|_| PublicInfoError::InvalidSession)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let query = format!("SELECT EXISTS(SELECT 1 FROM ({ELIGIBLE}) WHERE actor_id = ?)");
         let eligible: bool = sqlx::query_scalar(&query)
@@ -234,7 +249,11 @@ mod tests {
             .unwrap();
         for (address, actor) in [("0x1admin", 42), ("0x0new", 43)] {
             legacy
-                .register(&address.parse().unwrap(), &ProviderIdentity::telegram(actor), 1)
+                .register(
+                    &address.parse().unwrap(),
+                    &ProviderIdentity::telegram(actor),
+                    1,
+                )
                 .await
                 .unwrap();
         }
@@ -242,7 +261,10 @@ mod tests {
             .set_role(&"0x1admin".parse().unwrap(), BondAccessRole::Admin)
             .await
             .unwrap();
-        legacy.request_admin_review_on_login("0x0new", 10).await.unwrap();
+        legacy
+            .request_admin_review_on_login("0x0new", 10)
+            .await
+            .unwrap();
         legacy
             .save_telegram_message_id(42, TelegramMessageSlot::Admin, Some(7))
             .await
@@ -271,7 +293,11 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            repository.claim_admin_inbox_deliveries("bot", 10, now).await.unwrap().is_empty(),
+            repository
+                .claim_admin_inbox_deliveries("bot", 10, now)
+                .await
+                .unwrap()
+                .is_empty(),
             "a provider chat alone is not an attached admin Bond"
         );
         let bond_id: String = sqlx::query_scalar(
@@ -289,7 +315,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            repository.claim_admin_inbox_deliveries("other", 10, now).await.unwrap().is_empty()
+            repository
+                .claim_admin_inbox_deliveries("other", 10, now)
+                .await
+                .unwrap()
+                .is_empty()
         );
         let first = repository
             .claim_admin_inbox_deliveries("bot", 10, now)
@@ -300,7 +330,11 @@ mod tests {
         assert_eq!(first.admin_message_id, Some(7));
         assert_eq!(first.pending.len(), 1);
         assert!(
-            repository.claim_admin_inbox_deliveries("bot", 10, now + 1).await.unwrap().is_empty()
+            repository
+                .claim_admin_inbox_deliveries("bot", 10, now + 1)
+                .await
+                .unwrap()
+                .is_empty()
         );
         let second = repository
             .claim_admin_inbox_deliveries("bot", 10, now + 301)
@@ -313,14 +347,37 @@ mod tests {
             lease: first.lease,
             message_id: 9,
         };
-        assert!(!repository.acknowledge_admin_inbox_delivery("bot", &ack, now + 302).await.unwrap());
+        assert!(
+            !repository
+                .acknowledge_admin_inbox_delivery("bot", &ack, now + 302)
+                .await
+                .unwrap()
+        );
         ack.lease = second.lease;
-        assert!(!repository.acknowledge_admin_inbox_delivery("other", &ack, now + 302).await.unwrap());
-        assert!(repository.acknowledge_admin_inbox_delivery("bot", &ack, now + 302).await.unwrap());
+        assert!(
+            !repository
+                .acknowledge_admin_inbox_delivery("other", &ack, now + 302)
+                .await
+                .unwrap()
+        );
+        assert!(
+            repository
+                .acknowledge_admin_inbox_delivery("bot", &ack, now + 302)
+                .await
+                .unwrap()
+        );
         ack.message_id = 99;
-        assert!(!repository.acknowledge_admin_inbox_delivery("bot", &ack, now + 303).await.unwrap());
+        assert!(
+            !repository
+                .acknowledge_admin_inbox_delivery("bot", &ack, now + 303)
+                .await
+                .unwrap()
+        );
         assert_eq!(
-            legacy.telegram_message_id(42, TelegramMessageSlot::Admin).await.unwrap(),
+            legacy
+                .telegram_message_id(42, TelegramMessageSlot::Admin)
+                .await
+                .unwrap(),
             Some(9)
         );
     }

@@ -33,16 +33,16 @@ use axum::{
 };
 use nilxone_api::{
     activation::ActivationRefusal,
+    bot_admin::{
+        ACK_PATH as ADMIN_ACK_PATH, AdminDeliveryAck, AdminDeliveryPull,
+        PULL_PATH as ADMIN_PULL_PATH,
+    },
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
         CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
         ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
         LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
         LoginStartRequest, START_PATH,
-    },
-    bot_admin::{
-        ACK_PATH as ADMIN_ACK_PATH, AdminDeliveryAck, AdminDeliveryPull,
-        PULL_PATH as ADMIN_PULL_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -687,7 +687,11 @@ async fn pull_admin_deliveries(
     if !request.is_valid() {
         return refusal(LoginStartRefusal::InvalidProviderEvidence);
     }
-    match host.repository.claim_admin_inbox_deliveries(&subject, request.limit, now).await {
+    match host
+        .repository
+        .claim_admin_inbox_deliveries(&subject, request.limit, now)
+        .await
+    {
         Ok(deliveries) => no_store_json(StatusCode::OK, AdminDeliveryPull { deliveries }),
         Err(error) => {
             tracing::error!(%error, "claiming admin inbox deliveries failed");
@@ -708,7 +712,11 @@ async fn acknowledge_admin_delivery(
     if !ack.is_valid() {
         return refusal(LoginStartRefusal::InvalidProviderEvidence);
     }
-    match host.repository.acknowledge_admin_inbox_delivery(&subject, &ack, now).await {
+    match host
+        .repository
+        .acknowledge_admin_inbox_delivery(&subject, &ack, now)
+        .await
+    {
         Ok(acknowledged) => no_store_json(
             StatusCode::OK,
             serde_json::json!({ "acknowledged": acknowledged }),
