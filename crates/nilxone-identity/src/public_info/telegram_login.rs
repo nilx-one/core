@@ -624,6 +624,63 @@ impl PublicInfoRepository {
         Ok(())
     }
 
+    /// Apply a fresh live report from this bot workload and sender. Session
+    /// authorization, Bond binding, mode and ordering are checked in the write.
+    pub async fn record_chat_live_location(
+        &self,
+        workload_subject: &str,
+        sender_id: u64,
+        coordinate: crate::GeoCoordinate,
+        observed_at: u64,
+        now: u64,
+    ) -> Result<bool, PublicInfoError> {
+        const MAX_OBSERVATION_AGE_SECONDS: u64 = 120;
+        // `observed_at` is Telegram's clock and `now` this host's: allow a
+        // little skew so a fresh report is not refused as from the future.
+        const MAX_CLOCK_SKEW_SECONDS: u64 = 5;
+        if observed_at == 0
+            || observed_at > now.saturating_add(MAX_CLOCK_SKEW_SECONDS)
+            || now.saturating_sub(observed_at) > MAX_OBSERVATION_AGE_SECONDS
+        {
+            return Ok(false);
+        }
+        let (Ok(actor_id), Ok(observed_at), Ok(now)) = (
+            i64::try_from(sender_id),
+            i64::try_from(observed_at),
+            i64::try_from(now),
+        ) else {
+            return Ok(false);
+        };
+        let result = sqlx::query(
+            "INSERT INTO bond_locations (pub_dress, mode, longitude_e7, latitude_e7, updated_at)
+             SELECT i.pub_dress, 'live', ?, ?, ?
+             FROM telegram_chat_sessions t
+             JOIN product_sessions s ON s.token_hash = t.token_hash
+             JOIN public_profiles p
+               ON p.profile_id = s.profile_id AND p.issuer = s.issuer AND p.subject = s.subject
+             JOIN legacy_bond_bindings b ON b.profile_id = s.profile_id
+             JOIN legacy_bond_keys k ON k.bond_id = b.bond_id
+             JOIN identities i ON i.pub_dress = k.legacy_pub_dress AND i.identity_kind = 'human'
+             WHERE t.workload_subject = ? AND t.actor_id = ?
+               AND s.active = 1 AND s.expires_at > ? AND s.created_at <= ?
+             ON CONFLICT(pub_dress) DO UPDATE SET
+               longitude_e7 = excluded.longitude_e7,
+               latitude_e7 = excluded.latitude_e7,
+               updated_at = excluded.updated_at
+             WHERE bond_locations.mode = 'live' AND bond_locations.updated_at < excluded.updated_at",
+        )
+        .bind(coordinate.longitude_e7())
+        .bind(coordinate.latitude_e7())
+        .bind(observed_at)
+        .bind(workload_subject)
+        .bind(actor_id)
+        .bind(now)
+        .bind(observed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() != 0)
+    }
+
     async fn telegram_chat_session(
         &self,
         workload_subject: &str,

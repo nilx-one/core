@@ -92,6 +92,28 @@ no device state and its data is parked already, so approving is the switch
 `ActivationRefusal` codes. Each sender has its own budget of 60 calls a
 minute.
 
+### Live location
+
+Route: POST /api/v1/telegram/location (`nilxone_api::bot_login::CHAT_LOCATION_PATH`),
+behind the same bot-service authentication as login start.
+
+The body is the chat (`ChatActivationQuery`) plus `latitude`, `longitude`
+(degrees) and `observed_at` (Unix seconds, Telegram's message time):
+
+~~~json
+{"chat":{"version":1,"provider":"telegram","provider_actor_id":42,"chat_id":42},
+ "latitude":50.45,"longitude":30.52,"observed_at":1700000000}
+~~~
+
+Core applies it as a `live` Bond location only when the chat's session is
+active and unexpired, was opened before the observation, and is bound to a
+human Bond; the observation is at most 120 seconds old (5 seconds of clock
+skew allowed) and newer than the stored one; and the Bond is not in `manual`
+mode. The check and the write are one statement. Answers: `204` applied,
+`409 location_not_applied` refused, `422 invalid_location` for a coordinate out
+of range. Each sender has its own budget of 60 reports a minute, apart from the
+chat's other routes. Neither the coordinate nor the request is logged.
+
 ### Progress for the page
 
 Route: GET /api/v1/telegram/login/progress?state=… (public, like the callback).

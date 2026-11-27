@@ -34,10 +34,11 @@ use axum::{
 use nilxone_api::{
     activation::ActivationRefusal,
     bot_login::{
-        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_PROFILE_PATH, CONFIRM_PATH,
-        ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation, ChatAvaiaProfile,
-        ChatProfileQuery, ChatProfileSection, LoginConfirmRefusal, LoginConfirmRequest,
-        LoginConfirmResponse, LoginStartRefusal, LoginStartRequest, START_PATH,
+        CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
+        CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
+        ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
+        LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
+        LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -118,6 +119,7 @@ fn router(host: LoginHost) -> Router {
         router
             .route(CONFIRM_PATH, post(confirm_login))
             .route(CHAT_PROFILE_PATH, post(chat_profile))
+            .route(CHAT_LOCATION_PATH, post(chat_location))
             .route(CHAT_ACTIVATION_PATH, post(chat_activation))
             .route(CHAT_ACTIVATION_ANSWER_PATH, post(chat_activation_answer))
             .route(NOTIFICATIONS_PULL_PATH, post(pull_notifications))
@@ -441,6 +443,7 @@ fn verified_chat_caller(
     host: &LoginHost,
     principal: Option<Extension<AuthorizedLoginBot>>,
     chat: &ChatActivationQuery,
+    bucket: &str,
 ) -> Result<(String, u64), Box<Response>> {
     let Some(Extension(AuthorizedLoginBot(subject))) = principal else {
         return Err(Box::new(refusal(
@@ -462,7 +465,7 @@ fn verified_chat_caller(
             LoginStartRefusal::LoginServiceUnavailable,
         )));
     };
-    let limit_key = format!("chat:{subject}:{}", chat.provider_actor_id);
+    let limit_key = format!("{bucket}:{subject}:{}", chat.provider_actor_id);
     if let Err(retry) = host.attempts.consume(limit_key, now, 60, 60) {
         return Err(Box::new(rate_limited(
             refusal(LoginStartRefusal::LoginRateLimited),
@@ -472,6 +475,54 @@ fn verified_chat_caller(
     Ok((subject, now))
 }
 
+async fn chat_location(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(report): Json<ChatLocationReport>,
+) -> Response {
+    let (subject, now) = match verified_chat_caller(&host, principal, &report.chat, "location") {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    let Ok(coordinate) =
+        nilxone_identity::GeoCoordinate::from_degrees(report.longitude, report.latitude)
+    else {
+        return no_store_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_location",
+            "Invalid location.",
+        );
+    };
+    match host
+        .repository
+        .record_chat_live_location(
+            &subject,
+            report.chat.provider_actor_id,
+            coordinate,
+            report.observed_at,
+            now,
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => no_store_error(
+            StatusCode::CONFLICT,
+            "location_not_applied",
+            "The location was not applied.",
+        ),
+        Err(error) => {
+            // The error carries no bound values: neither the coordinate nor
+            // the request reaches the log.
+            tracing::error!(%error, "Telegram Bond location write failed");
+            no_store_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "location_unavailable",
+                "The location service is unavailable.",
+            )
+        }
+    }
+}
+
 async fn chat_profile(
     State(host): State<LoginHost>,
     principal: Option<Extension<AuthorizedLoginBot>>,
@@ -479,7 +530,7 @@ async fn chat_profile(
 ) -> Response {
     let section = query.section;
     let query = query.chat();
-    let (subject, now) = match verified_chat_caller(&host, principal, &query) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &query, "chat") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -557,7 +608,7 @@ async fn chat_activation(
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(query): Json<ChatActivationQuery>,
 ) -> Response {
-    let (subject, now) = match verified_chat_caller(&host, principal, &query) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &query, "chat") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -573,7 +624,7 @@ async fn chat_activation_answer(
     principal: Option<Extension<AuthorizedLoginBot>>,
     Json(answer): Json<ChatActivationAnswer>,
 ) -> Response {
-    let (subject, now) = match verified_chat_caller(&host, principal, &answer.chat()) {
+    let (subject, now) = match verified_chat_caller(&host, principal, &answer.chat(), "chat") {
         Ok(caller) => caller,
         Err(response) => return *response,
     };
@@ -1014,6 +1065,38 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
             serde_json::json!({"acknowledged": 0})
         );
+    }
+
+    #[tokio::test]
+    async fn chat_location_refuses_unsigned_and_unbound_requests() {
+        // In production the host shares the identity database, so the write
+        // sees Bonds and their locations; give the test the same schema.
+        let url = "sqlite:file:chat-location?mode=memory&cache=shared";
+        let _identity = nilxone_identity::IdentityRepository::connect(url)
+            .await
+            .unwrap();
+        let mut shared = host(offline_client(), Some(chat())).await;
+        shared.repository = PublicInfoRepository::connect(url).await.unwrap();
+        LegacyBondMigrationRepository::prepare(shared.repository.clone())
+            .await
+            .unwrap();
+        let app = router(shared);
+        let sender = serde_json::json!({
+            "chat": {"version": 1, "provider": "telegram", "provider_actor_id": 42, "chat_id": 42},
+            "latitude": 50.45, "longitude": 30.52, "observed_at": now_unix_seconds().unwrap()
+        });
+        let response = app
+            .clone()
+            .oneshot(bot_request(false, CHAT_LOCATION_PATH, sender.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .oneshot(bot_request(true, CHAT_LOCATION_PATH, sender))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(error_code(response).await, "location_not_applied");
     }
 
     async fn error_code(response: Response) -> String {
