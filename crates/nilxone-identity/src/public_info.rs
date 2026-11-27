@@ -20,6 +20,7 @@ use crate::{
 };
 
 mod activation;
+mod bot_admin;
 mod bot_notifications;
 mod legacy_migration;
 mod telegram_login;

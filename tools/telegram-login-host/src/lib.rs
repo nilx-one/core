@@ -33,6 +33,10 @@ use axum::{
 };
 use nilxone_api::{
     activation::ActivationRefusal,
+    bot_admin::{
+        ACK_PATH as ADMIN_ACK_PATH, AdminDecisionRequest, AdminDeliveryAck, AdminDeliveryPull,
+        DECIDE_PATH as ADMIN_DECIDE_PATH, PULL_PATH as ADMIN_PULL_PATH,
+    },
     bot_login::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
         CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
@@ -124,6 +128,9 @@ fn router(host: LoginHost) -> Router {
             .route(CHAT_ACTIVATION_ANSWER_PATH, post(chat_activation_answer))
             .route(NOTIFICATIONS_PULL_PATH, post(pull_notifications))
             .route(NOTIFICATIONS_ACK_PATH, post(acknowledge_notifications))
+            .route(ADMIN_PULL_PATH, post(pull_admin_deliveries))
+            .route(ADMIN_ACK_PATH, post(acknowledge_admin_delivery))
+            .route(ADMIN_DECIDE_PATH, post(decide_admin_request))
     } else {
         router
     };
@@ -667,6 +674,84 @@ fn notification_caller(
         )));
     }
     Ok((subject, now))
+}
+
+async fn decide_admin_request(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(request): Json<AdminDecisionRequest>,
+) -> Response {
+    let (subject, now) = match verified_chat_caller(&host, principal, &request.chat, "admin") {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    if !request.is_valid() {
+        return refusal(LoginStartRefusal::InvalidProviderEvidence);
+    }
+    match host
+        .repository
+        .decide_admin_inbox_request(&subject, &request, now)
+        .await
+    {
+        Ok(outcome) => no_store_json(StatusCode::OK, outcome),
+        Err(error) => {
+            tracing::error!(%error, "deciding admin request failed");
+            refusal(LoginStartRefusal::LoginServiceUnavailable)
+        }
+    }
+}
+
+async fn pull_admin_deliveries(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(request): Json<NotificationPullRequest>,
+) -> Response {
+    let (subject, now) = match notification_caller(&host, principal) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    if !request.is_valid() {
+        return refusal(LoginStartRefusal::InvalidProviderEvidence);
+    }
+    match host
+        .repository
+        .claim_admin_inbox_deliveries(&subject, request.limit, now)
+        .await
+    {
+        Ok(deliveries) => no_store_json(StatusCode::OK, AdminDeliveryPull { deliveries }),
+        Err(error) => {
+            tracing::error!(%error, "claiming admin inbox deliveries failed");
+            refusal(LoginStartRefusal::LoginServiceUnavailable)
+        }
+    }
+}
+
+async fn acknowledge_admin_delivery(
+    State(host): State<LoginHost>,
+    principal: Option<Extension<AuthorizedLoginBot>>,
+    Json(ack): Json<AdminDeliveryAck>,
+) -> Response {
+    let (subject, now) = match notification_caller(&host, principal) {
+        Ok(caller) => caller,
+        Err(response) => return *response,
+    };
+    if !ack.is_valid() {
+        return refusal(LoginStartRefusal::InvalidProviderEvidence);
+    }
+    match host
+        .repository
+        .acknowledge_admin_inbox_delivery(&subject, &ack, now)
+        .await
+    {
+        Ok(acknowledged) => no_store_json(
+            StatusCode::OK,
+            serde_json::json!({ "acknowledged": acknowledged }),
+        ),
+        Err(error) => {
+            tracing::error!(%error, "acknowledging admin inbox delivery failed");
+            refusal(LoginStartRefusal::LoginServiceUnavailable)
+        }
+    }
 }
 
 async fn pull_notifications(

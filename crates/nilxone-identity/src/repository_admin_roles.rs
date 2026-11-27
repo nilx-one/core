@@ -66,11 +66,25 @@ impl IdentityRepository {
         now: u64,
     ) -> Result<AdminRoleDecision, RepositoryError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let result = Self::decide_admin_role_request_in(&mut tx, actor, candidate, approve, now).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Shared by legacy Web and the Core-owned authenticated chat adapter.
+    /// The caller supplies a transaction in which actor authority was established.
+    pub(crate) async fn decide_admin_role_request_in(
+        connection: &mut sqlx::SqliteConnection,
+        actor: &str,
+        candidate: &PubDress,
+        approve: bool,
+        now: u64,
+    ) -> Result<AdminRoleDecision, sqlx::Error> {
         let is_admin: i64 = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM bond_roles r \
              JOIN identities i ON i.pub_dress = r.pub_dress \
              WHERE r.pub_dress = ? AND r.role = 'admin' AND i.identity_kind = 'human')",
-        ).bind(actor).fetch_one(&mut *tx).await?;
+        ).bind(actor).fetch_one(&mut *connection).await?;
         if is_admin == 0 {
             return Ok(AdminRoleDecision::Forbidden);
         }
@@ -82,7 +96,7 @@ impl IdentityRepository {
         .bind(actor)
         .bind(now as i64)
         .bind(candidate.as_str())
-        .execute(&mut *tx)
+        .execute(&mut *connection)
         .await?;
         if result.rows_affected() == 0 {
             return Ok(AdminRoleDecision::AlreadyDecided);
@@ -93,7 +107,7 @@ impl IdentityRepository {
                  ON CONFLICT(pub_dress) DO UPDATE SET role = 'admin'",
             )
             .bind(candidate.as_str())
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await?;
 
             // Snapshot the Telegram-linked admins in the very same commit as
@@ -114,10 +128,9 @@ impl IdentityRepository {
             )
             .bind(candidate.as_str())
             .bind(candidate.as_str())
-            .execute(&mut *tx)
+            .execute(&mut *connection)
             .await?;
         }
-        tx.commit().await?;
         Ok(if approve {
             AdminRoleDecision::Approved
         } else {
