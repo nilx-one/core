@@ -161,7 +161,10 @@ impl SpeechRepository {
             return Err(SpeechRepositoryError::CorruptState);
         }
         let now = i64::try_from(received_at).map_err(|_| SpeechRepositoryError::CorruptState)?;
-        let expires = line.spoken_at().get().saturating_add(TTL_SECONDS);
+        // The producer supplies `spoken_at`; a private copy must not outlive the
+        // TTL counted from when Core accepted it, whatever time the line claims.
+        let anchor = line.spoken_at().get().min(received_at);
+        let expires = anchor.saturating_add(TTL_SECONDS);
         let expires = i64::try_from(expires).map_err(|_| SpeechRepositoryError::CorruptState)?;
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let created = Self::record_in(&mut tx, line, received_at).await?;

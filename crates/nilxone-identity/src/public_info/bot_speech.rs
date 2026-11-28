@@ -203,6 +203,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_future_spoken_at_does_not_stretch_the_private_copy() {
+        let (_dir, repository, speech) = setup().await;
+        // A line that claims to be spoken an hour from now is accepted at NOW.
+        let line = line("b", NOW + 3_600);
+        assert_eq!(
+            speech
+                .record_with_telegram_recipients(&line, NOW, &[42])
+                .await
+                .unwrap(),
+            (true, 1)
+        );
+        let claimed = repository
+            .claim_speech_deliveries("bot", 10, NOW)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(claimed.expires_at, NOW + TTL_SECONDS);
+        assert!(
+            repository
+                .claim_speech_deliveries("bot", 10, NOW + TTL_SECONDS)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn a_spoken_line_has_one_recipient_lease_and_an_exact_receipt() {
         let (_dir, repository, speech) = setup().await;
         let line = line("a", NOW);
