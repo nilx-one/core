@@ -62,6 +62,7 @@ pub mod activation;
 pub mod bot_admin;
 pub mod bot_login;
 pub mod bot_notifications;
+pub mod bot_speech;
 pub mod error;
 pub mod finds;
 pub mod market;
