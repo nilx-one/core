@@ -41,8 +41,8 @@ use nilxone_api::{
         CHAT_ACTIVATION_ANSWER_PATH, CHAT_ACTIVATION_PATH, CHAT_LOCATION_PATH, CHAT_PROFILE_PATH,
         CONFIRM_PATH, ChatActivationAnswer, ChatActivationQuery, ChatAvaia, ChatAvaiaLocation,
         ChatAvaiaProfile, ChatLocationReport, ChatProfileQuery, ChatProfileSection,
-        LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse, LoginStartRefusal,
-        LoginStartRequest, START_PATH,
+        GATEWAY_HEALTH_PATH, LoginConfirmRefusal, LoginConfirmRequest, LoginConfirmResponse,
+        LoginStartRefusal, LoginStartRequest, START_PATH,
     },
     bot_notifications::{
         ACK_PATH as NOTIFICATIONS_ACK_PATH, NotificationAck, NotificationPull,
@@ -86,7 +86,7 @@ pub struct ChatSignIn {
 struct LoginHost {
     repository: PublicInfoRepository,
     client: SignInClient,
-    /// The bot's token: it also verifies the Telegram initData of the AIS page.
+    /// Public workload verification, separate from AIS provider evidence.
     authority: Authority,
     chat: Option<Arc<ChatSignIn>>,
     /// Per-process only; each replica has its own budget.
@@ -121,7 +121,9 @@ pub fn authenticated_router(
 
 fn router(host: LoginHost) -> Router {
     let confirm = host.chat.is_some();
-    let router = Router::new().route(START_PATH, post(start));
+    let router = Router::new()
+        .route(START_PATH, post(start))
+        .route(GATEWAY_HEALTH_PATH, post(gateway_health));
     let router = if confirm {
         router
             .route(CONFIRM_PATH, post(confirm_login))
@@ -140,6 +142,21 @@ fn router(host: LoginHost) -> Router {
         router
     };
     router.with_state(host)
+}
+
+/// Read-only probe behind the same workload middleware as product commands.
+/// It proves the deployed Bot and Core agree on the signing authority.
+/// Deliberately no database access or shared command rate-limit consumption:
+/// the signed, body-bounded probe has no product side effect.
+async fn gateway_health(principal: Option<Extension<AuthorizedLoginBot>>) -> Response {
+    if principal.is_none() {
+        return refusal(LoginStartRefusal::ServiceAuthenticationRequired);
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// The browser reaches this route from AIS, never with workload credentials.
@@ -308,11 +325,11 @@ async fn callback(State(host): State<LoginHost>, Query(query): Query<CallbackQue
     }
     match host
         .repository
-        .verify_telegram_login_callback(
+        .verify_telegram_login_callback_with_proof(
             &host.client,
             &state,
             &code,
-            Some(host.authority.bot_token()),
+            Some(host.authority.init_data_proof()),
         )
         .await
     {
