@@ -77,11 +77,28 @@ jobs:
         run: |
           cargo build --locked --release --target x86_64-unknown-linux-musl -p nilxone-telegram-login-host
           host=target/x86_64-unknown-linux-musl/release/nilxone-telegram-login-host
-          if env -u TELEGRAM_BOT_TOKEN "$host" >telegram-login-host-check.log 2>&1; then
-            echo "Telegram login host started without the bot token"
+          # The operator package must start its authority check without any private credential.
+          key=635f952c2b4490eef64237b043885c1823b2d53ed48422e23a7216f7302cbf31
+          env -u TELEGRAM_BOT_TOKEN TELEGRAM_BOT_ID=123456 TELEGRAM_BOT_PUBLIC_KEY="$key" \
+            "$host" --check-public-authority
+          if env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_BOT_ID -u TELEGRAM_BOT_PUBLIC_KEY \
+            "$host" --check-public-authority >telegram-login-host-check.log 2>&1; then
+            echo "Telegram login host accepted missing public authority"
             exit 1
           fi
-          grep -F 'TELEGRAM_BOT_TOKEN is required' telegram-login-host-check.log
+          grep -F 'TELEGRAM_BOT_ID is required' telegram-login-host-check.log
+          if env -u TELEGRAM_BOT_TOKEN TELEGRAM_BOT_ID=123456 TELEGRAM_BOT_PUBLIC_KEY=invalid \
+            "$host" --check-public-authority >telegram-login-host-check.log 2>&1; then
+            echo "Telegram login host accepted invalid public authority"
+            exit 1
+          fi
+          grep -F 'Invalid Telegram Bot public authority' telegram-login-host-check.log
+          if TELEGRAM_BOT_TOKEN=synthetic TELEGRAM_BOT_ID=123456 TELEGRAM_BOT_PUBLIC_KEY="$key" \
+            "$host" --check-public-authority >telegram-login-host-check.log 2>&1; then
+            echo "Telegram login host accepted a Bot API token in its environment"
+            exit 1
+          fi
+          grep -F 'Bot API token must not be present in Core' telegram-login-host-check.log
       - name: Attest the verified Telegram login host package
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/attest-build-provenance@v3
